@@ -309,4 +309,4 @@ Overlook’s settings UI lives in `Overlook/WebUISettingsPanel.swift` and is des
 
 This project is licensed under the **GNU General Public License v3.0**.
 
-See [`LICENSE.md`](./LICENSE.md).
+See [`LICENSE.md`](./LICENSE.MD).
