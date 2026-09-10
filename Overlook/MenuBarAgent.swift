@@ -248,7 +248,7 @@ class MenuBarAgent: NSObject, ObservableObject {
         }
     }
 
-    private func promptForPassword(deviceName: String) -> String? {
+    private func promptForPassword(deviceName: String) -> (password: String, save: Bool)? {
         let alert = NSAlert()
         alert.messageText = "Password Required"
         alert.informativeText = "Enter password for \(deviceName)"
@@ -256,15 +256,24 @@ class MenuBarAgent: NSObject, ObservableObject {
         alert.addButton(withTitle: "Connect")
         alert.addButton(withTitle: "Cancel")
 
-        let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 46))
+
+        let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 24, width: 240, height: 22))
         passwordField.placeholderString = "Password"
-        alert.accessoryView = passwordField
+
+        let saveCheckbox = NSButton(checkboxWithTitle: "Save password for this device", target: nil, action: nil)
+        saveCheckbox.frame = NSRect(x: 0, y: 0, width: 240, height: 18)
+
+        view.addSubview(passwordField)
+        view.addSubview(saveCheckbox)
+        alert.accessoryView = view
 
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return nil }
 
-        let pw = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return pw.isEmpty ? nil : pw
+        let password = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !password.isEmpty else { return nil }
+        return (password, saveCheckbox.state == .on)
     }
 
     private func showError(title: String, message: String) {
@@ -333,9 +342,13 @@ class MenuBarAgent: NSObject, ObservableObject {
             await finishSessionConnect(connected)
         } catch {
             if let kvmError = error as? KVMError, kvmError == .authenticationFailed {
-                guard let password = promptForPassword(deviceName: device.name) else { return }
+                guard let entry = promptForPassword(deviceName: device.name) else { return }
                 do {
-                    let connected = try await kvmDeviceManager.connectToDevice(device, password: password)
+                    let connected = try await kvmDeviceManager.connectToDevice(
+                        device,
+                        password: entry.password,
+                        savePassword: entry.save
+                    )
                     await finishSessionConnect(connected)
                 } catch {
                     showError(title: "Failed to connect", message: String(describing: error))
@@ -394,22 +407,26 @@ class MenuBarAgent: NSObject, ObservableObject {
         alert.addButton(withTitle: "Cancel")
 
         let view = NSView()
-        view.frame = NSRect(x: 0, y: 0, width: 260, height: 86)
+        view.frame = NSRect(x: 0, y: 0, width: 260, height: 110)
 
-        let hostField = NSTextField(frame: NSRect(x: 0, y: 56, width: 260, height: 22))
+        let hostField = NSTextField(frame: NSRect(x: 0, y: 80, width: 260, height: 22))
         hostField.placeholderString = "Host or IP (optionally host:port)"
 
-        let portField = NSTextField(frame: NSRect(x: 0, y: 28, width: 260, height: 22))
+        let portField = NSTextField(frame: NSRect(x: 0, y: 52, width: 260, height: 22))
         portField.placeholderString = "Port"
         portField.stringValue = "443"
         portField.integerValue = 443
 
-        let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22))
+        let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 24, width: 260, height: 22))
         passwordField.placeholderString = "Password (optional)"
+
+        let saveCheckbox = NSButton(checkboxWithTitle: "Save password for this device", target: nil, action: nil)
+        saveCheckbox.frame = NSRect(x: 0, y: 0, width: 260, height: 18)
 
         view.addSubview(hostField)
         view.addSubview(portField)
         view.addSubview(passwordField)
+        view.addSubview(saveCheckbox)
         alert.accessoryView = view
 
         let response = alert.runModal()
@@ -437,6 +454,7 @@ class MenuBarAgent: NSObject, ObservableObject {
         let port = Int(portString) ?? 443
         let device = kvmDeviceManager.addManualDevice(host: host, port: port, type: .glinetComet)
         let password = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savePassword = saveCheckbox.state == .on
 
         Task {
             if password.isEmpty {
@@ -444,7 +462,11 @@ class MenuBarAgent: NSObject, ObservableObject {
             } else {
                 showMainWindow()
                 do {
-                    let connected = try await kvmDeviceManager.connectToDevice(device, password: password)
+                    let connected = try await kvmDeviceManager.connectToDevice(
+                        device,
+                        password: password,
+                        savePassword: savePassword
+                    )
                     await finishSessionConnect(connected)
                 } catch {
                     showError(title: "Failed to connect", message: String(describing: error))

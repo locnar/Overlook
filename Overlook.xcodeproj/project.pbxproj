@@ -37,6 +37,7 @@
 		01000025 /* WebUISettingsPanelModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000027 /* WebUISettingsPanelModel.swift */; };
 		01000026 /* WebUISettingsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000028 /* WebUISettingsSections.swift */; };
 		01000027 /* WebUISettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000029 /* WebUISettingsActions.swift */; };
+		01000028 /* DevicePasswordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002A /* DevicePasswordStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -73,6 +74,7 @@
 		02000027 /* WebUISettingsPanelModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsPanelModel.swift; sourceTree = "<group>"; };
 		02000028 /* WebUISettingsSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsSections.swift; sourceTree = "<group>"; };
 		02000029 /* WebUISettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsActions.swift; sourceTree = "<group>"; };
+		0200002A /* DevicePasswordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePasswordStore.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -126,6 +128,7 @@
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
 				02000023 /* KeychainTokenStore.swift */,
+				0200002A /* DevicePasswordStore.swift */,
 				02000012 /* HardwareControlManager.swift */,
 				02000010 /* MenuBarAgent.swift */,
 				02000014 /* TailscaleManager.swift */,
@@ -244,6 +247,7 @@
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
 				01000021 /* KeychainTokenStore.swift in Sources */,
+				01000028 /* DevicePasswordStore.swift in Sources */,
 				01000012 /* HardwareControlManager.swift in Sources */,
 				01000010 /* MenuBarAgent.swift in Sources */,
 				01000014 /* TailscaleManager.swift in Sources */,

@@ -624,6 +624,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         current.removeAll { $0.host == host && $0.port == port }
         writePersistedDevices(current)
         KeychainTokenStore.deleteToken(host: host, port: port)
+        DevicePasswordStore.delete(host: host, port: port)
         DeviceTrustStore.shared.reset(host: host, port: port)
 
         availableDevices.removeAll { $0.host == host && $0.port == port }
@@ -634,7 +635,13 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
     
     @discardableResult
-    func connectToDevice(_ device: KVMDevice, authToken: String? = nil, password: String? = nil, user: String = "admin") async throws -> KVMDevice {
+    func connectToDevice(
+        _ device: KVMDevice,
+        authToken: String? = nil,
+        password: String? = nil,
+        user: String = "admin",
+        savePassword: Bool = false
+    ) async throws -> KVMDevice {
         // Validate device connection
         let isValid = try await validateDeviceConnection(device)
         guard isValid else {
@@ -674,13 +681,24 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             guard Self.isAuthRejection(error) else {
                 throw error
             }
-            guard let password, !password.isEmpty else {
+
+            // A password typed for this attempt wins; otherwise fall back to one saved for the
+            // device, so an expired token logs back in without a prompt.
+            let provided = (password?.isEmpty == false) ? password : nil
+            let saved = provided == nil
+                ? DevicePasswordStore.load(host: finalDevice.host, port: finalDevice.port)
+                : nil
+            guard let candidate = provided ?? saved else {
                 throw KVMError.authenticationFailed
             }
 
             do {
-                let token = try await client.authLogin(user: user, password: password)
+                let token = try await client.authLogin(user: user, password: candidate)
                 client.authToken = token
+
+                if provided != nil, savePassword {
+                    DevicePasswordStore.save(candidate, host: finalDevice.host, port: finalDevice.port)
+                }
 
                 var updated = finalDevice
                 updated.authToken = token
@@ -693,6 +711,11 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                 // transport problem and the password may be fine.
                 guard Self.isAuthRejection(error) else {
                     throw error
+                }
+                if saved != nil {
+                    // Stale saved password: drop it so the operator is re-prompted rather than
+                    // looping on it.
+                    DevicePasswordStore.delete(host: finalDevice.host, port: finalDevice.port)
                 }
                 throw KVMError.authenticationFailed
             }

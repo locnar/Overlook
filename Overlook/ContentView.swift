@@ -20,10 +20,12 @@ struct ContentView: View {
     @State private var manualPort = "443"
 
     @State private var manualPassword = ""
+    @State private var manualSavePassword = false
 
     @State private var showingPasswordPrompt = false
     @State private var pendingPasswordDevice: KVMDevice?
     @State private var pendingPassword = ""
+    @State private var pendingSavePassword = false
     @State private var connectionErrorMessage: String?
     @State private var certificatePrompt: CertificateChangePrompt?
 
@@ -342,6 +344,7 @@ struct ContentView: View {
                 hostPort: $manualHostPort,
                 port: $manualPort,
                 password: $manualPassword,
+                savePassword: $manualSavePassword,
                 onConnect: {
                     manualConnect()
                 }
@@ -351,13 +354,14 @@ struct ContentView: View {
             PasswordPromptSheet(
                 isPresented: $showingPasswordPrompt,
                 password: $pendingPassword,
+                savePassword: $pendingSavePassword,
                 onCancel: {
                     pendingPasswordDevice = nil
                     pendingPassword = ""
                 },
                 onConnect: {
                     if let device = pendingPasswordDevice {
-                        connectToDevice(device, password: pendingPassword)
+                        connectToDevice(device, password: pendingPassword, savePassword: pendingSavePassword)
                     }
                     pendingPasswordDevice = nil
                     pendingPassword = ""
@@ -391,7 +395,7 @@ struct ContentView: View {
             Button("Trust New Certificate", role: .destructive) {
                 kvmDeviceManager.trustNewCertificate(host: prompt.host, port: prompt.port)
                 certificatePrompt = nil
-                connectToDevice(prompt.device, password: prompt.password)
+                connectToDevice(prompt.device, password: prompt.password, savePassword: prompt.savePassword)
             }
         } message: { prompt in
             Text(prompt.message)
@@ -426,10 +430,14 @@ struct ContentView: View {
         }
     }
 
-    private func connectToDevice(_ device: KVMDevice, password: String? = nil) {
+    private func connectToDevice(_ device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
         Task {
             do {
-                let connectedDevice = try await kvmDeviceManager.connectToDevice(device, password: password)
+                let connectedDevice = try await kvmDeviceManager.connectToDevice(
+                    device,
+                    password: password,
+                    savePassword: savePassword
+                )
                 await MainActor.run {
                     suppressDeviceAutoConnect = true
                     selectedDevice = connectedDevice
@@ -465,7 +473,14 @@ struct ContentView: View {
                           case .certificateChanged(let host, let port, let fingerprint) = kvmError {
                     await MainActor.run {
                         isConnected = false
-                        certificatePrompt = CertificateChangePrompt(device: device, host: host, port: port, fingerprint: fingerprint, password: password)
+                        certificatePrompt = CertificateChangePrompt(
+                            device: device,
+                            host: host,
+                            port: port,
+                            fingerprint: fingerprint,
+                            password: password,
+                            savePassword: savePassword
+                        )
                     }
                 } else {
                     print("Failed to connect: \(error)")
@@ -509,7 +524,7 @@ struct ContentView: View {
         }
 
         let password = manualPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        connectToDevice(device, password: password.isEmpty ? nil : password)
+        connectToDevice(device, password: password.isEmpty ? nil : password, savePassword: manualSavePassword)
     }
 
     private func describeConnectionError(_ error: Error) -> String {
@@ -621,9 +636,10 @@ private struct CertificateChangePrompt: Identifiable {
     let host: String
     let port: Int
     let fingerprint: String
-    /// Password from the attempt that hit the mismatch, so the retry after trusting does not
-    /// prompt for it again.
+    /// Password (and whether to save it) from the attempt that hit the mismatch, so the retry
+    /// after trusting does not prompt again.
     let password: String?
+    let savePassword: Bool
 
     var id: String { "\(host):\(port):\(fingerprint)" }
 
