@@ -669,7 +669,16 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             if let mismatch = DeviceTrustStore.shared.pendingMismatch(host: finalDevice.host, port: finalDevice.port) {
                 throw KVMError.certificateChanged(host: mismatch.host, port: mismatch.port, fingerprint: mismatch.actual)
             }
-            if let password, !password.isEmpty {
+            // Only a genuine rejection from the device means the token is missing or expired.
+            // Network and transport failures must not turn into a password prompt.
+            guard Self.isAuthRejection(error) else {
+                throw error
+            }
+            guard let password, !password.isEmpty else {
+                throw KVMError.authenticationFailed
+            }
+
+            do {
                 let token = try await client.authLogin(user: user, password: password)
                 client.authToken = token
 
@@ -679,7 +688,12 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                     availableDevices[index] = updated
                 }
                 finalDevice = updated
-            } else {
+            } catch {
+                // A wrong password is an auth rejection and re-prompts; anything else is a
+                // transport problem and the password may be fine.
+                guard Self.isAuthRejection(error) else {
+                    throw error
+                }
                 throw KVMError.authenticationFailed
             }
         }
@@ -688,6 +702,16 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         connectedDevice = persisted
         glkvmClient = client
         return persisted
+    }
+
+    /// True only when the device itself rejected the credentials or token: an HTTP 401/403, or an
+    /// application-level `ok=false` on a 2xx response (how the GL.iNet login endpoint reports a
+    /// wrong password). URL/network errors and 5xx responses are not auth rejections.
+    private static func isAuthRejection(_ error: Error) -> Bool {
+        if case GLKVMClient.ClientError.httpError(let statusCode, _) = error {
+            return statusCode == 401 || statusCode == 403 || (200...299).contains(statusCode)
+        }
+        return false
     }
 
     private func persistDevice(_ device: KVMDevice) -> KVMDevice {
