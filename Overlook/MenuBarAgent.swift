@@ -8,6 +8,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     private var menu: NSMenu?
     private var popover: NSPopover?
     private var monitoringWindow: NSWindow?
+    private var globalKeyMonitor: Any?
 
     private let kvmDeviceManager: KVMDeviceManager
     private let webRTCManager: WebRTCManager
@@ -571,8 +572,10 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
     
     private func setupKeyboardShortcuts() {
-        // Global keyboard shortcuts for quick actions
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        // Global keyboard shortcuts for quick actions. Kept so cleanup() can remove it; a global
+        // monitor that is never removed keeps receiving every keystroke system-wide.
+        guard globalKeyMonitor == nil else { return }
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleGlobalKeyEvent(event)
         }
     }
@@ -620,6 +623,10 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
     
     func cleanup() {
+        if let globalKeyMonitor {
+            NSEvent.removeMonitor(globalKeyMonitor)
+            self.globalKeyMonitor = nil
+        }
         statusItem = nil
         menu = nil
         popover = nil

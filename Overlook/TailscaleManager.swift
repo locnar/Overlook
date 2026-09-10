@@ -534,6 +534,7 @@ enum TailscaleError: Error, LocalizedError {
     case authenticationFailed
     case configurationFailed
     case networkUnavailable
+    case manualInstallationRequired
     
     var errorDescription: String? {
         switch self {
@@ -549,40 +550,20 @@ enum TailscaleError: Error, LocalizedError {
             return "Failed to configure Tailscale"
         case .networkUnavailable:
             return "Network is not available"
+        case .manualInstallationRequired:
+            return "Install Tailscale from tailscale.com, then try again"
         }
     }
 }
 
 // MARK: - Tailscale Installation Helper
 extension TailscaleManager {
+    /// Overlook does not download and run installers: an unverified binary fetched over the
+    /// network and executed from a temp directory is exactly what Gatekeeper exists to prevent.
+    /// Installation is the user's action on Tailscale's download page.
     func installTailscale() async throws {
-        // Download and install Tailscale
-        let downloadURL = URL(string: "https://pkgs.tailscale.com/stable/tailscale-installer-darwin")!
-        
-        let (data, _) = try await URLSession.shared.data(from: downloadURL)
-        
-        // Save installer to temporary location
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("tailscale-installer")
-        try data.write(to: tempURL)
-        
-        // Make installer executable
-        let chmodTask = Process()
-        chmodTask.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        chmodTask.arguments = ["+x", tempURL.path]
-        try chmodTask.run()
-        chmodTask.waitUntilExit()
-        
-        // Run installer
-        let installTask = Process()
-        installTask.executableURL = tempURL
-        try installTask.run()
-        installTask.waitUntilExit()
-        
-        // Clean up
-        try? FileManager.default.removeItem(at: tempURL)
-        
-        // Update installation status
-        checkTailscaleInstallation()
+        openTailscaleWebsite()
+        throw TailscaleError.manualInstallationRequired
     }
     
     func openTailscaleWebsite() {
