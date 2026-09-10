@@ -8,6 +8,16 @@ struct ManualConnectSheet: View {
 
     let onConnect: () -> Void
 
+    private var canConnect: Bool {
+        !hostPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func submit() {
+        guard canConnect else { return }
+        onConnect()
+        isPresented = false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Manual Connect")
@@ -28,14 +38,15 @@ struct ManualConnectSheet: View {
                     isPresented = false
                 }
                 Button("Connect") {
-                    onConnect()
-                    isPresented = false
+                    submit()
                 }
-                .disabled(hostPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canConnect)
             }
         }
         .padding()
         .frame(width: 420)
+        .onSubmit(submit)
     }
 }
 
@@ -45,6 +56,16 @@ struct PasswordPromptSheet: View {
 
     let onCancel: () -> Void
     let onConnect: () -> Void
+
+    private var canConnect: Bool {
+        !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func submit() {
+        guard canConnect else { return }
+        onConnect()
+        isPresented = false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -61,13 +82,14 @@ struct PasswordPromptSheet: View {
                     isPresented = false
                 }
                 Button("Connect") {
-                    onConnect()
-                    isPresented = false
+                    submit()
                 }
-                .disabled(password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canConnect)
             }
         }
         .padding()
         .frame(width: 420)
+        .onSubmit(submit)
     }
 }
