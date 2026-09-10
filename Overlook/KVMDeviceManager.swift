@@ -16,6 +16,14 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     private var scanTimer: Timer?
     private var deviceDiscoverySessions: [NWBrowser] = []
 
+    // The running scan and its generation. Results are only published when the generation still
+    // matches, so a cancelled scan never overwrites the device list after the fact.
+    private var scanTask: Task<Void, Never>?
+    private var scanGeneration = 0
+    /// Upper bound on simultaneous TCP probes during the /24 sweep. 64 was enough to trip
+    /// rate limiting on some Wi-Fi routers and starve the mDNS browsers running alongside.
+    private static let maximumConcurrentProbes = 16
+
     /// Discovery probes accept any certificate: they hit arbitrary LAN hosts, send no credentials,
     /// and must not pin whatever those hosts present. Real connections go through DeviceTrustStore.
     private final class ProbeTLSDelegate: NSObject, URLSessionDelegate {
@@ -81,14 +89,17 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     
     func scanForDevices() {
         guard !isScanning else { return }
-        
+
+        scanGeneration += 1
+        let generation = scanGeneration
         isScanning = true
         scanProgress = 0.0
         let pinnedDevices = availableDevices.filter { $0.id.hasPrefix("manual-") || $0.id.hasPrefix("saved-") }
         availableDevices = pinnedDevices
-        
+
         // Start multiple discovery methods
-        Task {
+        scanTask = Task { [weak self] in
+            guard let self else { return }
             await withTaskGroup(of: [KVMDevice].self) { group in
                 // GL.iNet Comet discovery
                 group.addTask {
@@ -122,34 +133,52 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                 }
 
                 for await devices in group {
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        return
+                    }
                     allDevices.append(contentsOf: devices)
 
                     let uniqueDevices = self.removeDuplicates(from: allDevices)
                     await MainActor.run {
+                        guard self.scanGeneration == generation else { return }
                         let combined = self.removeDuplicates(from: pinnedDevices + uniqueDevices)
                         self.availableDevices = combined.sorted { $0.name < $1.name }
                     }
                 }
 
                 await MainActor.run {
-                    self.isScanning = false
-                    self.scanProgress = 1.0
-                    self.scanTimer?.invalidate()
-                    self.scanTimer = nil
+                    guard self.scanGeneration == generation else { return }
+                    self.finishScan()
                 }
             }
         }
-        
+
         // Update progress
-        scanTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+        scanTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                if self.scanProgress < 0.9 {
-                    self.scanProgress += 0.05
-                }
+                guard let self, self.scanProgress < 0.9 else { return }
+                self.scanProgress += 0.05
             }
         }
     }
-    
+
+    /// Stops a scan in progress. Probes already in flight finish on their own, but their results
+    /// are discarded and the device list keeps whatever it showed at the time of the call.
+    func cancelScan() {
+        scanGeneration += 1
+        scanTask?.cancel()
+        finishScan()
+    }
+
+    private func finishScan() {
+        scanTask = nil
+        isScanning = false
+        scanProgress = 1.0
+        scanTimer?.invalidate()
+        scanTimer = nil
+    }
+
     private func discoverGLiNetDevices() async -> [KVMDevice] {
         actor DeviceCollector {
             private var devices: [KVMDevice] = []
@@ -276,7 +305,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let knownPorts = [443, 8443, 80, 8080]
         let localNetwork = getLocalNetworkRange()
 
-        let maxConcurrent = 64
+        let maxConcurrent = Self.maximumConcurrentProbes
         var targets: [(host: String, port: Int)] = []
         targets.reserveCapacity(localNetwork.count * knownPorts.count)
         for host in localNetwork {
@@ -284,12 +313,16 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                 targets.append((host: host, port: port))
             }
         }
-        
+
         await withTaskGroup(of: KVMDevice?.self) { group in
             var nextIndex = 0
             var inFlight = 0
 
             while nextIndex < targets.count || inFlight > 0 {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    return
+                }
                 while inFlight < maxConcurrent && nextIndex < targets.count {
                     let target = targets[nextIndex]
                     nextIndex += 1
@@ -402,7 +435,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return devices
     }
 
-    private func probeTCPPortOpen(host: String, port: Int) async -> Bool {
+    private func probeTCPPortOpen(host: String, port: Int, timeout: TimeInterval = 0.7) async -> Bool {
         guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             return false
         }
@@ -425,7 +458,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                 continuation.resume(returning: false)
             }
 
-            queue.asyncAfter(deadline: .now() + 0.7, execute: timeoutWorkItem)
+            queue.asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
 
             connection.stateUpdateHandler = { state in
                 switch state {
@@ -453,6 +486,10 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
     
     private func checkKVMService(host: String, port: Int) async -> KVMDevice? {
+        // A closed or absent port is rejected by one TCP probe in about a second; the HTTP probes
+        // below would each wait out their own timeouts on it, several times over per target.
+        guard await probeTCPPortOpen(host: host, port: port, timeout: 1.0) else { return nil }
+
         if await probeGLKVM(host: host, port: port) {
             return KVMDevice(
                 id: "scanned-\(host)-\(port)",
@@ -888,6 +925,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
     
     deinit {
+        scanTask?.cancel()
         networkMonitor?.cancel()
         scanTimer?.invalidate()
         deviceDiscoverySessions.forEach { $0.cancel() }
