@@ -68,3 +68,43 @@ enum JSONValue: Codable, Hashable {
         }
     }
 }
+
+// MARK: - Reading
+
+extension JSONValue {
+    subscript(key: String) -> JSONValue? {
+        if case .object(let object) = self { return object[key] }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value): return value
+        case .double(let value): return Int(exactly: value.rounded())
+        default: return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .int(let value): return Double(value)
+        case .double(let value): return value
+        default: return nil
+        }
+    }
+
+    var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var isNull: Bool {
+        if case .null = self { return true }
+        return false
+    }
+}

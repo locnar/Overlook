@@ -69,7 +69,7 @@ extension WebUISettingsActions {
             let edidValue = try await client.getEDID()
             await MainActor.run {
                 model.config = loadedConfig
-                inputManager.setGLKVMAbsoluteMouseMode(loadedConfig.isAbsoluteMouse)
+                inputManager.applyConfiguredMouseMode(isAbsolute: loadedConfig.isAbsoluteMouse)
                 webRTCManager.setPreferLowLatencyPlayout(loadedConfig.videoProcessing == "low_latency_first")
                 model.keymaps = km
                 model.streamerState = st
@@ -442,24 +442,31 @@ extension WebUISettingsActions {
 
     func updateConfig(_ mutate: (inout GLKVMSystemConfig) -> Void) {
         guard var next = model.config else { return }
+        let previous = next
         mutate(&next)
         model.config = next
-        scheduleApply(next)
+        scheduleApply(next, switchesMouseMode: next.isAbsoluteMouse != previous.isAbsoluteMouse)
     }
 
-    func scheduleApply(_ newConfig: GLKVMSystemConfig) {
+    func scheduleApply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) {
         model.applyTask?.cancel()
         model.applyTask = Task {
             try? await Task.sleep(nanoseconds: 150_000_000)
-            await apply(newConfig)
+            await apply(newConfig, switchesMouseMode: switchesMouseMode)
         }
     }
 
-    func apply(_ newConfig: GLKVMSystemConfig) async {
+    func apply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) async {
         guard let client = kvmDeviceManager.glkvmClient else { return }
         await MainActor.run { model.isApplying = true }
         do {
             let updated = try await client.setSystemConfig(newConfig)
+            // The config only records the WebUI's preference; the device's HID gadget is switched
+            // through hid/set_params, and it reports the result in a `hid` event. Without this the
+            // toggle changed which reports Overlook sent, not which ones the device accepted.
+            if switchesMouseMode {
+                try await client.setHIDParams(["mouse_output": updated.isAbsoluteMouse ? "usb" : "usb_rel"])
+            }
             await MainActor.run {
                 model.config = updated
                 inputManager.setGLKVMAbsoluteMouseMode(updated.isAbsoluteMouse)

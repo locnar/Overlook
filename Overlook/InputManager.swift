@@ -23,6 +23,9 @@ class InputManager: ObservableObject {
     private var hidCommandTail: Task<Void, Never>?
     private var hidReconnectTask: Task<Void, Never>?
     private var acceptsHIDCommands = true
+    /// The mouse mode the device itself last reported in a `hid` event. When present it wins over
+    /// the WebUI config value: relative reports sent to a device in absolute mode are dropped.
+    private var deviceReportedAbsoluteMouse: Bool?
 
     private struct PendingAbsoluteMouseMove {
         let toX: Int
@@ -111,6 +114,7 @@ class InputManager: ObservableObject {
             disconnectGLKVMWebSocket()
         }
         glkvmClient = client
+        deviceReportedAbsoluteMouse = nil
         isGLKVMAbsoluteMouseMode = true
         pendingAbsoluteMouseMove = nil
         pendingRelativeMouseMove = nil
@@ -125,9 +129,10 @@ class InputManager: ObservableObject {
         refreshMouseModeFromDevice()
     }
 
-    /// Re-reads `is_absolute_mouse` from the device. Runs on connect, on every mouse-capture start,
-    /// and after the device reports a HID state change, so a mode switched from the WebUI is picked
-    /// up without reopening Overlook's settings. Until a read succeeds the mode stays absolute.
+    /// Re-reads `is_absolute_mouse` from the WebUI config. Runs on connect and on every
+    /// mouse-capture start. It is the fallback: once the device has reported its live mouse mode
+    /// over the HID socket (`hid` event), that report is authoritative and this read is ignored.
+    /// Until either arrives the mode stays absolute.
     func refreshMouseModeFromDevice() {
         guard let client = glkvmClient else { return }
         mouseModeRefreshTask?.cancel()
@@ -136,9 +141,16 @@ class InputManager: ObservableObject {
             guard let config = try? await client.getSystemConfig() else { return }
             await MainActor.run {
                 guard let self, self.glkvmClient === client else { return }
-                self.setGLKVMAbsoluteMouseMode(config.isAbsoluteMouse)
+                self.applyConfiguredMouseMode(isAbsolute: config.isAbsoluteMouse)
             }
         }
+    }
+
+    /// The WebUI config's mouse mode. Applied only until the device has reported its live mode
+    /// over the HID socket; from then on the report is authoritative.
+    func applyConfiguredMouseMode(isAbsolute: Bool) {
+        guard deviceReportedAbsoluteMouse == nil else { return }
+        setGLKVMAbsoluteMouseMode(isAbsolute)
     }
 
     func setGLKVMAbsoluteMouseMode(_ isAbsolute: Bool) {
@@ -1073,16 +1085,32 @@ class InputManager: ObservableObject {
         }
     }
 
+    /// kvmd pushes the full `hid` state over the HID socket on connect and whenever it changes
+    /// (this firmware names the event `hid`; older PiKVM releases used `hid_state`).
     private func handleDeviceEvent(_ event: GLKVMWebSocketEvent) {
-        // A HID state change (PiKVM-style `hid_state`) can mean the mouse mode was switched from the
-        // WebUI. Re-read the config, debounced so a burst costs one request.
-        guard event.eventType == "hid_state" else { return }
-        guard deviceMouseModeRefreshDebounce == nil else { return }
-        deviceMouseModeRefreshDebounce = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard let self else { return }
-            self.deviceMouseModeRefreshDebounce = nil
-            self.refreshMouseModeFromDevice()
+        switch event.eventType {
+        case "hid", "hid_state":
+            applyDeviceHIDState(event.event)
+        default:
+            break
+        }
+    }
+
+    /// `hid` event: `mouse.absolute` is the mode the device's HID gadget is actually in.
+    private func applyDeviceHIDState(_ state: JSONValue?) {
+        guard let state else { return }
+        if let absolute = state["mouse"]?["absolute"]?.boolValue {
+            deviceReportedAbsoluteMouse = absolute
+            setGLKVMAbsoluteMouseMode(absolute)
+        } else if deviceMouseModeRefreshDebounce == nil {
+            // Older firmware: the event says the HID state changed but not which mode it is in.
+            // Re-read the config, debounced so a burst costs one request.
+            deviceMouseModeRefreshDebounce = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self else { return }
+                self.deviceMouseModeRefreshDebounce = nil
+                self.refreshMouseModeFromDevice()
+            }
         }
     }
 
