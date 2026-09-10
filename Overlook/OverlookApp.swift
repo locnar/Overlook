@@ -34,7 +34,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let inputManager = InputManager()
     let ocrManager = OCRManager()
     let kvmDeviceManager = KVMDeviceManager()
-    
+
+    private var isTerminating = false
+    private var hasRepliedToTermination = false
+    /// Longest the app waits for the HID release and socket close before quitting anyway.
+    private static let terminationGraceNanoseconds: UInt64 = 3_000_000_000
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         menuBarAgent = MenuBarAgent(
             kvmDeviceManager: kvmDeviceManager,
@@ -60,8 +65,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         candidate?.makeKeyAndOrderFront(nil)
     }
     
+    /// Quitting while keys or buttons are held on the remote would leave them held, and a video
+    /// session abandoned without a hangup lingers on the device until its keepalive times out.
+    /// So the app defers termination, releases HID state, hangs up, and only then lets AppKit exit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminating else { return .terminateCancel }
+        isTerminating = true
         menuBarAgent?.cleanup()
-        return .terminateNow
+        kvmDeviceManager.cancelScan()
+
+        Task { @MainActor [self] in
+            await inputManager.shutdown()
+            webRTCManager.disconnect()
+            finishTermination(sender)
+        }
+        // Don't let a wedged HID socket hold the process open.
+        Task { @MainActor [self] in
+            try? await Task.sleep(nanoseconds: Self.terminationGraceNanoseconds)
+            finishTermination(sender)
+        }
+        return .terminateLater
+    }
+
+    private func finishTermination(_ app: NSApplication) {
+        guard !hasRepliedToTermination else { return }
+        hasRepliedToTermination = true
+        app.reply(toApplicationShouldTerminate: true)
     }
 }

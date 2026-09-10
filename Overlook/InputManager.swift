@@ -352,7 +352,37 @@ class InputManager: ObservableObject {
             await ws?.disconnect()
         }
     }
-    
+
+    /// Quiesces input for process exit: stops capturing, lets queued HID commands drain, releases
+    /// every key and button still held on the remote, then closes the HID socket. Nothing is
+    /// accepted for sending afterwards.
+    func shutdown() async {
+        stopFullInputCapture()  // unlocks the pointer, which queues releases for held buttons
+        stopMouseMoveSender()
+        mouseModeRefreshTask?.cancel()
+        mouseModeRefreshTask = nil
+        deviceMouseModeRefreshDebounce?.cancel()
+        deviceMouseModeRefreshDebounce = nil
+        deviceEventTask?.cancel()
+        deviceEventTask = nil
+        hidReconnectTask?.cancel()
+        hidReconnectTask = nil
+
+        let ws = glkvmWebSocketClient
+        glkvmWebSocketClient = nil
+        if let ws {
+            enqueueHIDCommand(label: "release inputs") {
+                guard await ws.isConnected else { return }
+                try await ws.releaseAllHIDInputs()
+            }
+        }
+        acceptsHIDCommands = false
+
+        await hidCommandTail?.value
+        hidCommandTail = nil
+        await ws?.disconnect()
+    }
+
     func startKeyboardCapture() {
         guard keyEventMonitor == nil else {
             isCapturing = true
@@ -853,7 +883,7 @@ class InputManager: ObservableObject {
     }
 
     private func scheduleHIDReconnect() {
-        guard hidReconnectTask == nil, glkvmClient != nil else { return }
+        guard acceptsHIDCommands, hidReconnectTask == nil, glkvmClient != nil else { return }
         hidReconnectTask = Task { [weak self] in
             let delays: [UInt64] = [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000]
             for delay in delays {
