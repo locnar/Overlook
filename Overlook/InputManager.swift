@@ -54,9 +54,6 @@ class InputManager: ObservableObject {
 
     private static let relativeSensitivityDefaultsKey = "overlook.relativeMouseSensitivity"
     private static let unacceleratedInputDefaultsKey = "overlook.relativeMouseUnacceleratedInput"
-    /// Raw values of kCGEventUnacceleratedPointerMovementX / Y (CGEventField, macOS 10.15+).
-    private static let unacceleratedPointerMovementXField: UInt32 = 170
-    private static let unacceleratedPointerMovementYField: UInt32 = 171
     /// Holding exactly Control+Option releases a captured pointer (VMware / Parallels convention).
     static let pointerReleaseChord: NSEvent.ModifierFlags = [.control, .option]
 
@@ -77,12 +74,15 @@ class InputManager: ObservableObject {
     @Published private(set) var isGLKVMAbsoluteMouseMode = true
     @Published private(set) var isPointerLocked = false
 
-    /// Multiplier applied to relative mouse deltas on top of the video scale. Persisted on this Mac.
+    /// Multiplier applied to relative mouse movement. With accelerated input it sits on top of the
+    /// view-to-remote scale; with unaccelerated input it is the only factor. Persisted on this Mac.
     @Published var relativeSensitivity: Double {
         didSet { UserDefaults.standard.set(relativeSensitivity, forKey: Self.relativeSensitivityDefaultsKey) }
     }
 
-    /// Experimental: use the CGEvent's unaccelerated pointer deltas instead of macOS-accelerated ones.
+    /// Send the mouse's raw movement counts (kCGEventUnacceleratedPointerMovementX/Y) instead of
+    /// macOS-accelerated deltas, so the target applies its own pointer settings once. Falls back
+    /// to accelerated deltas per event when the system does not provide counts.
     @Published var useUnacceleratedRelativeInput: Bool {
         didSet { UserDefaults.standard.set(useUnacceleratedRelativeInput, forKey: Self.unacceleratedInputDefaultsKey) }
     }
@@ -1016,23 +1016,39 @@ class InputManager: ObservableObject {
     private func handleLockedPointerMove(_ event: NSEvent) {
         // NSEvent deltas for mouse-moved / dragged events are in display space (y grows downward),
         // which is also the HID relative-report convention, so no axis flip is applied.
-        var dx = event.deltaX
-        var dy = event.deltaY
+        let sensitivity = CGFloat(relativeSensitivity)
 
-        if useUnacceleratedRelativeInput,
-           let cgEvent = event.cgEvent,
-           let fieldX = CGEventField(rawValue: Self.unacceleratedPointerMovementXField),
-           let fieldY = CGEventField(rawValue: Self.unacceleratedPointerMovementYField) {
-            let rawX = cgEvent.getIntegerValueField(fieldX)
-            let rawY = cgEvent.getIntegerValueField(fieldY)
-            if rawX != 0 || rawY != 0 {
-                dx = CGFloat(rawX)
-                dy = CGFloat(rawY)
-            }
+        if useUnacceleratedRelativeInput, let counts = unacceleratedMovement(of: event) {
+            // Raw counts go out as counts — no view-to-remote scaling, which only makes sense for
+            // on-screen distances. At 1.00× the target sees what a directly attached mouse would
+            // send and applies its own pointer settings once.
+            accumulateRelativeDelta(CGSize(width: counts.width * sensitivity, height: counts.height * sensitivity))
+            return
         }
 
-        let scale = relativeDeltaScale * CGFloat(relativeSensitivity)
-        accumulateRelativeDelta(CGSize(width: dx * scale, height: dy * scale))
+        let scale = relativeDeltaScale * sensitivity
+        accumulateRelativeDelta(CGSize(width: event.deltaX * scale, height: event.deltaY * scale))
+    }
+
+    /// The event's unaccelerated pointer movement in device counts, or nil when it should not be
+    /// used: macOS reports no accelerated motion (an idle trackpad emits raw sensor residual with a
+    /// zero delta — the dead-zone rule Firefox applies), or the system left the fields empty
+    /// (synthesized events, some devices), in which case the caller falls back to accelerated
+    /// deltas. Read as doubles: the fields carry fractional movement, and an integer read would
+    /// drop slow movement entirely.
+    private func unacceleratedMovement(of event: NSEvent) -> CGSize? {
+        guard event.deltaX != 0 || event.deltaY != 0, let cgEvent = event.cgEvent else { return nil }
+        let rawX = cgEvent.getDoubleValueField(.eventUnacceleratedPointerMovementX)
+        let rawY = cgEvent.getDoubleValueField(.eventUnacceleratedPointerMovementY)
+        guard rawX.isFinite, rawY.isFinite, rawX != 0 || rawY != 0 else { return nil }
+        return CGSize(width: rawX, height: rawY)
+    }
+
+    /// Refreshes the remote-pixels-per-point scale used by accelerated relative input. The video
+    /// surface calls this on size changes because its mouse-move path is silent while the pointer
+    /// is locked (the lock monitor swallows those events).
+    func updateRelativeDeltaScale(viewSize: CGSize, videoSize: CGSize?) {
+        relativeDeltaScale = computeRelativeDeltaScale(viewSize: viewSize, videoSize: videoSize)
     }
 
     /// Remote pixels per view point for the letterboxed video, so a captured pointer travels the

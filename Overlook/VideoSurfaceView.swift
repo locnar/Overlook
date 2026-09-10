@@ -147,6 +147,15 @@ struct VideoSurfaceView: View {
                     .padding()
                 }
             }
+            // While the pointer is locked the lock monitor swallows mouse-moved events, so the
+            // move path above never runs; a window resize or a guest resolution change during a
+            // capture has to push the relative-mode scale explicitly.
+            .onChange(of: geometry.size) { _, size in
+                inputManager.updateRelativeDeltaScale(viewSize: size, videoSize: currentVideoSize())
+            }
+            .onChange(of: webRTCManager.videoSize) { _, _ in
+                inputManager.updateRelativeDeltaScale(viewSize: geometry.size, videoSize: currentVideoSize())
+            }
         }
         .onChange(of: isOCRModeEnabled) { _, enabled in
             setOCRMode(enabled)

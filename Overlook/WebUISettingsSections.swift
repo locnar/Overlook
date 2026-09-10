@@ -437,10 +437,10 @@ struct LocalRelativeMouseSettings: View {
                     .foregroundColor(.secondary)
             }
             Slider(value: $inputManager.relativeSensitivity, in: 0.25...4.0, step: 0.05)
-                .help("Multiplier on mouse movement while the pointer is captured. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have.")
+                .help("Multiplier on mouse movement while the pointer is captured. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have — or, with unaccelerated input on, the target receives your mouse's raw counts unchanged.")
 
             Toggle("Unaccelerated input (experimental)", isOn: $inputManager.useUnacceleratedRelativeInput)
-                .help("Send raw pointer counts instead of macOS-accelerated movement. Falls back to accelerated movement when the system does not provide them. Expect to re-tune sensitivity.")
+                .help("Send the mouse's raw movement counts instead of macOS-accelerated movement, so the target applies its own pointer settings once, as with a directly attached mouse. Falls back to accelerated movement when the system does not provide counts. Expect to re-tune sensitivity.")
 
             Text("Click the video to capture the pointer; press ⌃⌥ to release it.")
                 .font(.caption)
