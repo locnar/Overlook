@@ -71,7 +71,6 @@ class WebRTCManager: NSObject, ObservableObject {
     private var factory: RTCPeerConnectionFactory?
     private var customAudioDevice: WebRTCAudioDevice?
     private var connectionTimer: Timer?
-    private var latencyMeasurementStart: Date?
 
     private var lastConnectedDevice: KVMDevice?
 
@@ -89,6 +88,9 @@ class WebRTCManager: NSObject, ObservableObject {
 
     private var lastJitterBufferDelaySeconds: Double?
     private var lastJitterBufferEmittedCount: Double?
+    private var lastTotalDecodeTimeSeconds: Double?
+    private var lastTotalProcessingDelaySeconds: Double?
+    private var lastFramesDecodedForDelays: Double?
 
     private var lastAudioJitterBufferDelaySeconds: Double?
     private var lastAudioJitterBufferEmittedCount: Double?
@@ -281,7 +283,7 @@ class WebRTCManager: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.isAutoReconnectInProgress = false }
-            await self.reconnect(to: device)
+            await self.reconnect(to: device, reason: "Audio device changed")
         }
     }
     
@@ -289,7 +291,9 @@ class WebRTCManager: NSObject, ObservableObject {
         // An operator connect supersedes, and releases, whatever is in flight: a retry loop, an
         // attempt still waiting on Janus, or the live session when switching devices.
         consecutiveStallReconnects = 0
+        telemetry.update { $0.clearSession() }
         try await replaceConnection(with: device)
+        telemetry.update { $0.sessionConnectedAt = Date() }
     }
 
     /// Tears down the current connection and connects to `device`, carrying the frame-capture
@@ -373,7 +377,7 @@ class WebRTCManager: NSObject, ObservableObject {
             guard generation == connectionGeneration else { throw WebRTCError.superseded }
 
             // Start connection quality monitoring
-            startLatencyMonitoring()
+            startStatsPolling()
             startStreamHealthMonitoring()
         } catch {
             // A newer connect or teardown has replaced this attempt's state; it is not ours to reset.
@@ -385,9 +389,11 @@ class WebRTCManager: NSObject, ObservableObject {
         }
     }
 
-    func reconnect(to device: KVMDevice) async {
+    /// `reason` is what the session history shows for this reconnect.
+    func reconnect(to device: KVMDevice, reason: String = "Reconnect requested") async {
         // An explicit reconnect supersedes any retry loop in progress.
         consecutiveStallReconnects = 0
+        noteReconnect(reason: reason)
         do {
             try await replaceConnection(with: device)
         } catch {
@@ -409,6 +415,7 @@ class WebRTCManager: NSObject, ObservableObject {
     ) -> Bool {
         guard reconnectTask == nil, let device = lastConnectedDevice else { return false }
         lastDisconnectReason = reason
+        noteReconnect(reason: reason)
         reconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
             // Whoever cancelled this loop has already replaced the handle; don't wipe theirs.
@@ -427,6 +434,8 @@ class WebRTCManager: NSObject, ObservableObject {
                     if captureEnabled {
                         self.setFrameCaptureEnabled(true)
                     }
+                    // A session whose first connect failed starts its clock here.
+                    self.telemetry.update { if $0.sessionConnectedAt == nil { $0.sessionConnectedAt = Date() } }
                     return
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -437,6 +446,16 @@ class WebRTCManager: NSObject, ObservableObject {
             // Every retry failed: the overlay stays, with its Reconnect button, for the operator.
         }
         return true
+    }
+
+    /// Session history for the connections panel: how many times this session has been
+    /// reconnected, automatically or by hand, and why the last time.
+    private func noteReconnect(reason: String) {
+        telemetry.update { snapshot in
+            snapshot.sessionReconnectCount += 1
+            snapshot.sessionLastReconnectReason = reason
+            snapshot.sessionLastReconnectAt = Date()
+        }
     }
 
     /// Puts the surface into its "Connection Lost" state with `reason` and a Reconnect button.
@@ -878,11 +897,11 @@ class WebRTCManager: NSObject, ObservableObject {
         }
     }
     
-    private func startLatencyMonitoring() {
-        connectionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            Task {
-                await self.measureLatency()
-                await self.measureStreamStats()
+    private func startStatsPolling() {
+        connectionTimer?.invalidate()
+        connectionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.measureStreamStats()
             }
         }
     }
@@ -969,6 +988,9 @@ class WebRTCManager: NSObject, ObservableObject {
             lastInboundVideoBytesTimestamp = nil
             lastJitterBufferDelaySeconds = nil
             lastJitterBufferEmittedCount = nil
+            lastTotalDecodeTimeSeconds = nil
+            lastTotalProcessingDelaySeconds = nil
+            lastFramesDecodedForDelays = nil
             lastInboundAudioBytesReceived = nil
             lastInboundAudioBytesTimestamp = nil
             lastAudioJitterBufferDelaySeconds = nil
@@ -1007,6 +1029,62 @@ class WebRTCManager: NSObject, ObservableObject {
         }
     }
 
+    /// The ICE candidate pair traffic is flowing over. libwebrtc names it on the `transport`
+    /// statistic (`selectedCandidatePairId`); the pair itself carries no `selected` flag. A
+    /// nominated, succeeded pair is the fallback for builds that lack the transport entry.
+    private static func selectedCandidatePair(in report: RTCStatisticsReport) -> RTCStatistics? {
+        for statistic in report.statistics.values where statistic.type == "transport" {
+            if let pairId = statistic.values["selectedCandidatePairId"] as? String,
+               let pair = report.statistics[pairId] {
+                return pair
+            }
+        }
+        for statistic in report.statistics.values where statistic.type == "candidate-pair" {
+            let state = statistic.values["state"] as? String
+            let nominated = (statistic.values["nominated"] as? Bool)
+                ?? (statistic.values["nominated"] as? NSNumber)?.boolValue
+                ?? false
+            if state == "succeeded", nominated {
+                return statistic
+            }
+        }
+        return nil
+    }
+
+    /// "host → host · UDP", plus the remote address, for the selected pair.
+    private static func describeNetworkPath(
+        pair: RTCStatistics,
+        in report: RTCStatisticsReport
+    ) -> (path: String?, remoteAddress: String?) {
+        func candidate(_ key: String) -> RTCStatistics? {
+            guard let id = pair.values[key] as? String else { return nil }
+            return report.statistics[id]
+        }
+        let local = candidate("localCandidateId")
+        let remote = candidate("remoteCandidateId")
+        guard local != nil || remote != nil else { return (nil, nil) }
+
+        let localType = (local?.values["candidateType"] as? String) ?? "?"
+        let remoteType = (remote?.values["candidateType"] as? String) ?? "?"
+        let protocolName = ((local?.values["protocol"] as? String)
+            ?? (remote?.values["protocol"] as? String))?.uppercased()
+        let networkType = local?.values["networkType"] as? String
+
+        var parts = ["\(localType) → \(remoteType)"]
+        if let protocolName { parts.append(protocolName) }
+        if let networkType, networkType != "unknown" { parts.append(networkType) }
+
+        var remoteAddress: String?
+        if let address = (remote?.values["address"] as? String) ?? (remote?.values["ip"] as? String) {
+            if let port = (remote?.values["port"] as? NSNumber)?.intValue {
+                remoteAddress = "\(address):\(port)"
+            } else {
+                remoteAddress = address
+            }
+        }
+        return (parts.joined(separator: " · "), remoteAddress)
+    }
+
     private func collectInboundVideoStats(from peerConnection: RTCPeerConnection) async -> VideoStatsSample {
         let lastBytes = lastInboundVideoBytesReceived
         let lastTs = lastInboundVideoBytesTimestamp
@@ -1021,24 +1099,20 @@ class WebRTCManager: NSObject, ObservableObject {
         var jitterBufferDelaySeconds: Double?
         var jitterBufferEmittedCount: Double?
         var totalDecodeTimeSeconds: Double?
+        var totalProcessingDelaySeconds: Double?
         var framesDecoded: Double?
         var packetsLost: Int?
-
-        var currentRoundTripTimeSeconds: Double?
+        var framesDropped: Int?
+        var pliCount: Int?
+        var nackCount: Int?
+        var freezeCount: Int?
+        var freezeDurationMs: Int?
+        var pauseCount: Int?
+        var codec: String?
+        var decoder: String?
+        var decoderIsPowerEfficient: Bool?
 
         for statistic in report.statistics.values {
-            if statistic.type == "candidate-pair" {
-                let selected = (statistic.values["selected"] as? Bool)
-                    ?? (numberValue(statistic.values["selected"])?.boolValue)
-                    ?? false
-                guard selected else { continue }
-
-                if let rtt = numberValue(statistic.values["currentRoundTripTime"])?.doubleValue {
-                    currentRoundTripTimeSeconds = rtt
-                }
-                continue
-            }
-
             guard statistic.type == "inbound-rtp" else { continue }
 
             if let kind = statistic.values["kind"] as? String, kind != "video" { continue }
@@ -1059,14 +1133,63 @@ class WebRTCManager: NSObject, ObservableObject {
             if let n = numberValue(statistic.values["totalDecodeTime"]) {
                 totalDecodeTimeSeconds = n.doubleValue
             }
+            if let n = numberValue(statistic.values["totalProcessingDelay"]) {
+                totalProcessingDelaySeconds = n.doubleValue
+            }
             if let n = numberValue(statistic.values["framesDecoded"]) {
                 framesDecoded = n.doubleValue
             }
             if let n = numberValue(statistic.values["packetsLost"]) {
                 packetsLost = n.intValue
             }
+            if let n = numberValue(statistic.values["framesDropped"]) {
+                framesDropped = n.intValue
+            }
+            if let n = numberValue(statistic.values["pliCount"]) {
+                pliCount = n.intValue
+            }
+            if let n = numberValue(statistic.values["nackCount"]) {
+                nackCount = n.intValue
+            }
+            if let n = numberValue(statistic.values["freezeCount"]) {
+                freezeCount = n.intValue
+            }
+            if let n = numberValue(statistic.values["totalFreezesDuration"]) {
+                freezeDurationMs = Int((n.doubleValue * 1000.0).rounded())
+            }
+            if let n = numberValue(statistic.values["pauseCount"]) {
+                pauseCount = n.intValue
+            }
+            if let codecId = statistic.values["codecId"] as? String,
+               let mimeType = report.statistics[codecId]?.values["mimeType"] as? String {
+                // "video/H264" → "H264"
+                codec = mimeType.split(separator: "/").last.map(String.init) ?? mimeType
+            }
+            if let implementation = statistic.values["decoderImplementation"] as? String,
+               !implementation.isEmpty, implementation != "unknown" {
+                decoder = implementation
+            }
+            if let efficient = statistic.values["powerEfficientDecoder"] as? Bool {
+                decoderIsPowerEfficient = efficient
+            } else if let n = numberValue(statistic.values["powerEfficientDecoder"]) {
+                decoderIsPowerEfficient = n.boolValue
+            }
 
             break
+        }
+
+        var currentRoundTripTimeSeconds: Double?
+        var networkPath: String?
+        var networkRemoteAddress: String?
+        var availableIncomingKbps: Int?
+        if let pair = Self.selectedCandidatePair(in: report) {
+            if let rtt = numberValue(pair.values["currentRoundTripTime"])?.doubleValue {
+                currentRoundTripTimeSeconds = rtt
+            }
+            if let bps = numberValue(pair.values["availableIncomingBitrate"])?.doubleValue, bps > 0 {
+                availableIncomingKbps = Int((bps / 1000.0).rounded())
+            }
+            (networkPath, networkRemoteAddress) = Self.describeNetworkPath(pair: pair, in: report)
         }
 
         let now = Date().timeIntervalSince1970
@@ -1074,6 +1197,9 @@ class WebRTCManager: NSObject, ObservableObject {
         guard let bytesReceived else {
             lastInboundVideoBytesReceived = nil
             lastInboundVideoBytesTimestamp = nil
+            lastTotalProcessingDelaySeconds = nil
+            lastFramesDecodedForDelays = nil
+            lastTotalDecodeTimeSeconds = nil
             return .empty
         }
 
@@ -1112,14 +1238,22 @@ class WebRTCManager: NSObject, ObservableObject {
             return Int(((jitterBufferDelaySeconds / jitterBufferEmittedCount) * 1000.0).rounded())
         }()
 
-        let decodeMs: Int?
-        if let totalDecodeTimeSeconds,
-           let framesDecoded,
-           framesDecoded > 0 {
-            decodeMs = Int(((totalDecodeTimeSeconds / framesDecoded) * 1000.0).rounded())
-        } else {
-            decodeMs = nil
+        // Decode and processing delay are cumulative totals; report the per-frame average over
+        // the frames decoded since the last tick, so the number follows what is happening now
+        // rather than the session-long mean. First tick falls back to the cumulative average.
+        func perFrameMs(total: Double?, lastTotal: Double?) -> Int? {
+            guard let total, let framesDecoded, framesDecoded > 0 else { return nil }
+            if let lastTotal, let lastFrames = lastFramesDecodedForDelays {
+                // No frames this window (stall, pause): show nothing rather than the session mean.
+                let dFrames = framesDecoded - lastFrames
+                guard dFrames > 0 else { return nil }
+                let dTotal = total - lastTotal
+                return dTotal >= 0 ? Int(((dTotal / dFrames) * 1000.0).rounded()) : nil
+            }
+            return Int(((total / framesDecoded) * 1000.0).rounded())
         }
+        let decodeMs = perFrameMs(total: totalDecodeTimeSeconds, lastTotal: lastTotalDecodeTimeSeconds)
+        let processingDelayMs = perFrameMs(total: totalProcessingDelaySeconds, lastTotal: lastTotalProcessingDelaySeconds)
 
         let rttMs: Int?
         if let currentRoundTripTimeSeconds {
@@ -1132,14 +1266,30 @@ class WebRTCManager: NSObject, ObservableObject {
         lastInboundVideoBytesTimestamp = now
         lastJitterBufferDelaySeconds = jitterBufferDelaySeconds
         lastJitterBufferEmittedCount = jitterBufferEmittedCount
+        lastTotalDecodeTimeSeconds = totalDecodeTimeSeconds
+        lastTotalProcessingDelaySeconds = totalProcessingDelaySeconds
+        lastFramesDecodedForDelays = framesDecoded
 
         return VideoStatsSample(
             kbps: kbps,
             playoutDelayMs: playoutDelayMs,
             jitterMs: jitterMs,
             decodeMs: decodeMs,
+            processingDelayMs: processingDelayMs,
             packetsLost: packetsLost,
-            roundTripTimeMs: rttMs
+            framesDropped: framesDropped,
+            pliCount: pliCount,
+            nackCount: nackCount,
+            freezeCount: freezeCount,
+            freezeDurationMs: freezeDurationMs,
+            pauseCount: pauseCount,
+            roundTripTimeMs: rttMs,
+            codec: codec,
+            decoder: decoder,
+            decoderIsPowerEfficient: decoderIsPowerEfficient,
+            networkPath: networkPath,
+            networkRemoteAddress: networkRemoteAddress,
+            availableIncomingKbps: availableIncomingKbps
         )
     }
 
@@ -1159,19 +1309,12 @@ class WebRTCManager: NSObject, ObservableObject {
         var audioPacketsLost: Int?
         var audioCurrentRoundTripTimeSeconds: Double?
 
+        if let pair = Self.selectedCandidatePair(in: audioReport),
+           let rtt = audioNumberValue(pair.values["currentRoundTripTime"])?.doubleValue {
+            audioCurrentRoundTripTimeSeconds = rtt
+        }
+
         for statistic in audioReport.statistics.values {
-            if statistic.type == "candidate-pair" {
-                let selected = (statistic.values["selected"] as? Bool)
-                    ?? (audioNumberValue(statistic.values["selected"])?.boolValue)
-                    ?? false
-                guard selected else { continue }
-
-                if let rtt = audioNumberValue(statistic.values["currentRoundTripTime"])?.doubleValue {
-                    audioCurrentRoundTripTimeSeconds = rtt
-                }
-                continue
-            }
-
             guard statistic.type == "inbound-rtp" else { continue }
 
             if let kind = statistic.values["kind"] as? String, kind != "audio" { continue }
@@ -1262,20 +1405,6 @@ class WebRTCManager: NSObject, ObservableObject {
         )
     }
     
-    private func measureLatency() async {
-        latencyMeasurementStart = Date()
-        
-        // Send ping message through data channel
-        let pingMessage: [String: Any] = ["type": "ping", "timestamp": Date().timeIntervalSince1970]
-        
-        guard let data = try? JSONSerialization.data(withJSONObject: pingMessage) else {
-            return
-        }
-        
-        let buffer = RTCDataBuffer(data: data, isBinary: true)
-        dataChannel?.sendData(buffer)
-    }
-    
     func sendInputEvent(_ event: InputEvent) {
         guard let data = try? JSONEncoder().encode(event),
               let dataChannel = dataChannel,
@@ -1291,6 +1420,7 @@ class WebRTCManager: NSObject, ObservableObject {
         // Nothing may auto-reconnect after an operator disconnect.
         lastConnectedDevice = nil
         consecutiveStallReconnects = 0
+        telemetry.update { $0.clearSession() }
         tearDown(cancelReconnect: true)
     }
 
@@ -1353,9 +1483,14 @@ class WebRTCManager: NSObject, ObservableObject {
         connectedIceTime = nil
         videoSize = nil
         isFrameCaptureEnabled = false
-        telemetry.reset()
+        telemetry.clearStreamStats()
         lastInboundVideoBytesReceived = nil
         lastInboundVideoBytesTimestamp = nil
+        lastJitterBufferDelaySeconds = nil
+        lastJitterBufferEmittedCount = nil
+        lastTotalDecodeTimeSeconds = nil
+        lastTotalProcessingDelaySeconds = nil
+        lastFramesDecodedForDelays = nil
         lastInboundAudioBytesReceived = nil
         lastInboundAudioBytesTimestamp = nil
         lastAudioJitterBufferDelaySeconds = nil
@@ -1542,13 +1677,9 @@ extension WebRTCManager: @preconcurrency RTCDataChannelDelegate {
     }
     
     private func handleDataChannelMessage(_ message: InputMessage) async {
+        // The data channel used to carry a ping/pong latency probe; nothing on the device answers
+        // it. Input round trips are measured on the HID WebSocket instead (InputManager).
         switch message.type {
-        case "pong":
-            if let startTime = latencyMeasurementStart {
-                let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
-                latencyMeasurementStart = nil
-                telemetry.update { $0.latencyMs = latencyMs }
-            }
         case "video-frame":
             // Handle video frame metadata if needed
             break
@@ -1648,7 +1779,7 @@ final class WebRTCManager: NSObject, ObservableObject {
         isConnected = false
     }
 
-    func reconnect(to device: KVMDevice) async {
+    func reconnect(to device: KVMDevice, reason: String = "") async {
         disconnect()
     }
     
@@ -1662,7 +1793,7 @@ final class WebRTCManager: NSObject, ObservableObject {
         isStreamStalled = false
         lastDisconnectReason = nil
         lastVideoFrameAgeSeconds = nil
-        telemetry.reset()
+        telemetry.clearStreamStats()
         currentFrame = nil
     }
 }

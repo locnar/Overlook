@@ -416,7 +416,7 @@ extension WebUISettingsActions {
     func reconnectWebRTC() async {
         guard let device = kvmDeviceManager.connectedDevice else { return }
 
-        await webRTCManager.reconnect(to: device)
+        await webRTCManager.reconnect(to: device, reason: "Stream settings changed")
         if let reason = webRTCManager.lastDisconnectReason {
             recordError("Failed to reconnect WebRTC: \(reason)")
         }

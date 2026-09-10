@@ -126,7 +126,7 @@ struct ContentView: View {
                     onReconnect: {
                         guard let device = kvmDeviceManager.connectedDevice else { return }
                         Task { @MainActor in
-                            await webRTCManager.reconnect(to: device)
+                            await webRTCManager.reconnect(to: device, reason: "Reconnect button")
                         }
                     }
                 )
@@ -140,7 +140,7 @@ struct ContentView: View {
                     onReconnect: {
                         guard let device = kvmDeviceManager.connectedDevice else { return }
                         Task { @MainActor in
-                            await webRTCManager.reconnect(to: device)
+                            await webRTCManager.reconnect(to: device, reason: "Reconnect button")
                         }
                     }
                 )
@@ -936,7 +936,7 @@ struct ConnectionsPopoverView: View {
     let connectedDeviceName: String?
 
     /// Guest resolution, forwarded to the stats section. Telemetry itself is not passed in:
-    /// `ConnectionLatencyLabel` and `StreamStatsSection` observe it themselves, so this body
+    /// `HIDRoundTripLabel`, `SessionHistoryLabel` and `StreamStatsSection` observe it themselves, so this body
     /// does not re-evaluate on every tick.
     let videoSize: CGSize?
 
@@ -1000,9 +1000,11 @@ struct ConnectionsPopoverView: View {
 
                     Spacer()
 
-                    ConnectionLatencyLabel()
+                    HIDRoundTripLabel()
                         .foregroundColor(.secondary)
                 }
+
+                SessionHistoryLabel()
             }
 
             StreamStatsSection(videoSize: videoSize)

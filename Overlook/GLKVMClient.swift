@@ -198,6 +198,8 @@ struct GLKVMMSDWriteResult: Decodable, Hashable {
 struct GLKVMWebSocketEvent: Decodable, Hashable {
     let eventType: String
     let event: JSONValue?
+    /// For a `pong`: the time since the ping it answers, measured by the socket that sent it.
+    var roundTripMs: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case eventType = "event_type"
@@ -1040,6 +1042,8 @@ extension GLKVMClient {
         private var task: URLSessionWebSocketTask?
         private var receiveTask: Task<Void, Never>?
         private var pingTask: Task<Void, Never>?
+        /// When the last ping went out; cleared by the pong that answers it.
+        private var pingSentAt: ContinuousClock.Instant?
         /// True once a frame has been sent successfully; cleared when the socket drops.
         private(set) var isConnected = false
         private(set) var isConnecting = false
@@ -1073,6 +1077,7 @@ extension GLKVMClient {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     if Task.isCancelled { break }
                     do {
+                        await self.markPingSent()
                         try await self.send(eventType: "ping")
                     } catch {
                         // A failed ping is how a silently dropped socket is noticed.
@@ -1107,6 +1112,9 @@ extension GLKVMClient {
             try await sendHidMouseButton(button: "middle", state: false)
         }
 
+        /// A client is single-use: once its socket drops, the event stream ends so the owner
+        /// notices (the ping loop is how a silently dead socket is caught), and the owner opens a
+        /// fresh client rather than reconnecting this one.
         private func markDisconnected() {
             receiveTask?.cancel()
             receiveTask = nil
@@ -1116,6 +1124,20 @@ extension GLKVMClient {
             task = nil
             isConnected = false
             isConnecting = false
+            continuation.finish()
+        }
+
+        private func markPingSent() {
+            pingSentAt = .now
+        }
+
+        /// Attaches the measured round trip to a pong; other events pass through untouched.
+        private func timed(_ event: GLKVMWebSocketEvent) -> GLKVMWebSocketEvent {
+            guard event.eventType == "pong", let sentAt = pingSentAt else { return event }
+            pingSentAt = nil
+            var timedEvent = event
+            timedEvent.roundTripMs = Int(((ContinuousClock.now - sentAt) / .milliseconds(1)).rounded())
+            return timedEvent
         }
 
         func send(eventType: String, event: JSONValue = .object([:])) async throws {
@@ -1222,11 +1244,11 @@ extension GLKVMClient {
                     case .string(let text):
                         guard let data = text.data(using: .utf8) else { continue }
                         if let event = try? decoder.decode(GLKVMWebSocketEvent.self, from: data) {
-                            continuation.yield(event)
+                            continuation.yield(timed(event))
                         }
                     case .data(let data):
                         if let event = try? decoder.decode(GLKVMWebSocketEvent.self, from: data) {
-                            continuation.yield(event)
+                            continuation.yield(timed(event))
                         }
                     @unknown default:
                         break

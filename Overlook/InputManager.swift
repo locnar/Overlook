@@ -23,6 +23,12 @@ class InputManager: ObservableObject {
     private var hidCommandTail: Task<Void, Never>?
     private var hidReconnectTask: Task<Void, Never>?
     private var acceptsHIDCommands = true
+    /// Commands queued on `hidCommandTail` and not yet sent; sampled into telemetry with each pong.
+    private var hidQueueDepth = 0
+    /// Reconnect rounds started because the socket dropped on its own (no input involved). Bounded,
+    /// so a device that keeps refusing is not hammered forever; the next keystroke tries again.
+    private var hidDropReconnectRounds = 0
+    private static let maxHIDDropReconnectRounds = 3
     /// The mouse mode the device itself last reported in a `hid` event. When present it wins over
     /// the WebUI config value: relative reports sent to a device in absolute mode are dropped.
     private var deviceReportedAbsoluteMouse: Bool?
@@ -104,6 +110,19 @@ class InputManager: ObservableObject {
         self.webRTCManager = webRTCManager
     }
 
+    /// The panel's telemetry model; the device group of it is ours to write.
+    private var telemetry: StreamTelemetryModel? { webRTCManager?.telemetry }
+
+    private func publishHIDLink(_ link: StreamTelemetry.HIDLink) {
+        telemetry?.update { snapshot in
+            snapshot.hidLink = link
+            snapshot.hidQueueDepth = hidQueueDepth
+            if link != .connected {
+                snapshot.hidRoundTripMs = nil
+            }
+        }
+    }
+
     func setGLKVMClient(_ client: GLKVMClient?) {
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
@@ -115,6 +134,7 @@ class InputManager: ObservableObject {
         }
         glkvmClient = client
         deviceReportedAbsoluteMouse = nil
+        hidDropReconnectRounds = 0
         isGLKVMAbsoluteMouseMode = true
         pendingAbsoluteMouseMove = nil
         pendingRelativeMouseMove = nil
@@ -351,6 +371,7 @@ class InputManager: ObservableObject {
         hidReconnectTask = nil
         let ws = glkvmWebSocketClient
         glkvmWebSocketClient = nil
+        telemetry?.update { $0.clearDevice() }
         if let ws {
             enqueueHIDCommand(label: "release inputs") {
                 // A socket whose handshake never completed has nothing held on the device, and a
@@ -382,6 +403,7 @@ class InputManager: ObservableObject {
 
         let ws = glkvmWebSocketClient
         glkvmWebSocketClient = nil
+        telemetry?.update { $0.clearDevice() }
         if let ws {
             enqueueHIDCommand(label: "release inputs") {
                 guard await ws.isConnected else { return }
@@ -866,6 +888,9 @@ class InputManager: ObservableObject {
         await existing?.disconnect()
         if let ws {
             startDeviceEventListener(ws)
+            publishHIDLink(.connecting)
+        } else {
+            publishHIDLink(.disconnected)
         }
         refreshMouseModeFromDevice()
     }
@@ -880,7 +905,9 @@ class InputManager: ObservableObject {
     ) -> Task<Void, Never>? {
         guard acceptsHIDCommands else { return nil }
         let predecessor = hidCommandTail
+        hidQueueDepth += 1
         let task = Task { [weak self] in
+            defer { self?.hidQueueDepth -= 1 }
             await predecessor?.value
             guard !Task.isCancelled else { return }
             do {
@@ -896,6 +923,7 @@ class InputManager: ObservableObject {
 
     private func scheduleHIDReconnect() {
         guard acceptsHIDCommands, hidReconnectTask == nil, glkvmClient != nil else { return }
+        publishHIDLink(.reconnecting)
         hidReconnectTask = Task { [weak self] in
             let delays: [UInt64] = [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000]
             for delay in delays {
@@ -1078,25 +1106,53 @@ class InputManager: ObservableObject {
     private func startDeviceEventListener(_ ws: GLKVMClient.WebSocketClient) {
         deviceEventTask?.cancel()
         deviceEventTask = Task { @MainActor [weak self] in
+            var isFirstEvent = true
             for await event in ws.events {
                 if Task.isCancelled { break }
-                self?.handleDeviceEvent(event)
+                guard let self else { return }
+                if isFirstEvent {
+                    // The device answered: the socket is up. (kvmd sends its full state on open.)
+                    isFirstEvent = false
+                    self.hidDropReconnectRounds = 0
+                    self.publishHIDLink(.connected)
+                }
+                self.handleDeviceEvent(event)
+            }
+            // The stream ends when the socket drops (receive error, or the ping loop noticing a
+            // dead connection). Only the current socket's listener may react; a replaced socket's
+            // listener ends too, and must not touch its successor.
+            guard !Task.isCancelled, let self, self.glkvmWebSocketClient === ws else { return }
+            self.publishHIDLink(.disconnected)
+            if self.hidDropReconnectRounds < Self.maxHIDDropReconnectRounds {
+                self.hidDropReconnectRounds += 1
+                self.scheduleHIDReconnect()
             }
         }
     }
 
-    /// kvmd pushes the full `hid` state over the HID socket on connect and whenever it changes
-    /// (this firmware names the event `hid`; older PiKVM releases used `hid_state`).
+    /// Events kvmd pushes over the HID socket. Besides the pong that answers our ping, the ones
+    /// used here are the full/partial state of the `hid` and `streamer` subsystems, which arrive
+    /// once on connect and then whenever something in them changes.
     private func handleDeviceEvent(_ event: GLKVMWebSocketEvent) {
         switch event.eventType {
+        case "pong":
+            telemetry?.update { snapshot in
+                if let roundTripMs = event.roundTripMs {
+                    snapshot.hidRoundTripMs = roundTripMs
+                }
+                snapshot.hidQueueDepth = hidQueueDepth
+            }
         case "hid", "hid_state":
             applyDeviceHIDState(event.event)
+        case "streamer":
+            applyDeviceStreamerState(event.event)
         default:
             break
         }
     }
 
-    /// `hid` event: `mouse.absolute` is the mode the device's HID gadget is actually in.
+    /// `hid` event: `mouse.absolute` is the mode the device's HID gadget is actually in;
+    /// `connected` is its USB link to the target.
     private func applyDeviceHIDState(_ state: JSONValue?) {
         guard let state else { return }
         if let absolute = state["mouse"]?["absolute"]?.boolValue {
@@ -1111,6 +1167,35 @@ class InputManager: ObservableObject {
                 self.deviceMouseModeRefreshDebounce = nil
                 self.refreshMouseModeFromDevice()
             }
+        }
+        if let usbConnected = state["connected"]?.boolValue {
+            telemetry?.update { $0.hidUSBConnected = usbConnected }
+        }
+    }
+
+    /// `streamer` event: partial — only the keys that changed are present. `streamer` carries the
+    /// capture pipeline's own state (ustreamer's `/state`); its `source` is the HDMI input.
+    private func applyDeviceStreamerState(_ state: JSONValue?) {
+        guard let state, let streamer = state["streamer"] else { return }
+        telemetry?.update { snapshot in
+            guard let source = streamer["source"] else {
+                // `streamer: null` — the capture pipeline is not running, so nothing is known.
+                snapshot.hdmiOnline = nil
+                snapshot.hdmiResolution = nil
+                snapshot.hdmiCapturedFps = nil
+                snapshot.hdmiDesiredFps = nil
+                return
+            }
+            snapshot.hdmiOnline = source["online"]?.boolValue
+            if let width = source["resolution"]?["width"]?.intValue,
+               let height = source["resolution"]?["height"]?.intValue,
+               width > 0, height > 0 {
+                snapshot.hdmiResolution = "\(width)x\(height)"
+            } else {
+                snapshot.hdmiResolution = nil
+            }
+            snapshot.hdmiCapturedFps = source["captured_fps"]?.intValue
+            snapshot.hdmiDesiredFps = source["desired_fps"]?.intValue
         }
     }
 
