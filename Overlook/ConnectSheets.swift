@@ -1,5 +1,9 @@
 import SwiftUI
 
+// Both sheets hand the password to `onConnect` as a value and clear the bound field on submit,
+// cancel, and dismissal, so the secret does not sit in view state between prompts. A sheet can
+// submit once: Enter and the Connect button can otherwise both fire for a single keystroke.
+
 struct ManualConnectSheet: View {
     @Binding var isPresented: Bool
     @Binding var hostPort: String
@@ -7,15 +11,25 @@ struct ManualConnectSheet: View {
     @Binding var password: String
     @Binding var savePassword: Bool
 
-    let onConnect: () -> Void
+    let onConnect: (String) -> Void
+
+    @State private var hasSubmitted = false
 
     private var canConnect: Bool {
         !hostPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func submit() {
-        guard canConnect else { return }
-        onConnect()
+        guard canConnect, !hasSubmitted else { return }
+        hasSubmitted = true
+        let submittedPassword = password
+        password = ""
+        onConnect(submittedPassword)
+        isPresented = false
+    }
+
+    private func cancel() {
+        password = ""
         isPresented = false
     }
 
@@ -38,7 +52,7 @@ struct ManualConnectSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    isPresented = false
+                    cancel()
                 }
                 Button("Connect") {
                     submit()
@@ -50,6 +64,12 @@ struct ManualConnectSheet: View {
         .padding()
         .frame(width: 420)
         .onSubmit(submit)
+        .onAppear {
+            hasSubmitted = false
+        }
+        .onDisappear {
+            password = ""
+        }
     }
 }
 
@@ -59,15 +79,26 @@ struct PasswordPromptSheet: View {
     @Binding var savePassword: Bool
 
     let onCancel: () -> Void
-    let onConnect: () -> Void
+    let onConnect: (String) -> Void
+
+    @State private var hasSubmitted = false
 
     private var canConnect: Bool {
         !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func submit() {
-        guard canConnect else { return }
-        onConnect()
+        guard canConnect, !hasSubmitted else { return }
+        hasSubmitted = true
+        let submittedPassword = password
+        password = ""
+        onConnect(submittedPassword)
+        isPresented = false
+    }
+
+    private func cancel() {
+        password = ""
+        onCancel()
         isPresented = false
     }
 
@@ -84,8 +115,7 @@ struct PasswordPromptSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    onCancel()
-                    isPresented = false
+                    cancel()
                 }
                 Button("Connect") {
                     submit()
@@ -97,5 +127,11 @@ struct PasswordPromptSheet: View {
         .padding()
         .frame(width: 420)
         .onSubmit(submit)
+        .onAppear {
+            hasSubmitted = false
+        }
+        .onDisappear {
+            password = ""
+        }
     }
 }

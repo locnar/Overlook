@@ -345,8 +345,8 @@ struct ContentView: View {
                 port: $manualPort,
                 password: $manualPassword,
                 savePassword: $manualSavePassword,
-                onConnect: {
-                    manualConnect()
+                onConnect: { password in
+                    manualConnect(password: password)
                 }
             )
         }
@@ -357,14 +357,12 @@ struct ContentView: View {
                 savePassword: $pendingSavePassword,
                 onCancel: {
                     pendingPasswordDevice = nil
-                    pendingPassword = ""
                 },
-                onConnect: {
+                onConnect: { password in
                     if let device = pendingPasswordDevice {
-                        connectToDevice(device, password: pendingPassword, savePassword: pendingSavePassword)
+                        connectToDevice(device, password: password, savePassword: pendingSavePassword)
                     }
                     pendingPasswordDevice = nil
-                    pendingPassword = ""
                 }
             )
         }
@@ -496,7 +494,7 @@ struct ContentView: View {
         }
     }
 
-    private func manualConnect() {
+    private func manualConnect(password submittedPassword: String) {
         let trimmed = manualHostPort.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -525,7 +523,7 @@ struct ContentView: View {
             suppressDeviceAutoConnect = false
         }
 
-        let password = manualPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = submittedPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         connectToDevice(device, password: password.isEmpty ? nil : password, savePassword: manualSavePassword)
     }
 
