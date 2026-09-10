@@ -53,7 +53,9 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let port: Int
         let name: String
         let type: KVMDeviceType
-        let authToken: String
+        /// Legacy: tokens now live in the keychain (KeychainTokenStore). Only present in records
+        /// written before the migration; never written anymore.
+        let authToken: String?
         let capabilities: Set<KVMCapability>
     }
     
@@ -621,6 +623,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         var current = readPersistedDevices()
         current.removeAll { $0.host == host && $0.port == port }
         writePersistedDevices(current)
+        KeychainTokenStore.deleteToken(host: host, port: port)
         DeviceTrustStore.shared.reset(host: host, port: port)
 
         availableDevices.removeAll { $0.host == host && $0.port == port }
@@ -693,7 +696,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             port: device.port,
             name: device.name,
             type: device.type,
-            authToken: device.authToken,
+            authToken: nil,
             capabilities: device.capabilities
         )
 
@@ -704,6 +707,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             current.append(record)
         }
         writePersistedDevices(current)
+        KeychainTokenStore.setToken(device.authToken, host: device.host, port: device.port)
 
         var saved = device
         saved.id = savedDeviceId(host: device.host, port: device.port)
@@ -718,16 +722,44 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let records = readPersistedDevices()
         guard !records.isEmpty else { return }
 
+        // One-time migration: records written before tokens moved to the keychain still carry the
+        // token in UserDefaults. Move it and rewrite the record without it — but only once the
+        // keychain write has succeeded, so a refused write does not lose the token.
+        var rewritten: [PersistedDevice] = []
+        var needsRewrite = false
+
         let devices: [KVMDevice] = records.map { record in
-            KVMDevice(
+            var token = KeychainTokenStore.token(host: record.host, port: record.port) ?? ""
+            var stored = record
+            if let legacy = record.authToken, !legacy.isEmpty {
+                if token.isEmpty {
+                    token = legacy
+                }
+                if KeychainTokenStore.setToken(token, host: record.host, port: record.port) {
+                    stored = PersistedDevice(
+                        host: record.host,
+                        port: record.port,
+                        name: record.name,
+                        type: record.type,
+                        authToken: nil,
+                        capabilities: record.capabilities
+                    )
+                    needsRewrite = true
+                }
+            }
+            rewritten.append(stored)
+            return KVMDevice(
                 id: savedDeviceId(host: record.host, port: record.port),
                 name: record.name,
                 host: record.host,
                 port: record.port,
                 type: record.type,
-                authToken: record.authToken,
+                authToken: token,
                 capabilities: record.capabilities
             )
+        }
+        if needsRewrite {
+            writePersistedDevices(rewritten)
         }
         availableDevices = removeDuplicates(from: devices).sorted { $0.name < $1.name }
     }

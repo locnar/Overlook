@@ -30,6 +30,7 @@
 		0100001E /* WebRTCAudioDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200001D /* WebRTCAudioDevice.swift */; };
 		0100001F /* WebRTCFactoryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = 02000021 /* WebRTCFactoryBuilder.m */; };
 		01000020 /* DeviceTrustStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000022 /* DeviceTrustStore.swift */; };
+		01000021 /* KeychainTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000023 /* KeychainTokenStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -59,6 +60,7 @@
 		02000020 /* WebRTCFactoryBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebRTCFactoryBuilder.h; sourceTree = "<group>"; };
 		02000021 /* WebRTCFactoryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WebRTCFactoryBuilder.m; sourceTree = "<group>"; };
 		02000022 /* DeviceTrustStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTrustStore.swift; sourceTree = "<group>"; };
+		02000023 /* KeychainTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainTokenStore.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -105,6 +107,7 @@
 				02000008 /* OCRManager.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
+				02000023 /* KeychainTokenStore.swift */,
 				02000012 /* HardwareControlManager.swift */,
 				02000010 /* MenuBarAgent.swift */,
 				02000014 /* TailscaleManager.swift */,
@@ -216,6 +219,7 @@
 				01000008 /* OCRManager.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
+				01000021 /* KeychainTokenStore.swift in Sources */,
 				01000012 /* HardwareControlManager.swift in Sources */,
 				01000010 /* MenuBarAgent.swift in Sources */,
 				01000014 /* TailscaleManager.swift in Sources */,

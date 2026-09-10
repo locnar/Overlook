@@ -316,7 +316,7 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
 ### Security notes
 
 - Device certificates are pinned on first use, like SSH host keys: the first certificate a device presents is recorded, and later connections must match it. If it changes (for example after a factory reset) Overlook refuses to connect until you accept the new certificate from the prompt or **Forget** the device. Certificates that pass normal system trust are accepted without pinning. Ports 80/8080 use plain HTTP and are not protected.
-- Treat your `auth_token` like a password.
+- Device auth tokens are stored in your login keychain (one item per device, service `com.rcawston.Overlook.kvm-auth-token`), not in preferences; tokens saved by earlier versions are moved there on first launch. Treat them like passwords. Ad-hoc signed development builds may prompt for keychain access after a rebuild — choose Always Allow.
 
 ---
 
