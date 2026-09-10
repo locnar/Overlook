@@ -238,35 +238,12 @@ final class GLKVMClient {
         case decodingFailed
     }
 
-    private final class SessionDelegate: NSObject, URLSessionDelegate {
-        let allowInsecureTLS: Bool
-
-        init(allowInsecureTLS: Bool) {
-            self.allowInsecureTLS = allowInsecureTLS
-        }
-
-        func urlSession(
-            _ session: URLSession,
-            didReceive challenge: URLAuthenticationChallenge,
-            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-        ) {
-            guard allowInsecureTLS,
-                  challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-                  let trust = challenge.protectionSpace.serverTrust else {
-                completionHandler(.performDefaultHandling, nil)
-                return
-            }
-
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        }
-    }
-
     let baseURL: URL
     var authToken: String?
 
     private let session: URLSession
 
-    init(host: String, port: Int = 443, authToken: String? = nil, allowInsecureTLS: Bool = true) throws {
+    init(host: String, port: Int = 443, authToken: String? = nil) throws {
         let scheme = Self.defaultHTTPScheme(for: port)
         guard let url = URL(string: "\(scheme)://\(host):\(port)") else {
             throw ClientError.invalidBaseURL
@@ -279,7 +256,8 @@ final class GLKVMClient {
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
 
-        self.session = URLSession(configuration: config, delegate: SessionDelegate(allowInsecureTLS: allowInsecureTLS), delegateQueue: nil)
+        // Self-signed device certificates are pinned on first use; see DeviceTrustStore.
+        self.session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(), delegateQueue: nil)
     }
 
     static func defaultHTTPScheme(for port: Int) -> String {
@@ -295,8 +273,8 @@ final class GLKVMClient {
         defaultHTTPScheme(for: port) == "https" ? "wss" : "ws"
     }
 
-    convenience init(device: KVMDevice, allowInsecureTLS: Bool = true) throws {
-        try self.init(host: device.host, port: device.port, authToken: device.authToken.isEmpty ? nil : device.authToken, allowInsecureTLS: allowInsecureTLS)
+    convenience init(device: KVMDevice) throws {
+        try self.init(host: device.host, port: device.port, authToken: device.authToken.isEmpty ? nil : device.authToken)
     }
 
     private func makeURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {

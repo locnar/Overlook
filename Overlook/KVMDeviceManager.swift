@@ -16,7 +16,9 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     private var scanTimer: Timer?
     private var deviceDiscoverySessions: [NWBrowser] = []
 
-    private final class InsecureTLSDelegate: NSObject, URLSessionDelegate {
+    /// Discovery probes accept any certificate: they hit arbitrary LAN hosts, send no credentials,
+    /// and must not pin whatever those hosts present. Real connections go through DeviceTrustStore.
+    private final class ProbeTLSDelegate: NSObject, URLSessionDelegate {
         func urlSession(
             _ session: URLSession,
             didReceive challenge: URLAuthenticationChallenge,
@@ -35,7 +37,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 2
         config.timeoutIntervalForResource = 3
-        return URLSession(configuration: config, delegate: InsecureTLSDelegate(), delegateQueue: nil)
+        return URLSession(configuration: config, delegate: ProbeTLSDelegate(), delegateQueue: nil)
     }()
 
     private let commonProbeTargets: [(host: String, port: Int)] = [
@@ -619,6 +621,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         var current = readPersistedDevices()
         current.removeAll { $0.host == host && $0.port == port }
         writePersistedDevices(current)
+        DeviceTrustStore.shared.reset(host: host, port: port)
 
         availableDevices.removeAll { $0.host == host && $0.port == port }
         if connectedDevice?.host == host, connectedDevice?.port == port {
@@ -651,13 +654,18 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             finalDevice = device
         }
 
-        guard let client = try? GLKVMClient(device: finalDevice, allowInsecureTLS: true) else {
+        guard let client = try? GLKVMClient(device: finalDevice) else {
             throw KVMError.connectionFailed
         }
+
+        DeviceTrustStore.shared.clearMismatch(host: finalDevice.host, port: finalDevice.port)
 
         do {
             try await client.authCheck()
         } catch {
+            if let mismatch = DeviceTrustStore.shared.pendingMismatch(host: finalDevice.host, port: finalDevice.port) {
+                throw KVMError.certificateChanged(host: mismatch.host, port: mismatch.port, fingerprint: mismatch.actual)
+            }
             if let password, !password.isEmpty {
                 let token = try await client.authLogin(user: user, password: password)
                 client.authToken = token
@@ -793,6 +801,12 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         connectedDevice = nil
         glkvmClient = nil
     }
+
+    /// Drops the pinned certificate for a device so the next connection pins the one it presents.
+    /// Only call this after the user has confirmed the change is expected.
+    func trustNewCertificate(host: String, port: Int) {
+        DeviceTrustStore.shared.reset(host: host, port: port)
+    }
     
     deinit {
         networkMonitor?.cancel()
@@ -888,12 +902,14 @@ enum KVMCapability: String, Codable, CaseIterable {
     }
 }
 
-enum KVMError: Error, LocalizedError {
+enum KVMError: Error, LocalizedError, Equatable, CustomStringConvertible {
     case deviceNotFound
     case connectionFailed
     case authenticationFailed
     case unsupportedCapability
     case networkUnavailable
+    /// The device presented a certificate other than the one pinned on first connection.
+    case certificateChanged(host: String, port: Int, fingerprint: String)
     
     var errorDescription: String? {
         switch self {
@@ -907,6 +923,12 @@ enum KVMError: Error, LocalizedError {
             return "Device does not support this capability"
         case .networkUnavailable:
             return "Network is not available"
+        case .certificateChanged(let host, let port, let fingerprint):
+            return "The certificate for \(host):\(port) has changed since you first connected (SHA-256 \(DeviceTrustStore.display(fingerprint))). If you reset or re-flashed the KVM, forget the device or accept the new certificate from the main window; otherwise the connection may be intercepted."
         }
+    }
+
+    var description: String {
+        errorDescription ?? String(reflecting: self)
     }
 }

@@ -25,6 +25,7 @@ struct ContentView: View {
     @State private var pendingPasswordDevice: KVMDevice?
     @State private var pendingPassword = ""
     @State private var connectionErrorMessage: String?
+    @State private var certificatePrompt: CertificateChangePrompt?
 
     @State private var suppressDeviceAutoConnect = false
 
@@ -386,6 +387,25 @@ struct ContentView: View {
         } message: {
             Text(connectionErrorMessage ?? "")
         }
+        .alert(
+            "Certificate Changed",
+            isPresented: Binding(
+                get: { certificatePrompt != nil },
+                set: { if !$0 { certificatePrompt = nil } }
+            ),
+            presenting: certificatePrompt
+        ) { prompt in
+            Button("Cancel", role: .cancel) {
+                certificatePrompt = nil
+            }
+            Button("Trust New Certificate", role: .destructive) {
+                kvmDeviceManager.trustNewCertificate(host: prompt.host, port: prompt.port)
+                certificatePrompt = nil
+                connectToDevice(prompt.device, password: prompt.password)
+            }
+        } message: { prompt in
+            Text(prompt.message)
+        }
         .toolbar {
             if isFullscreen == false {
                 ToolbarItemGroup(placement: .automatic) {
@@ -450,6 +470,12 @@ struct ContentView: View {
                     await MainActor.run {
                         pendingPasswordDevice = device
                         showingPasswordPrompt = true
+                    }
+                } else if let kvmError = error as? KVMError,
+                          case .certificateChanged(let host, let port, let fingerprint) = kvmError {
+                    await MainActor.run {
+                        isConnected = false
+                        certificatePrompt = CertificateChangePrompt(device: device, host: host, port: port, fingerprint: fingerprint, password: password)
                     }
                 } else {
                     print("Failed to connect: \(error)")
@@ -596,6 +622,25 @@ struct ContentView: View {
         pausedCaptureKeyboardWasEnabled = nil
         pausedCaptureMouseWasEnabled = nil
         isInputCapturePausedForUI = false
+    }
+}
+
+/// A device presented a certificate other than the one pinned on first connection.
+private struct CertificateChangePrompt: Identifiable {
+    let device: KVMDevice
+    let host: String
+    let port: Int
+    let fingerprint: String
+    /// Password from the attempt that hit the mismatch, so the retry after trusting does not
+    /// prompt for it again.
+    let password: String?
+
+    var id: String { "\(host):\(port):\(fingerprint)" }
+
+    var message: String {
+        "\(host):\(port) presented a certificate that does not match the one recorded when you first connected.\n\n"
+            + "New fingerprint (SHA-256):\n\(DeviceTrustStore.display(fingerprint))\n\n"
+            + "If you reset or re-flashed the KVM, trust the new certificate. Otherwise stop here — the connection may be intercepted."
     }
 }
 

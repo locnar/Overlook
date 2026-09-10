@@ -44,29 +44,6 @@ struct InputEvent: Codable {
 #if canImport(WebRTC)
 @MainActor
 class WebRTCManager: NSObject, ObservableObject {
-    private final class SessionDelegate: NSObject, URLSessionDelegate {
-        let allowInsecureTLS: Bool
-
-        init(allowInsecureTLS: Bool) {
-            self.allowInsecureTLS = allowInsecureTLS
-        }
-
-        func urlSession(
-            _ session: URLSession,
-            didReceive challenge: URLAuthenticationChallenge,
-            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-        ) {
-            guard allowInsecureTLS,
-                  challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-                  let trust = challenge.protectionSpace.serverTrust else {
-                completionHandler(.performDefaultHandling, nil)
-                return
-            }
-
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        }
-    }
-
     @Published var videoView: RTCMTLNSVideoView?
     @Published var isConnected = false
     @Published var latency: Int = 0
@@ -141,7 +118,6 @@ class WebRTCManager: NSObject, ObservableObject {
     private let streamStallThresholdSeconds: CFTimeInterval = 3.0
     private let initialFrameTimeoutSeconds: CFTimeInterval = 5.0
     
-    private let allowInsecureTLS = true
     private var signalingSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
 
@@ -438,7 +414,8 @@ class WebRTCManager: NSObject, ObservableObject {
         print("WebRTC signaling connect: \(url.absoluteString)")
 
         let config = URLSessionConfiguration.default
-        let session = URLSession(configuration: config, delegate: SessionDelegate(allowInsecureTLS: allowInsecureTLS), delegateQueue: nil)
+        // Same host:port as the HTTP API, so the certificate pinned there applies here too.
+        let session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(), delegateQueue: nil)
         signalingSession = session
 
         var request = URLRequest(url: url)
