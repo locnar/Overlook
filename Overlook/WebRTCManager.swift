@@ -112,12 +112,18 @@ class WebRTCManager: NSObject, ObservableObject {
     
     private var signalingSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
+    private var signalingListenerTask: Task<Void, Never>?
+    /// Bumped on every connect and teardown so work started for an earlier connection — the
+    /// signaling listener, in-flight transactions — cannot act on a later one.
+    private var connectionGeneration = 0
 
     private var janusSessionId: Int?
     private var janusHandleId: Int?
     private var janusAudioHandleId: Int?
     private var janusKeepAliveTimer: Timer?
     private var janusWaiters: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private var janusTimeoutTasks: [String: Task<Void, Never>] = [:]
+    private static let janusTransactionTimeoutNs: UInt64 = 8_000_000_000
 
     private var isFrameCaptureEnabled: Bool = false
     private var lastFrameCaptureTime: CFTimeInterval = 0
@@ -275,6 +281,7 @@ class WebRTCManager: NSObject, ObservableObject {
     }
     
     func connect(to device: KVMDevice) async throws {
+        connectionGeneration += 1
         lastConnectedDevice = device
         setupWebRTC()
 
@@ -417,12 +424,15 @@ class WebRTCManager: NSObject, ObservableObject {
         request.setValue(device.originURL, forHTTPHeaderField: "Origin")
         request.setValue("janus-protocol", forHTTPHeaderField: "Sec-WebSocket-Protocol")
 
-        webSocketTask = session.webSocketTask(with: request)
-        
-        webSocketTask?.resume()
+        let socketTask = session.webSocketTask(with: request)
+        webSocketTask = socketTask
+        socketTask.resume()
 
-        Task {
-            await listenForSignalingMessages()
+        let generation = connectionGeneration
+        signalingListenerTask?.cancel()
+        signalingListenerTask = Task { [weak self] in
+            guard let self else { return }
+            await self.listenForSignalingMessages(socket: socketTask, generation: generation)
         }
 
         // Janus session setup
@@ -577,6 +587,14 @@ class WebRTCManager: NSObject, ObservableObject {
     private func waitForJanusTransaction(_ transaction: String) async throws -> [String: Any] {
         try await withCheckedThrowingContinuation { continuation in
             janusWaiters[transaction] = continuation
+            // A device that never answers used to leave connect() suspended forever.
+            janusTimeoutTasks[transaction] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.janusTransactionTimeoutNs)
+                guard !Task.isCancelled, let self,
+                      let waiter = self.janusWaiters.removeValue(forKey: transaction) else { return }
+                self.janusTimeoutTasks.removeValue(forKey: transaction)
+                waiter.resume(throwing: WebRTCError.signalingTimeout)
+            }
         }
     }
 
@@ -605,12 +623,15 @@ class WebRTCManager: NSObject, ObservableObject {
         return comps.url ?? url
     }
     
-    private func listenForSignalingMessages() async {
-        while let webSocketTask = webSocketTask {
+    private func listenForSignalingMessages(socket: URLSessionWebSocketTask, generation: Int) async {
+        while !Task.isCancelled, generation == connectionGeneration {
             do {
-                let message = try await webSocketTask.receive()
+                let message = try await socket.receive()
+                guard generation == connectionGeneration else { return }
                 await handleSignalingMessage(message)
             } catch {
+                // A listener for a torn-down connection must not touch the state of its successor.
+                guard !Task.isCancelled, generation == connectionGeneration else { return }
                 print("WebSocket receive error: \(error)")
                 isConnecting = false
                 if isConnected || hasEverConnectedToStream || lastDisconnectReason == nil {
@@ -646,6 +667,7 @@ class WebRTCManager: NSObject, ObservableObject {
     private func handleJanusMessage(_ message: [String: Any]) async {
         if let transaction = message["transaction"] as? String,
            let waiter = janusWaiters.removeValue(forKey: transaction) {
+            janusTimeoutTasks.removeValue(forKey: transaction)?.cancel()
             waiter.resume(returning: message)
             return
         }
@@ -1166,6 +1188,10 @@ class WebRTCManager: NSObject, ObservableObject {
     }
     
     func disconnect() {
+        connectionGeneration += 1
+        signalingListenerTask?.cancel()
+        signalingListenerTask = nil
+
         connectionTimer?.invalidate()
         connectionTimer = nil
 
@@ -1179,12 +1205,17 @@ class WebRTCManager: NSObject, ObservableObject {
         janusAudioHandleId = nil
         let waiters = janusWaiters
         janusWaiters.removeAll()
+        janusTimeoutTasks.values.forEach { $0.cancel() }
+        janusTimeoutTasks.removeAll()
         for (_, waiter) in waiters {
             waiter.resume(throwing: WebRTCError.signalingConnectionLost)
         }
         
         webSocketTask?.cancel()
         webSocketTask = nil
+        // A URLSession retains itself and its delegate until invalidated; one was leaked per connect.
+        signalingSession?.invalidateAndCancel()
+        signalingSession = nil
         
         dataChannel?.close()
         dataChannel = nil
@@ -1466,6 +1497,7 @@ enum WebRTCError: Error {
     case factoryNotInitialized
     case invalidSignalingURL
     case signalingConnectionLost
+    case signalingTimeout
     case peerConnectionFailed
 }
 
