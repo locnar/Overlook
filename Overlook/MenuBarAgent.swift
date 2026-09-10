@@ -372,6 +372,8 @@ class MenuBarAgent: NSObject, ObservableObject {
 #if canImport(WebRTC)
         do {
             try await webRTCManager.connect(to: connectedDevice)
+        } catch WebRTCError.superseded {
+            // The operator's own later action replaced this attempt; nothing to report.
         } catch {
             // still consider ourselves connected at the API layer
             showError(title: "WebRTC connect failed", message: String(describing: error))

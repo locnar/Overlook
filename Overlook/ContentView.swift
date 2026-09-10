@@ -459,6 +459,8 @@ struct ContentView: View {
  #if canImport(WebRTC)
                 do {
                     try await webRTCManager.connect(to: connectedDevice)
+                } catch WebRTCError.superseded {
+                    // The operator's own later action replaced this attempt; nothing to report.
                 } catch {
                     print("WebRTC connect failed (API is still connected): \(error)")
                 }

@@ -113,9 +113,14 @@ class WebRTCManager: NSObject, ObservableObject {
     private var signalingSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
     private var signalingListenerTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     /// Bumped on every connect and teardown so work started for an earlier connection — the
     /// signaling listener, in-flight transactions — cannot act on a later one.
     private var connectionGeneration = 0
+    /// Stall-triggered reconnects since video last flowed. Bounded, because a device that is up
+    /// but has nothing to send (no HDMI signal, say) would otherwise be torn down every few seconds.
+    private var consecutiveStallReconnects = 0
+    private static let maxConsecutiveStallReconnects = 2
 
     private var janusSessionId: Int?
     private var janusHandleId: Int?
@@ -281,7 +286,26 @@ class WebRTCManager: NSObject, ObservableObject {
     }
     
     func connect(to device: KVMDevice) async throws {
+        // An operator connect supersedes, and releases, whatever is in flight: a retry loop, an
+        // attempt still waiting on Janus, or the live session when switching devices.
+        consecutiveStallReconnects = 0
+        try await replaceConnection(with: device)
+    }
+
+    /// Tears down the current connection and connects to `device`, carrying the frame-capture
+    /// setting across because teardown clears it.
+    private func replaceConnection(with device: KVMDevice) async throws {
+        let captureEnabled = isFrameCaptureEnabled
+        tearDown(cancelReconnect: true)
+        try await performConnect(to: device)
+        if captureEnabled {
+            setFrameCaptureEnabled(true)
+        }
+    }
+
+    private func performConnect(to device: KVMDevice) async throws {
         connectionGeneration += 1
+        let generation = connectionGeneration
         lastConnectedDevice = device
         setupWebRTC()
 
@@ -334,6 +358,8 @@ class WebRTCManager: NSObject, ObservableObject {
 
             if micEnabled {
                 let granted = await ensureMicrophoneAccess()
+                // The permission prompt can outlive this attempt.
+                guard generation == connectionGeneration else { throw WebRTCError.superseded }
                 if granted {
                     setupLocalMicrophoneTrackIfNeeded(factory: factory, peerConnection: audioPeerConnection ?? peerConnection)
                 }
@@ -344,25 +370,87 @@ class WebRTCManager: NSObject, ObservableObject {
             
             // Connect to signaling server
             try await connectToSignalingServer(device: device)
-            
+            guard generation == connectionGeneration else { throw WebRTCError.superseded }
+
             // Start connection quality monitoring
             startLatencyMonitoring()
             startStreamHealthMonitoring()
         } catch {
+            // A newer connect or teardown has replaced this attempt's state; it is not ours to reset.
+            guard generation == connectionGeneration else { throw WebRTCError.superseded }
             let reason = "Connect failed: \(String(describing: error))"
-            disconnect()
+            tearDown(cancelReconnect: false)
             lastDisconnectReason = reason
             throw error
         }
     }
 
     func reconnect(to device: KVMDevice) async {
-        disconnect()
+        // An explicit reconnect supersedes any retry loop in progress.
+        consecutiveStallReconnects = 0
         do {
-            try await connect(to: device)
+            try await replaceConnection(with: device)
         } catch {
+            if case WebRTCError.superseded = error { return }
             isConnecting = false
-            lastDisconnectReason = "Reconnect failed: \(String(describing: error))"
+            showConnectionLost("Reconnect failed: \(String(describing: error))")
+        }
+    }
+
+    /// Reconnects to the last device after a signaling, ICE, or stream failure, retrying with
+    /// backoff. One loop at a time; an operator connect or disconnect cancels it. With
+    /// `skipIfRecovered` the loop stands down if the connection is back up when the first delay
+    /// ends (ICE `disconnected` is often transient).
+    @discardableResult
+    private func requestReconnect(
+        reason: String,
+        delayNanoseconds: UInt64 = 500_000_000,
+        skipIfRecovered: Bool = false
+    ) -> Bool {
+        guard reconnectTask == nil, let device = lastConnectedDevice else { return false }
+        lastDisconnectReason = reason
+        reconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Whoever cancelled this loop has already replaced the handle; don't wipe theirs.
+            defer { if !Task.isCancelled { self.reconnectTask = nil } }
+            let captureEnabled = self.isFrameCaptureEnabled
+            let delays: [UInt64] = [delayNanoseconds, 1_000_000_000, 2_000_000_000, 4_000_000_000]
+            for (index, delay) in delays.enumerated() {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return }
+                if skipIfRecovered, index == 0, self.isConnected { return }
+                self.tearDown(cancelReconnect: false)
+                // Keep the "Connection Lost" overlay up between attempts instead of a blank surface.
+                self.showConnectionLost(reason)
+                do {
+                    try await self.performConnect(to: device)
+                    if captureEnabled {
+                        self.setFrameCaptureEnabled(true)
+                    }
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    if case WebRTCError.superseded = error { return }
+                    self.showConnectionLost("\(reason) · retry \(index + 1) failed: \(error.localizedDescription)")
+                }
+            }
+            // Every retry failed: the overlay stays, with its Reconnect button, for the operator.
+        }
+        return true
+    }
+
+    /// Puts the surface into its "Connection Lost" state with `reason` and a Reconnect button.
+    private func showConnectionLost(_ reason: String) {
+        hasEverConnectedToStream = true
+        lastDisconnectReason = reason
+    }
+
+    /// A stalled stream is reconnected at most a couple of times in a row; after that the overlay
+    /// stays up with its Reconnect button and the decision is the operator's.
+    private func reconnectAfterStall() {
+        guard consecutiveStallReconnects < Self.maxConsecutiveStallReconnects else { return }
+        if requestReconnect(reason: "Video stream stalled") {
+            consecutiveStallReconnects += 1
         }
     }
 
@@ -527,13 +615,17 @@ class WebRTCManager: NSObject, ObservableObject {
 
     private func startJanusKeepAlive() {
         janusKeepAliveTimer?.invalidate()
+        let generation = connectionGeneration
         janusKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
+                guard generation == self.connectionGeneration else { return }
                 do {
                     try await self.sendJanusKeepAlive()
                 } catch {
-                    // Ignore keepalive errors, next user action will reconnect
+                    // A keepalive cancelled by a teardown must not reconnect what was just hung up.
+                    guard generation == self.connectionGeneration else { return }
+                    self.requestReconnect(reason: "Signaling keepalive failed")
                 }
             }
         }
@@ -637,6 +729,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 if isConnected || hasEverConnectedToStream || lastDisconnectReason == nil {
                     lastDisconnectReason = "Signaling connection lost"
                 }
+                requestReconnect(reason: "Signaling connection lost")
                 break
             }
         }
@@ -822,8 +915,14 @@ class WebRTCManager: NSObject, ObservableObject {
                     if self.isStreamStalled == false {
                         self.setIsStreamStalled(true)
                         self.setLastDisconnectReason("Video stream stalled")
+                        self.reconnectAfterStall()
                     }
                     return
+                }
+
+                if let age, age <= self.streamStallThresholdSeconds {
+                    // Video is flowing; a later stall starts with a fresh retry budget.
+                    self.consecutiveStallReconnects = 0
                 }
 
                 if lastFrame == nil,
@@ -832,6 +931,7 @@ class WebRTCManager: NSObject, ObservableObject {
                     if self.isStreamStalled == false {
                         self.setIsStreamStalled(true)
                         self.setLastDisconnectReason("Video stream stalled")
+                        self.reconnectAfterStall()
                     }
                     return
                 }
@@ -1188,9 +1288,22 @@ class WebRTCManager: NSObject, ObservableObject {
     }
     
     func disconnect() {
+        // Nothing may auto-reconnect after an operator disconnect.
+        lastConnectedDevice = nil
+        consecutiveStallReconnects = 0
+        tearDown(cancelReconnect: true)
+    }
+
+    /// Tears the connection down. `cancelReconnect` is false when the caller is the retry loop
+    /// itself (or a reconnect that should not kill a pending retry).
+    private func tearDown(cancelReconnect: Bool) {
         connectionGeneration += 1
         signalingListenerTask?.cancel()
         signalingListenerTask = nil
+        if cancelReconnect {
+            reconnectTask?.cancel()
+            reconnectTask = nil
+        }
 
         connectionTimer?.invalidate()
         connectionTimer = nil
@@ -1333,6 +1446,13 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
                 } else if stateChanged == .closed {
                     lastDisconnectReason = "Video connection closed"
                     isConnecting = false
+                }
+                if stateChanged == .disconnected || stateChanged == .failed {
+                    requestReconnect(
+                        reason: lastDisconnectReason ?? "Video connection lost",
+                        delayNanoseconds: 750_000_000,
+                        skipIfRecovered: stateChanged == .disconnected
+                    )
                 }
             }
             print("ICE connection state changed: \(stateChanged)")
@@ -1499,6 +1619,8 @@ enum WebRTCError: Error {
     case signalingConnectionLost
     case signalingTimeout
     case peerConnectionFailed
+    /// A newer connect or teardown replaced this attempt while it was in flight.
+    case superseded
 }
 
 struct InputMessage: Codable {
