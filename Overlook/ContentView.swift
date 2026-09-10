@@ -62,7 +62,7 @@ struct ContentView: View {
     }
 
     /// Everything in the window title that changes at connection-level frequency: device,
-    /// state, guest resolution, mouse mode. The live kbps/fps half is appended by
+    /// state, mouse mode. The live HID RTT / kbps / fps part is inserted by
     /// `WindowTitleTelemetryHost`, which observes `StreamTelemetryModel` on its own, so a stats
     /// tick never re-evaluates this view's body.
     private var windowTitlePrefix: String {
@@ -86,14 +86,7 @@ struct ContentView: View {
             connectionState = "Connected"
         }
 
-        let resolution: String
-        if let size = webRTCManager.videoSize {
-            resolution = "\(Int(size.width))x\(Int(size.height))"
-        } else {
-            resolution = "—"
-        }
-
-        return "Overlook - \(deviceLabel) / \(connectionState) / \(resolution)"
+        return "Overlook - \(deviceLabel) / \(connectionState)"
     }
 
     /// Trailing mouse-mode segment of the window title; empty when not connected.
@@ -899,9 +892,12 @@ private struct WindowTitleTelemetryHost: View {
 
     var body: some View {
         let telemetry = telemetryModel.snapshot
+        // The HID round trip takes the slot the guest resolution used to have: it is the number
+        // that says whether typing will feel right, and the resolution is in the Connections panel.
+        let rtt = telemetry.hidRoundTripMs.map { "\($0) ms RTT" } ?? "— ms RTT"
         let kbps = telemetry.videoKbps.map { "\($0) kbps" } ?? "— kbps"
         let fps = telemetry.videoFps.map { "\($0) fps dynamic" } ?? "— fps dynamic"
-        WindowTitleSetter(title: "\(titlePrefix) / \(kbps) / \(fps)\(titleSuffix)")
+        WindowTitleSetter(title: "\(titlePrefix) / \(rtt) / \(kbps) / \(fps)\(titleSuffix)")
     }
 }
 
