@@ -1040,6 +1040,9 @@ extension GLKVMClient {
         private var task: URLSessionWebSocketTask?
         private var receiveTask: Task<Void, Never>?
         private var pingTask: Task<Void, Never>?
+        /// True once a frame has been sent successfully; cleared when the socket drops.
+        private(set) var isConnected = false
+        private(set) var isConnecting = false
 
         init(session: URLSession, request: URLRequest) {
             self.session = session
@@ -1056,6 +1059,7 @@ extension GLKVMClient {
             guard task == nil else { return }
             let ws = session.webSocketTask(with: request)
             task = ws
+            isConnecting = true
             ws.resume()
 
             receiveTask = Task { [weak self] in
@@ -1068,7 +1072,13 @@ extension GLKVMClient {
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     if Task.isCancelled { break }
-                    try? await self.send(eventType: "ping")
+                    do {
+                        try await self.send(eventType: "ping")
+                    } catch {
+                        // A failed ping is how a silently dropped socket is noticed.
+                        await self.markDisconnected()
+                        break
+                    }
                 }
             }
         }
@@ -1082,8 +1092,30 @@ extension GLKVMClient {
 
             task?.cancel(with: .goingAway, reason: nil)
             task = nil
+            isConnected = false
+            isConnecting = false
 
             continuation.finish()
+        }
+
+        /// Clears the keyboard report and releases every mouse button on the device, so a key or
+        /// button that was down when the socket goes away does not stay down on the target.
+        func releaseAllHIDInputs() async throws {
+            try await sendBinary(Data([0x01, 0x00]))
+            try await sendHidMouseButton(button: "left", state: false)
+            try await sendHidMouseButton(button: "right", state: false)
+            try await sendHidMouseButton(button: "middle", state: false)
+        }
+
+        private func markDisconnected() {
+            receiveTask?.cancel()
+            receiveTask = nil
+            pingTask?.cancel()
+            pingTask = nil
+            task?.cancel()
+            task = nil
+            isConnected = false
+            isConnecting = false
         }
 
         func send(eventType: String, event: JSONValue = .object([:])) async throws {
@@ -1102,6 +1134,10 @@ extension GLKVMClient {
 
             let text = String(decoding: data, as: UTF8.self)
             try await task.send(.string(text))
+            // The socket may have been dropped while the frame was in flight.
+            guard self.task === task else { return }
+            isConnecting = false
+            isConnected = true
         }
 
         private func sendBinary(_ data: Data) async throws {
@@ -1109,6 +1145,9 @@ extension GLKVMClient {
                 throw WebSocketError.notConnected
             }
             try await task.send(.data(data))
+            guard self.task === task else { return }
+            isConnecting = false
+            isConnected = true
         }
 
         func sendHidKey(key: String, state: Bool, finish: Bool = false) async throws {
@@ -1193,6 +1232,7 @@ extension GLKVMClient {
                         break
                     }
                 } catch {
+                    markDisconnected()
                     break
                 }
             }
