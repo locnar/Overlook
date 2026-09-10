@@ -31,6 +31,12 @@
 		0100001F /* WebRTCFactoryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = 02000021 /* WebRTCFactoryBuilder.m */; };
 		01000020 /* DeviceTrustStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000022 /* DeviceTrustStore.swift */; };
 		01000021 /* KeychainTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000023 /* KeychainTokenStore.swift */; };
+		01000022 /* StreamTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000024 /* StreamTelemetry.swift */; };
+		01000023 /* StreamTelemetryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000025 /* StreamTelemetryViews.swift */; };
+		01000024 /* EDIDCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000026 /* EDIDCatalog.swift */; };
+		01000025 /* WebUISettingsPanelModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000027 /* WebUISettingsPanelModel.swift */; };
+		01000026 /* WebUISettingsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000028 /* WebUISettingsSections.swift */; };
+		01000027 /* WebUISettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000029 /* WebUISettingsActions.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -61,6 +67,12 @@
 		02000021 /* WebRTCFactoryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WebRTCFactoryBuilder.m; sourceTree = "<group>"; };
 		02000022 /* DeviceTrustStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTrustStore.swift; sourceTree = "<group>"; };
 		02000023 /* KeychainTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainTokenStore.swift; sourceTree = "<group>"; };
+		02000024 /* StreamTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamTelemetry.swift; sourceTree = "<group>"; };
+		02000025 /* StreamTelemetryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamTelemetryViews.swift; sourceTree = "<group>"; };
+		02000026 /* EDIDCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EDIDCatalog.swift; sourceTree = "<group>"; };
+		02000027 /* WebUISettingsPanelModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsPanelModel.swift; sourceTree = "<group>"; };
+		02000028 /* WebUISettingsSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsSections.swift; sourceTree = "<group>"; };
+		02000029 /* WebUISettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsActions.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -95,6 +107,12 @@
 				02000017 /* OCRViews.swift */,
 				02000018 /* ConnectSheets.swift */,
 				02000016 /* WebUISettingsPanel.swift */,
+				02000024 /* StreamTelemetry.swift */,
+				02000025 /* StreamTelemetryViews.swift */,
+				02000026 /* EDIDCatalog.swift */,
+				02000027 /* WebUISettingsPanelModel.swift */,
+				02000028 /* WebUISettingsSections.swift */,
+				02000029 /* WebUISettingsActions.swift */,
 				02000015 /* GLKVMClient.swift */,
 				02000006 /* WebRTCManager.swift */,
 				0200001C /* CoreAudioDevices.swift */,
@@ -208,6 +226,12 @@
 				0100001B /* VideoSurfaceView.swift in Sources */,
 				0100001C /* StatusBarView.swift in Sources */,
 				01000017 /* WebUISettingsPanel.swift in Sources */,
+				01000022 /* StreamTelemetry.swift in Sources */,
+				01000023 /* StreamTelemetryViews.swift in Sources */,
+				01000024 /* EDIDCatalog.swift in Sources */,
+				01000025 /* WebUISettingsPanelModel.swift in Sources */,
+				01000026 /* WebUISettingsSections.swift in Sources */,
+				01000027 /* WebUISettingsActions.swift in Sources */,
 				01000018 /* OCRViews.swift in Sources */,
 				01000019 /* ConnectSheets.swift in Sources */,
 				01000015 /* GLKVMClient.swift in Sources */,

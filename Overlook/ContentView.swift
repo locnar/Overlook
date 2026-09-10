@@ -32,6 +32,10 @@ struct ContentView: View {
     @State private var showingConnections = false
     @State private var didAutoOpenConnections = false
 
+    /// The settings panel is unmounted while closed, so its survivable state (loaded config,
+    /// keymaps, streamer state, section expansion, drafts) is owned here instead.
+    @StateObject private var settingsPanelModel = WebUISettingsPanelModel()
+
     @State private var pausedCaptureKeyboardWasEnabled: Bool?
     @State private var pausedCaptureMouseWasEnabled: Bool?
     @State private var isInputCapturePausedForUI: Bool = false
@@ -55,7 +59,11 @@ struct ContentView: View {
         }
     }
 
-    private var windowTitle: String {
+    /// Everything in the window title that changes at connection-level frequency: device,
+    /// state, guest resolution, mouse mode. The live kbps/fps half is appended by
+    /// `WindowTitleTelemetryHost`, which observes `StreamTelemetryModel` on its own, so a stats
+    /// tick never re-evaluates this view's body.
+    private var windowTitlePrefix: String {
         let device = kvmDeviceManager.connectedDevice
 
         let deviceLabel: String
@@ -83,29 +91,16 @@ struct ContentView: View {
             resolution = "—"
         }
 
-        let kbps: String
-        if let value = webRTCManager.inboundVideoKbps {
-            kbps = "\(value) kbps"
-        } else {
-            kbps = "— kbps"
-        }
+        return "Overlook - \(deviceLabel) / \(connectionState) / \(resolution)"
+    }
 
-        let fps: String
-        if let value = webRTCManager.inboundFps {
-            fps = "\(Int(value.rounded())) fps dynamic"
-        } else {
-            fps = "— fps dynamic"
+    /// Trailing mouse-mode segment of the window title; empty when not connected.
+    private var windowTitleSuffix: String {
+        guard isConnected, inputManager.transportMode == .glkvmWebSocket else { return "" }
+        if inputManager.isGLKVMAbsoluteMouseMode {
+            return " / Mouse: Absolute"
         }
-
-        var title = "Overlook - \(deviceLabel) / \(connectionState) / \(resolution) / \(kbps) / \(fps)"
-        if isConnected, inputManager.transportMode == .glkvmWebSocket {
-            if inputManager.isGLKVMAbsoluteMouseMode {
-                title += " / Mouse: Absolute"
-            } else {
-                title += inputManager.isPointerLocked ? " / Mouse: Relative (captured)" : " / Mouse: Relative"
-            }
-        }
-        return title
+        return inputManager.isPointerLocked ? " / Mouse: Relative (captured)" : " / Mouse: Relative"
     }
 
     private func applyAppAppearance() {
@@ -226,62 +221,57 @@ struct ContentView: View {
                     }
             }
 
-            WebUISettingsPanel(isPresented: $showingSettings)
-                .frame(width: 360)
-                .offset(x: showingSettings ? 0 : 360)
-                .animation(Animation.easeInOut(duration: 0.2), value: showingSettings)
-                .allowsHitTesting(showingSettings)
-
-            VStack(spacing: 0) {
-                ConnectionsPopoverView(
-                    selectedDevice: $selectedDevice,
-                    isConnected: isConnected,
-                    isScanning: kvmDeviceManager.isScanning,
-                    devices: kvmDeviceManager.availableDevices,
-                    connectedDeviceName: kvmDeviceManager.connectedDevice?.name,
-                    latency: webRTCManager.latency,
-                    videoSize: webRTCManager.videoSize,
-                    inboundVideoKbps: webRTCManager.inboundVideoKbps,
-                    inboundFps: webRTCManager.inboundFps,
-                    inboundVideoPlayoutDelayMs: webRTCManager.inboundVideoPlayoutDelayMs,
-                    inboundVideoJitterMs: webRTCManager.inboundVideoJitterMs,
-                    inboundVideoDecodeMs: webRTCManager.inboundVideoDecodeMs,
-                    inboundVideoPacketsLost: webRTCManager.inboundVideoPacketsLost,
-                    iceCurrentRoundTripTimeMs: webRTCManager.iceCurrentRoundTripTimeMs,
-                    inboundAudioKbps: webRTCManager.inboundAudioKbps,
-                    inboundAudioPlayoutDelayMs: webRTCManager.inboundAudioPlayoutDelayMs,
-                    inboundAudioJitterMs: webRTCManager.inboundAudioJitterMs,
-                    inboundAudioPacketsLost: webRTCManager.inboundAudioPacketsLost,
-                    audioIceCurrentRoundTripTimeMs: webRTCManager.audioIceCurrentRoundTripTimeMs,
-                    onScan: {
-                        kvmDeviceManager.scanForDevices()
-                    },
-                    onManualConnect: {
-                        showingManualConnect = true
-                    },
-                    onToggleConnection: {
-                        toggleConnection()
-                    },
-                    onForgetSelectedDevice: {
-                        guard let device = selectedDevice else { return }
-                        guard device.id.hasPrefix("saved-") else { return }
-                        kvmDeviceManager.forgetDevice(device)
-                        selectedDevice = nil
-                    }
-                )
-                .frame(width: 360)
-                .background(.ultraThinMaterial)
-                .padding(.top, 8)
-
-                Spacer(minLength: 0)
+            // Both panels are mounted only while open. A closed panel used to sit off-screen at
+            // full cost: its Picker-heavy body was re-evaluated on every ContentView pass and it
+            // leaked SwiftUI observation state each time. Survivable settings state lives in
+            // `settingsPanelModel`; the connections list comes from `KVMDeviceManager`.
+            if showingSettings {
+                WebUISettingsPanel(isPresented: $showingSettings, model: settingsPanelModel)
+                    .frame(width: 360)
+                    .transition(.move(edge: .trailing))
             }
-            .frame(maxHeight: .infinity)
-            .offset(x: showingConnections ? 0 : 360)
-            .animation(.easeInOut(duration: 0.2), value: showingConnections)
-            .allowsHitTesting(showingConnections)
+
+            if showingConnections {
+                VStack(spacing: 0) {
+                    ConnectionsPopoverView(
+                        selectedDevice: $selectedDevice,
+                        isConnected: isConnected,
+                        isScanning: kvmDeviceManager.isScanning,
+                        devices: kvmDeviceManager.availableDevices,
+                        connectedDeviceName: kvmDeviceManager.connectedDevice?.name,
+                        videoSize: webRTCManager.videoSize,
+                        onScan: {
+                            kvmDeviceManager.scanForDevices()
+                        },
+                        onManualConnect: {
+                            showingManualConnect = true
+                        },
+                        onToggleConnection: {
+                            toggleConnection()
+                        },
+                        onForgetSelectedDevice: {
+                            guard let device = selectedDevice else { return }
+                            guard device.id.hasPrefix("saved-") else { return }
+                            kvmDeviceManager.forgetDevice(device)
+                            selectedDevice = nil
+                        }
+                    )
+                    .frame(width: 360)
+                    .background(.ultraThinMaterial)
+                    .padding(.top, 8)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxHeight: .infinity)
+                .transition(.move(edge: .trailing))
+            }
         }
+        // The slide-in/out is driven by these container animations plus each panel's transition,
+        // which also covers call sites that flip the flags without `withAnimation`.
+        .animation(.easeInOut(duration: 0.2), value: showingSettings)
+        .animation(.easeInOut(duration: 0.2), value: showingConnections)
         .background(WindowAspectRatioSetter(videoSize: webRTCManager.videoSize))
-        .background(WindowTitleSetter(title: windowTitle))
+        .background(WindowTitleTelemetryHost(titlePrefix: windowTitlePrefix, titleSuffix: windowTitleSuffix))
         .background(WindowReferenceSetter(window: $windowRef))
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
@@ -881,6 +871,24 @@ extension WindowAspectRatioSetter.Coordinator: NSWindowDelegate {
     }
 }
 
+/// Appends the live kbps/fps to the window title.
+///
+/// This is the only view in the window chrome that observes `StreamTelemetryModel`, so a stats
+/// tick re-evaluates this leaf and writes the title — nothing above it.
+private struct WindowTitleTelemetryHost: View {
+    @EnvironmentObject private var telemetryModel: StreamTelemetryModel
+
+    let titlePrefix: String
+    let titleSuffix: String
+
+    var body: some View {
+        let telemetry = telemetryModel.snapshot
+        let kbps = telemetry.videoKbps.map { "\($0) kbps" } ?? "— kbps"
+        let fps = telemetry.videoFps.map { "\($0) fps dynamic" } ?? "— fps dynamic"
+        WindowTitleSetter(title: "\(titlePrefix) / \(kbps) / \(fps)\(titleSuffix)")
+    }
+}
+
 private struct WindowTitleSetter: NSViewRepresentable {
     let title: String
 
@@ -894,7 +902,9 @@ private struct WindowTitleSetter: NSViewRepresentable {
             if window.title != title {
                 window.title = title
             }
-            if window.styleMask.contains(.fullScreen) == false {
+            // Compare before writing: an unconditional set here relaid out the titlebar on
+            // every pass.
+            if window.styleMask.contains(.fullScreen) == false, window.titleVisibility != .visible {
                 window.titleVisibility = .visible
             }
         }
@@ -908,22 +918,11 @@ struct ConnectionsPopoverView: View {
     let isScanning: Bool
     let devices: [KVMDevice]
     let connectedDeviceName: String?
-    let latency: Int
 
+    /// Guest resolution, forwarded to the stats section. Telemetry itself is not passed in:
+    /// `ConnectionLatencyLabel` and `StreamStatsSection` observe it themselves, so this body
+    /// does not re-evaluate on every tick.
     let videoSize: CGSize?
-    let inboundVideoKbps: Int?
-    let inboundFps: Double?
-    let inboundVideoPlayoutDelayMs: Int?
-    let inboundVideoJitterMs: Int?
-    let inboundVideoDecodeMs: Int?
-    let inboundVideoPacketsLost: Int?
-    let iceCurrentRoundTripTimeMs: Int?
-
-    let inboundAudioKbps: Int?
-    let inboundAudioPlayoutDelayMs: Int?
-    let inboundAudioJitterMs: Int?
-    let inboundAudioPacketsLost: Int?
-    let audioIceCurrentRoundTripTimeMs: Int?
 
     let onScan: () -> Void
     let onManualConnect: () -> Void
@@ -931,25 +930,6 @@ struct ConnectionsPopoverView: View {
     let onForgetSelectedDevice: () -> Void
 
     var body: some View {
-        let resolutionText: String = {
-            guard let videoSize, videoSize.width > 0, videoSize.height > 0 else { return "—" }
-            return "\(Int(videoSize.width))x\(Int(videoSize.height))"
-        }()
-
-        let kbpsText = inboundVideoKbps.map { "\($0) kbps" } ?? "— kbps"
-        let fpsText = inboundFps.map { "\(Int($0.rounded())) fps" } ?? "— fps"
-        let playoutDelayText = inboundVideoPlayoutDelayMs.map { "\($0) ms" } ?? "—"
-        let jitterText = inboundVideoJitterMs.map { "\($0) ms" } ?? "—"
-        let decodeText = inboundVideoDecodeMs.map { "\($0) ms" } ?? "—"
-        let lossText = inboundVideoPacketsLost.map { String($0) } ?? "—"
-        let rttText = iceCurrentRoundTripTimeMs.map { "\($0) ms" } ?? "—"
-
-        let audioKbpsText = inboundAudioKbps.map { "\($0) kbps" } ?? "— kbps"
-        let audioPlayoutDelayText = inboundAudioPlayoutDelayMs.map { "\($0) ms" } ?? "—"
-        let audioJitterText = inboundAudioJitterMs.map { "\($0) ms" } ?? "—"
-        let audioLossText = inboundAudioPacketsLost.map { String($0) } ?? "—"
-        let audioRttText = audioIceCurrentRoundTripTimeMs.map { "\($0) ms" } ?? "—"
-
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Connections")
@@ -1000,126 +980,22 @@ struct ConnectionsPopoverView: View {
 
                     Spacer()
 
-                    Text("Latency: \(latency)ms")
-                        .font(.caption)
+                    ConnectionLatencyLabel()
                         .foregroundColor(.secondary)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("WebRTC")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                HStack {
-                    Text("Video")
-                        .font(.caption)
-                    Spacer()
-                    Text("\(resolutionText) · \(fpsText) · \(kbpsText)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text("Playout")
-                        .font(.caption)
-                    Spacer()
-                    Text(playoutDelayText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text("Jitter")
-                        .font(.caption)
-                    Spacer()
-                    Text(jitterText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text("Decode")
-                        .font(.caption)
-                    Spacer()
-                    Text(decodeText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text("Lost")
-                        .font(.caption)
-                    Spacer()
-                    Text(lossText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text("ICE RTT")
-                        .font(.caption)
-                    Spacer()
-                    Text(rttText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                if inboundAudioKbps != nil || inboundAudioJitterMs != nil || inboundAudioPacketsLost != nil || audioIceCurrentRoundTripTimeMs != nil {
-                    HStack {
-                        Text("Audio")
-                            .font(.caption)
-                        Spacer()
-                        Text(audioKbpsText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Audio Playout")
-                            .font(.caption)
-                        Spacer()
-                        Text(audioPlayoutDelayText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Audio Jitter")
-                            .font(.caption)
-                        Spacer()
-                        Text(audioJitterText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Audio Lost")
-                            .font(.caption)
-                        Spacer()
-                        Text(audioLossText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Audio ICE RTT")
-                            .font(.caption)
-                        Spacer()
-                        Text(audioRttText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
+            StreamStatsSection(videoSize: videoSize)
         }
         .padding(14)
     }
 }
 
 #Preview {
-    ContentView()
-        .environmentObject(WebRTCManager())
+    let webRTCManager = WebRTCManager()
+    return ContentView()
+        .environmentObject(webRTCManager)
+        .environmentObject(webRTCManager.telemetry)
         .environmentObject(InputManager())
         .environmentObject(OCRManager())
         .environmentObject(KVMDeviceManager())

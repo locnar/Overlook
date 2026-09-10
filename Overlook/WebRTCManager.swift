@@ -46,21 +46,8 @@ struct InputEvent: Codable {
 class WebRTCManager: NSObject, ObservableObject {
     @Published var videoView: RTCMTLNSVideoView?
     @Published var isConnected = false
-    @Published var latency: Int = 0
     @Published var currentFrame: CVPixelBuffer?
     @Published var videoSize: CGSize?
-    @Published var inboundVideoKbps: Int?
-    @Published var inboundFps: Double?
-    @Published var inboundVideoPlayoutDelayMs: Int?
-    @Published var inboundVideoJitterMs: Int?
-    @Published var inboundVideoDecodeMs: Int?
-    @Published var inboundVideoPacketsLost: Int?
-    @Published var iceCurrentRoundTripTimeMs: Int?
-    @Published var inboundAudioKbps: Int?
-    @Published var inboundAudioPlayoutDelayMs: Int?
-    @Published var inboundAudioJitterMs: Int?
-    @Published var inboundAudioPacketsLost: Int?
-    @Published var audioIceCurrentRoundTripTimeMs: Int?
     @Published var audioEnabled = false
     @Published var micEnabled = false
     @Published var preferLowLatencyPlayout = true
@@ -69,6 +56,11 @@ class WebRTCManager: NSObject, ObservableObject {
     @Published var isStreamStalled = false
     @Published var lastDisconnectReason: String?
     @Published var lastVideoFrameAgeSeconds: Int?
+
+    /// Periodic stream statistics (latency, kbps, fps, jitter, …). Deliberately a plain `let`, not
+    /// `@Published`: the model publishes one equality-gated snapshot, so a stats tick invalidates
+    /// only the views that render it — never `ContentView` or the video surface.
+    let telemetry = StreamTelemetryModel()
     
     private var peerConnection: RTCPeerConnection?
     private var audioPeerConnection: RTCPeerConnection?
@@ -787,9 +779,11 @@ class WebRTCManager: NSObject, ObservableObject {
             Task { @MainActor in
                 let now = CACurrentMediaTime()
 
+                // Every write here is compare-before-write: this ticks once a second for the
+                // life of a connection, and an unchanged value must not publish.
                 if self.isConnected == false {
-                    self.isStreamStalled = false
-                    self.lastVideoFrameAgeSeconds = nil
+                    self.setIsStreamStalled(false)
+                    self.setLastVideoFrameAgeSeconds(nil)
                     return
                 }
 
@@ -797,15 +791,15 @@ class WebRTCManager: NSObject, ObservableObject {
                 let age = lastFrame.map { now - $0 }
 
                 if let age {
-                    self.lastVideoFrameAgeSeconds = max(0, Int(age.rounded()))
+                    self.setLastVideoFrameAgeSeconds(max(0, Int(age.rounded())))
                 } else {
-                    self.lastVideoFrameAgeSeconds = nil
+                    self.setLastVideoFrameAgeSeconds(nil)
                 }
 
                 if let age, age > self.streamStallThresholdSeconds {
                     if self.isStreamStalled == false {
-                        self.isStreamStalled = true
-                        self.lastDisconnectReason = "Video stream stalled"
+                        self.setIsStreamStalled(true)
+                        self.setLastDisconnectReason("Video stream stalled")
                     }
                     return
                 }
@@ -814,34 +808,52 @@ class WebRTCManager: NSObject, ObservableObject {
                    let connectedAt = self.connectedIceTime,
                    now - connectedAt > self.initialFrameTimeoutSeconds {
                     if self.isStreamStalled == false {
-                        self.isStreamStalled = true
-                        self.lastDisconnectReason = "Video stream stalled"
+                        self.setIsStreamStalled(true)
+                        self.setLastDisconnectReason("Video stream stalled")
                     }
                     return
                 }
 
                 if self.isStreamStalled {
-                    self.isStreamStalled = false
-                    self.lastDisconnectReason = nil
+                    self.setIsStreamStalled(false)
+                    self.setLastDisconnectReason(nil)
                 }
             }
         }
     }
 
+    private func setLastVideoFrameAgeSeconds(_ value: Int?) {
+        guard lastVideoFrameAgeSeconds != value else { return }
+        lastVideoFrameAgeSeconds = value
+    }
+
+    private func setIsStreamStalled(_ value: Bool) {
+        guard isStreamStalled != value else { return }
+        isStreamStalled = value
+    }
+
+    private func setLastDisconnectReason(_ value: String?) {
+        guard lastDisconnectReason != value else { return }
+        lastDisconnectReason = value
+    }
+
+    /// One polling tick. Collects the video and audio samples and hands them to the telemetry
+    /// model as a single transaction; the model publishes only if something rendered changes.
+    /// No `MainActor.run` hops: this class is already main-actor isolated, and the old per-field
+    /// hops turned one tick into several separate SwiftUI invalidations.
     private func measureStreamStats() async {
         guard let peerConnection else {
-            await MainActor.run {
-                inboundVideoKbps = nil
-                inboundVideoPlayoutDelayMs = nil
-                inboundVideoJitterMs = nil
-                inboundVideoDecodeMs = nil
-                inboundVideoPacketsLost = nil
-                iceCurrentRoundTripTimeMs = nil
-                inboundAudioKbps = nil
-                inboundAudioPlayoutDelayMs = nil
-                inboundAudioJitterMs = nil
-                inboundAudioPacketsLost = nil
-                audioIceCurrentRoundTripTimeMs = nil
+            lastInboundVideoBytesReceived = nil
+            lastInboundVideoBytesTimestamp = nil
+            lastJitterBufferDelaySeconds = nil
+            lastJitterBufferEmittedCount = nil
+            lastInboundAudioBytesReceived = nil
+            lastInboundAudioBytesTimestamp = nil
+            lastAudioJitterBufferDelaySeconds = nil
+            lastAudioJitterBufferEmittedCount = nil
+            telemetry.update { snapshot in
+                snapshot.apply(video: .empty)
+                snapshot.apply(audio: .empty)
             }
             return
         }
@@ -854,6 +866,26 @@ class WebRTCManager: NSObject, ObservableObject {
             }
         }
 
+        let video = await collectInboundVideoStats(from: peerConnection)
+
+        let audio: AudioStatsSample
+        if let audioPeerConnection {
+            audio = await collectInboundAudioStats(from: audioPeerConnection)
+        } else {
+            lastInboundAudioBytesReceived = nil
+            lastInboundAudioBytesTimestamp = nil
+            lastAudioJitterBufferDelaySeconds = nil
+            lastAudioJitterBufferEmittedCount = nil
+            audio = .empty
+        }
+
+        telemetry.update { snapshot in
+            snapshot.apply(video: video)
+            snapshot.apply(audio: audio)
+        }
+    }
+
+    private func collectInboundVideoStats(from peerConnection: RTCPeerConnection) async -> VideoStatsSample {
         let lastBytes = lastInboundVideoBytesReceived
         let lastTs = lastInboundVideoBytesTimestamp
 
@@ -918,17 +950,9 @@ class WebRTCManager: NSObject, ObservableObject {
         let now = Date().timeIntervalSince1970
 
         guard let bytesReceived else {
-            await MainActor.run {
-                self.lastInboundVideoBytesReceived = nil
-                self.lastInboundVideoBytesTimestamp = nil
-                self.inboundVideoKbps = nil
-                self.inboundVideoPlayoutDelayMs = nil
-                self.inboundVideoJitterMs = nil
-                self.inboundVideoDecodeMs = nil
-                self.inboundVideoPacketsLost = nil
-                self.iceCurrentRoundTripTimeMs = nil
-            }
-            return
+            lastInboundVideoBytesReceived = nil
+            lastInboundVideoBytesTimestamp = nil
+            return .empty
         }
 
         var kbps: Int?
@@ -982,34 +1006,22 @@ class WebRTCManager: NSObject, ObservableObject {
             rttMs = nil
         }
 
-        await MainActor.run {
-            self.lastInboundVideoBytesReceived = bytesReceived
-            self.lastInboundVideoBytesTimestamp = now
-            self.lastJitterBufferDelaySeconds = jitterBufferDelaySeconds
-            self.lastJitterBufferEmittedCount = jitterBufferEmittedCount
-            self.inboundVideoKbps = kbps
-            self.inboundVideoPlayoutDelayMs = playoutDelayMs
-            self.inboundVideoJitterMs = jitterMs
-            self.inboundVideoDecodeMs = decodeMs
-            self.inboundVideoPacketsLost = packetsLost
-            self.iceCurrentRoundTripTimeMs = rttMs
-        }
+        lastInboundVideoBytesReceived = bytesReceived
+        lastInboundVideoBytesTimestamp = now
+        lastJitterBufferDelaySeconds = jitterBufferDelaySeconds
+        lastJitterBufferEmittedCount = jitterBufferEmittedCount
 
-        guard let audioPeerConnection else {
-            await MainActor.run {
-                self.lastInboundAudioBytesReceived = nil
-                self.lastInboundAudioBytesTimestamp = nil
-                self.lastAudioJitterBufferDelaySeconds = nil
-                self.lastAudioJitterBufferEmittedCount = nil
-                self.inboundAudioKbps = nil
-                self.inboundAudioPlayoutDelayMs = nil
-                self.inboundAudioJitterMs = nil
-                self.inboundAudioPacketsLost = nil
-                self.audioIceCurrentRoundTripTimeMs = nil
-            }
-            return
-        }
+        return VideoStatsSample(
+            kbps: kbps,
+            playoutDelayMs: playoutDelayMs,
+            jitterMs: jitterMs,
+            decodeMs: decodeMs,
+            packetsLost: packetsLost,
+            roundTripTimeMs: rttMs
+        )
+    }
 
+    private func collectInboundAudioStats(from audioPeerConnection: RTCPeerConnection) async -> AudioStatsSample {
         let lastAudioBytes = lastInboundAudioBytesReceived
         let lastAudioTs = lastInboundAudioBytesTimestamp
 
@@ -1065,18 +1077,11 @@ class WebRTCManager: NSObject, ObservableObject {
         let audioNow = Date().timeIntervalSince1970
 
         guard let audioBytesReceived else {
-            await MainActor.run {
-                self.lastInboundAudioBytesReceived = nil
-                self.lastInboundAudioBytesTimestamp = nil
-                self.lastAudioJitterBufferDelaySeconds = nil
-                self.lastAudioJitterBufferEmittedCount = nil
-                self.inboundAudioKbps = nil
-                self.inboundAudioPlayoutDelayMs = nil
-                self.inboundAudioJitterMs = nil
-                self.inboundAudioPacketsLost = nil
-                self.audioIceCurrentRoundTripTimeMs = nil
-            }
-            return
+            lastInboundAudioBytesReceived = nil
+            lastInboundAudioBytesTimestamp = nil
+            lastAudioJitterBufferDelaySeconds = nil
+            lastAudioJitterBufferEmittedCount = nil
+            return .empty
         }
 
         var audioKbps: Int?
@@ -1121,17 +1126,18 @@ class WebRTCManager: NSObject, ObservableObject {
             audioRttMs = nil
         }
 
-        await MainActor.run {
-            self.lastInboundAudioBytesReceived = audioBytesReceived
-            self.lastInboundAudioBytesTimestamp = audioNow
-            self.lastAudioJitterBufferDelaySeconds = audioJitterBufferDelaySeconds
-            self.lastAudioJitterBufferEmittedCount = audioJitterBufferEmittedCount
-            self.inboundAudioKbps = audioKbps
-            self.inboundAudioPlayoutDelayMs = audioPlayoutDelayMs
-            self.inboundAudioJitterMs = audioJitterMs
-            self.inboundAudioPacketsLost = audioPacketsLost
-            self.audioIceCurrentRoundTripTimeMs = audioRttMs
-        }
+        lastInboundAudioBytesReceived = audioBytesReceived
+        lastInboundAudioBytesTimestamp = audioNow
+        lastAudioJitterBufferDelaySeconds = audioJitterBufferDelaySeconds
+        lastAudioJitterBufferEmittedCount = audioJitterBufferEmittedCount
+
+        return AudioStatsSample(
+            kbps: audioKbps,
+            playoutDelayMs: audioPlayoutDelayMs,
+            jitterMs: audioJitterMs,
+            packetsLost: audioPacketsLost,
+            roundTripTimeMs: audioRttMs
+        )
     }
     
     private func measureLatency() async {
@@ -1201,21 +1207,9 @@ class WebRTCManager: NSObject, ObservableObject {
         lastVideoFrameAgeSeconds = nil
         setLastVideoFrameTime(nil)
         connectedIceTime = nil
-        latency = 0
         videoSize = nil
         isFrameCaptureEnabled = false
-        inboundVideoKbps = nil
-        inboundFps = nil
-        inboundVideoPlayoutDelayMs = nil
-        inboundVideoJitterMs = nil
-        inboundVideoDecodeMs = nil
-        inboundVideoPacketsLost = nil
-        iceCurrentRoundTripTimeMs = nil
-        inboundAudioKbps = nil
-        inboundAudioPlayoutDelayMs = nil
-        inboundAudioJitterMs = nil
-        inboundAudioPacketsLost = nil
-        audioIceCurrentRoundTripTimeMs = nil
+        telemetry.reset()
         lastInboundVideoBytesReceived = nil
         lastInboundVideoBytesTimestamp = nil
         lastInboundAudioBytesReceived = nil
@@ -1400,8 +1394,9 @@ extension WebRTCManager: @preconcurrency RTCDataChannelDelegate {
         switch message.type {
         case "pong":
             if let startTime = latencyMeasurementStart {
-                latency = Int(Date().timeIntervalSince(startTime) * 1000)
+                let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
                 latencyMeasurementStart = nil
+                telemetry.update { $0.latencyMs = latencyMs }
             }
         case "video-frame":
             // Handle video frame metadata if needed
@@ -1431,9 +1426,9 @@ extension WebRTCManager: @preconcurrency RTCVideoRenderer {
         if now - lastFpsPublishTime >= 0.5 {
             let dt = now - fpsWindowStartTime
             if dt > 0 {
-                let fps = Double(fpsFrameCount) / dt
+                let fps = Int((Double(fpsFrameCount) / dt).rounded())
                 Task { @MainActor in
-                    inboundFps = fps
+                    telemetry.update { $0.videoFps = fps }
                 }
             }
             fpsWindowStartTime = now
@@ -1459,7 +1454,7 @@ extension WebRTCManager: @preconcurrency RTCVideoRenderer {
     
     func setSize(_ size: CGSize) {
         Task { @MainActor in
-            if size.width > 0, size.height > 0 {
+            if size.width > 0, size.height > 0, videoSize != size {
                 videoSize = size
             }
         }
@@ -1489,10 +1484,11 @@ final class WebRTCManager: NSObject, ObservableObject {
     @Published var isStreamStalled = false
     @Published var lastDisconnectReason: String?
     @Published var lastVideoFrameAgeSeconds: Int?
-    @Published var latency: Int = 0
     @Published var currentFrame: CVPixelBuffer?
     @Published var audioEnabled = false
     @Published var micEnabled = false
+
+    let telemetry = StreamTelemetryModel()
     
     func connect(to device: KVMDevice) async throws {
         isConnected = false
@@ -1512,7 +1508,7 @@ final class WebRTCManager: NSObject, ObservableObject {
         isStreamStalled = false
         lastDisconnectReason = nil
         lastVideoFrameAgeSeconds = nil
-        latency = 0
+        telemetry.reset()
         currentFrame = nil
     }
 }

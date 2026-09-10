@@ -13,6 +13,9 @@ struct OverlookApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appDelegate.webRTCManager)
+                // Telemetry is a separate observable so only the views that render stats
+                // re-evaluate when it ticks.
+                .environmentObject(appDelegate.webRTCManager.telemetry)
                 .environmentObject(appDelegate.inputManager)
                 .environmentObject(appDelegate.ocrManager)
                 .environmentObject(appDelegate.kvmDeviceManager)
