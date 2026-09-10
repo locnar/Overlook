@@ -83,6 +83,10 @@ struct VideoSurfaceView: View {
                     )
                 }
 
+                if !isOCRModeEnabled, inputManager.isMouseCaptureEnabled, inputManager.isRelativeMouseMode {
+                    PointerLockHint(isLocked: inputManager.isPointerLocked)
+                }
+
                 if isOCRModeEnabled {
                     Color.clear
                         .contentShape(Rectangle())
@@ -159,6 +163,7 @@ struct VideoSurfaceView: View {
     private func setOCRMode(_ enabled: Bool) {
         webRTCManager.setFrameCaptureEnabled(enabled)
         if enabled {
+            inputManager.unlockPointer()
             ocrRegionsTask?.cancel()
             ocrRegionsTask = Task { @MainActor in
                 while !Task.isCancelled && isOCRModeEnabled {
@@ -249,6 +254,50 @@ struct VideoSurfaceView: View {
             } catch {
                 print("OCR failed: \(error)")
             }
+        }
+    }
+}
+
+/// Bottom-center capsule shown in relative mouse mode: a standing "click to capture" prompt while
+/// the pointer is free, and a "captured — ⌃⌥ to release" notice that fades a few seconds after lock.
+private struct PointerLockHint: View {
+    let isLocked: Bool
+
+    @State private var isVisible = true
+    @State private var hideTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack {
+            Spacer(minLength: 0)
+            if isVisible {
+                HStack(spacing: 6) {
+                    Image(systemName: isLocked ? "cursorarrow.rays" : "cursorarrow.click")
+                    Text(isLocked ? "Pointer captured — press ⌃⌥ to release" : "Click the video to capture the pointer")
+                }
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .padding(.bottom, 14)
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+        .onAppear { updateVisibility() }
+        .onChange(of: isLocked) { _, _ in updateVisibility() }
+        .onDisappear { hideTask?.cancel() }
+    }
+
+    private func updateVisibility() {
+        hideTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.15)) { isVisible = true }
+        guard isLocked else { return }
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { isVisible = false }
         }
     }
 }
@@ -414,7 +463,10 @@ final class TrackingContainerView: NSView {
     private func emitMouseMove(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         let flipped = CGPoint(x: p.x, y: bounds.height - p.y)
-        let delta = CGSize(width: event.deltaX, height: -event.deltaY)
+        // NSEvent.deltaX/deltaY for mouse-moved/dragged events are in display space (y grows
+        // downward), which matches the HID relative-report convention. Only the *position* needs
+        // the AppKit bottom-left -> top-left flip above.
+        let delta = CGSize(width: event.deltaX, height: event.deltaY)
         onMouseMove?(flipped, delta)
     }
 }

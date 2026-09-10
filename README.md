@@ -240,6 +240,15 @@ Overlook’s settings UI lives in `Overlook/WebUISettingsPanel.swift` and is des
 
 **Important:** the UI indicates reconnect is required for audio/mic changes.
 
+### Mouse
+
+The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connect, whenever input capture resumes, and when the device reports a HID state change. The active mode is shown at the end of the window title.
+
+- **Absolute** (default): the remote cursor follows your local cursor's position over the video. This only works when the KVM's HDMI input is the target's *only* display — with an extended desktop, absolute coordinates span every display and the cursor lands off-screen.
+- **Relative**: works like a VM console. **Click the video to capture the pointer** — the local cursor is hidden and frozen while movement, clicks and scrolling go to the remote. **Press ⌃⌥ (Control+Option) to release.** The pointer is also released when the window loses focus or an overlay opens.
+  - **Local sensitivity** (Settings → Remote device settings) scales movement before it is sent. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have, regardless of window size.
+  - **Unaccelerated input (experimental)** sends raw pointer counts instead of macOS-accelerated movement, which avoids double acceleration when the target OS also accelerates the mouse. Turn off "Enhance pointer precision" (Windows) on the target for the most predictable result.
+
 ---
 
 ## Troubleshooting
@@ -261,6 +270,12 @@ Overlook’s settings UI lives in `Overlook/WebUISettingsPanel.swift` and is des
 - Increase stream quality (higher bitrate helps OCR).
 - Make the text larger on the remote side.
 - Avoid heavy compression artifacts (try High/Ultra-high/Insane).
+
+### “In relative mode the cursor drifts, stalls, or moves the wrong way”
+
+- Check the window title says **Mouse: Relative**. If it says Absolute, Overlook has not picked up the device setting yet — open Settings once, or disconnect and reconnect.
+- Click the video to capture the pointer; movement is only forwarded while captured.
+- Disable pointer acceleration on the target (Windows: “Enhance pointer precision”), then tune **Local sensitivity**.
 
 ### “Paste doesn’t work”
 

@@ -33,6 +33,27 @@ class InputManager: ObservableObject {
     private var mouseMoveSenderTask: Task<Void, Never>?
     private static let mouseMoveSendIntervalNs: UInt64 = 8_333_333
 
+    // Relative mouse mode: fractional delta carried between HID reports, and the
+    // remote-pixels-per-view-point scale last measured from the video surface.
+    private var relativeResidual = CGSize.zero
+    private var relativeDeltaScale: CGFloat = 1.0
+
+    // Pointer lock (relative mode only).
+    private var captureClickButton: MouseButton?
+    private var heldRelativeButtons: Set<MouseButton> = []
+    private var pointerLockObservers: [NSObjectProtocol] = []
+    private var isCursorHidden = false
+    private var deviceEventTask: Task<Void, Never>?
+    private var deviceMouseModeRefreshDebounce: Task<Void, Never>?
+
+    private static let relativeSensitivityDefaultsKey = "overlook.relativeMouseSensitivity"
+    private static let unacceleratedInputDefaultsKey = "overlook.relativeMouseUnacceleratedInput"
+    /// Raw values of kCGEventUnacceleratedPointerMovementX / Y (CGEventField, macOS 10.15+).
+    private static let unacceleratedPointerMovementXField: UInt32 = 170
+    private static let unacceleratedPointerMovementYField: UInt32 = 171
+    /// Holding exactly Control+Option releases a captured pointer (VMware / Parallels convention).
+    static let pointerReleaseChord: NSEvent.ModifierFlags = [.control, .option]
+
     private var pendingCommandKeyCode: UInt16?
     private var activeCommandKeyCode: UInt16?
     private var commandKeySentToRemote: Bool = false
@@ -48,6 +69,27 @@ class InputManager: ObservableObject {
 
     @Published var transportMode: TransportMode = .glkvmWebSocket
     @Published private(set) var isGLKVMAbsoluteMouseMode = true
+    @Published private(set) var isPointerLocked = false
+
+    /// Multiplier applied to relative mouse deltas on top of the video scale. Persisted on this Mac.
+    @Published var relativeSensitivity: Double {
+        didSet { UserDefaults.standard.set(relativeSensitivity, forKey: Self.relativeSensitivityDefaultsKey) }
+    }
+
+    /// Experimental: use the CGEvent's unaccelerated pointer deltas instead of macOS-accelerated ones.
+    @Published var useUnacceleratedRelativeInput: Bool {
+        didSet { UserDefaults.standard.set(useUnacceleratedRelativeInput, forKey: Self.unacceleratedInputDefaultsKey) }
+    }
+
+    var isRelativeMouseMode: Bool {
+        transportMode == .glkvmWebSocket && !isGLKVMAbsoluteMouseMode
+    }
+
+    init() {
+        let defaults = UserDefaults.standard
+        relativeSensitivity = (defaults.object(forKey: Self.relativeSensitivityDefaultsKey) as? Double) ?? 1.0
+        useUnacceleratedRelativeInput = defaults.bool(forKey: Self.unacceleratedInputDefaultsKey)
+    }
     
     func setup(with webRTCManager: WebRTCManager) {
         self.webRTCManager = webRTCManager
@@ -56,10 +98,12 @@ class InputManager: ObservableObject {
     func setGLKVMClient(_ client: GLKVMClient?) {
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
+        unlockPointer()
         glkvmClient = client
         isGLKVMAbsoluteMouseMode = true
         pendingAbsoluteMouseMove = nil
         pendingRelativeMouseMove = nil
+        relativeResidual = .zero
         if client == nil {
             disconnectGLKVMWebSocket()
             return
@@ -67,37 +111,49 @@ class InputManager: ObservableObject {
         Task { [weak self] in
             await self?.reconnectGLKVMWebSocketIfNeeded()
         }
+        refreshMouseModeFromDevice()
+    }
+
+    /// Re-reads `is_absolute_mouse` from the device. Runs on connect, on every mouse-capture start,
+    /// and after the device reports a HID state change, so a mode switched from the WebUI is picked
+    /// up without reopening Overlook's settings. Until a read succeeds the mode stays absolute.
+    func refreshMouseModeFromDevice() {
+        guard let client = glkvmClient else { return }
+        mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = Task { [weak self, weak client] in
             guard let client else { return }
-            do {
-                let config = try await client.getSystemConfig()
-                await MainActor.run {
-                    guard let self, self.glkvmClient === client else { return }
-                    self.setGLKVMAbsoluteMouseMode(config.isAbsoluteMouse)
-                }
-            } catch {
-                // Keep the default absolute-mode behavior if settings cannot be loaded.
+            guard let config = try? await client.getSystemConfig() else { return }
+            await MainActor.run {
+                guard let self, self.glkvmClient === client else { return }
+                self.setGLKVMAbsoluteMouseMode(config.isAbsoluteMouse)
             }
         }
     }
 
     func setGLKVMAbsoluteMouseMode(_ isAbsolute: Bool) {
         guard isGLKVMAbsoluteMouseMode != isAbsolute else { return }
+        if isAbsolute {
+            unlockPointer()
+        }
         isGLKVMAbsoluteMouseMode = isAbsolute
         pendingAbsoluteMouseMove = nil
         pendingRelativeMouseMove = nil
+        relativeResidual = .zero
     }
 
     func handleVideoMouseMove(pointInView: CGPoint, deltaInView: CGSize = .zero, viewSize: CGSize, videoSize: CGSize?) {
         guard isMouseCaptureEnabled else { return }
+        if isRelativeMouseMode {
+            // Relative mode forwards movement only while the pointer is locked, and the locked path
+            // reads deltas from the event monitor. Here we just keep the remote-pixels-per-point
+            // scale current so a capture that starts later uses the right value.
+            relativeDeltaScale = computeRelativeDeltaScale(viewSize: viewSize, videoSize: videoSize)
+            return
+        }
         let normalized = normalizePointInViewToVideo(pointInView: pointInView, viewSize: viewSize, videoSize: videoSize)
         let moveEvent = MouseMoveEvent(position: normalized, delta: deltaInView, timestamp: CACurrentMediaTime())
         if transportMode == .glkvmWebSocket {
-            if isGLKVMAbsoluteMouseMode {
-                enqueueAbsoluteMouseMoveEvent(moveEvent)
-            } else {
-                enqueueRelativeMouseMoveEvent(moveEvent)
-            }
+            enqueueAbsoluteMouseMoveEvent(moveEvent)
         } else {
             sendMouseMoveEvent(moveEvent)
         }
@@ -112,9 +168,16 @@ class InputManager: ObservableObject {
         }
     }
 
-    private func enqueueRelativeMouseMoveEvent(_ event: MouseMoveEvent) {
-        let deltaX = Int(event.delta.width.rounded())
-        let deltaY = Int(event.delta.height.rounded())
+    /// Accumulates a scaled relative delta and queues whole-count movement for the sender.
+    /// The fractional remainder is carried forward so slow movement is not rounded away.
+    private func accumulateRelativeDelta(_ delta: CGSize) {
+        relativeResidual.width += delta.width
+        relativeResidual.height += delta.height
+
+        let deltaX = Int(relativeResidual.width.rounded(.towardZero))
+        let deltaY = Int(relativeResidual.height.rounded(.towardZero))
+        relativeResidual.width -= CGFloat(deltaX)
+        relativeResidual.height -= CGFloat(deltaY)
         guard deltaX != 0 || deltaY != 0 else { return }
 
         if var pending = pendingRelativeMouseMove {
@@ -183,12 +246,37 @@ class InputManager: ObservableObject {
     private func stopMouseMoveSender() {
         pendingAbsoluteMouseMove = nil
         pendingRelativeMouseMove = nil
+        relativeResidual = .zero
         mouseMoveSenderTask?.cancel()
         mouseMoveSenderTask = nil
     }
 
     func handleVideoMouseButton(button: MouseButton, isDown: Bool, pointInView: CGPoint, viewSize: CGSize, videoSize: CGSize?) {
         guard isMouseCaptureEnabled else { return }
+
+        if isRelativeMouseMode {
+            if !isPointerLocked {
+                // The click that captures the pointer is not forwarded: the remote cursor is not
+                // where the local click landed.
+                if isDown {
+                    relativeDeltaScale = computeRelativeDeltaScale(viewSize: viewSize, videoSize: videoSize)
+                    if lockPointer() {
+                        captureClickButton = button
+                    }
+                }
+                return
+            }
+            if let captureButton = captureClickButton, button == captureButton, !isDown {
+                captureClickButton = nil
+                return
+            }
+            if isDown {
+                heldRelativeButtons.insert(button)
+            } else {
+                heldRelativeButtons.remove(button)
+            }
+        }
+
         let normalized = normalizePointInViewToVideo(pointInView: pointInView, viewSize: viewSize, videoSize: videoSize)
         let buttonEvent = MouseButtonEvent(button: button, isDown: isDown, position: normalized, timestamp: CACurrentMediaTime())
         sendMouseButtonEvent(buttonEvent)
@@ -196,11 +284,15 @@ class InputManager: ObservableObject {
 
     func handleVideoMouseScroll(deltaX: CGFloat, deltaY: CGFloat) {
         guard isMouseCaptureEnabled else { return }
+        if isRelativeMouseMode, !isPointerLocked { return }
         let scrollEvent = MouseScrollEvent(deltaX: deltaX, deltaY: deltaY, timestamp: CACurrentMediaTime())
         sendMouseScrollEvent(scrollEvent)
     }
 
     func setTransportMode(_ mode: TransportMode) {
+        // A lock can only exist on the GLKVM transport; release it (and any held buttons) while
+        // that transport is still selected so the releases reach the device.
+        unlockPointer()
         transportMode = mode
         switch mode {
         case .webRTC:
@@ -214,7 +306,10 @@ class InputManager: ObservableObject {
     }
 
     func disconnectGLKVMWebSocket() {
+        unlockPointer()
         stopMouseMoveSender()
+        deviceEventTask?.cancel()
+        deviceEventTask = nil
         let ws = glkvmWebSocketClient
         glkvmWebSocketClient = nil
         Task {
@@ -255,9 +350,11 @@ class InputManager: ObservableObject {
     func startMouseCapture() {
         isCapturing = true
         isMouseCaptureEnabled = true
+        refreshMouseModeFromDevice()
     }
     
     func stopMouseCapture() {
+        unlockPointer()
         isMouseCaptureEnabled = false
         
         if let monitor = mouseEventMonitor {
@@ -328,6 +425,7 @@ class InputManager: ObservableObject {
             sendKeyEvent(keyEvent)
 
         case .flagsChanged:
+            releasePointerLockIfChordHeld(event.modifierFlags)
             let keyCode = event.keyCode
             guard let keyName = glkvmKeyForMacKeyCode(keyCode) else { return }
 
@@ -433,40 +531,6 @@ class InputManager: ObservableObject {
         }
     }
     
-    private func handleMouseEvent(_ event: NSEvent) {
-        guard isMouseCaptureEnabled else { return }
-        
-        switch event.type {
-        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp:
-            let mouseEvent = MouseButtonEvent(
-                button: event.type == .leftMouseDown || event.type == .leftMouseUp ? .left : .right,
-                isDown: event.type == .leftMouseDown || event.type == .rightMouseDown,
-                position: CGPoint(x: event.locationInWindow.x, y: event.locationInWindow.y),
-                timestamp: event.timestamp
-            )
-            sendMouseButtonEvent(mouseEvent)
-            
-        case .mouseMoved:
-            let mouseEvent = MouseMoveEvent(
-                position: CGPoint(x: event.locationInWindow.x, y: event.locationInWindow.y),
-                delta: CGSize(width: event.deltaX, height: -event.deltaY),
-                timestamp: event.timestamp
-            )
-            sendMouseMoveEvent(mouseEvent)
-            
-        case .scrollWheel:
-            let scrollEvent = MouseScrollEvent(
-                deltaX: event.scrollingDeltaX,
-                deltaY: event.scrollingDeltaY,
-                timestamp: event.timestamp
-            )
-            sendMouseScrollEvent(scrollEvent)
-            
-        default:
-            break
-        }
-    }
-    
     func sendClick(at location: CGPoint, in geometry: GeometryProxy, videoSize: CGSize? = nil) {
         let normalizedPosition = normalizePointInViewToVideo(
             pointInView: location,
@@ -547,27 +611,8 @@ class InputManager: ObservableObject {
         webRTCManager?.sendInputEvent(inputEvent)
     }
     
+    /// WebRTC data-channel transport only; GLKVM movement goes through the pending-move sender.
     private func sendMouseMoveEvent(_ event: MouseMoveEvent) {
-        if transportMode == .glkvmWebSocket, isGLKVMAbsoluteMouseMode, isNormalized(event.position), let ws = glkvmWebSocketClient {
-            let (toX, toY) = glkvmAbsolutePoint(fromNormalized: event.position)
-            Task {
-                try? await ws.sendHidMouseMove(toX: toX, toY: toY)
-            }
-            return
-        }
-
-        if transportMode == .glkvmWebSocket, !isGLKVMAbsoluteMouseMode, let ws = glkvmWebSocketClient {
-            let move = PendingRelativeMouseMove(
-                deltaX: Int(event.delta.width.rounded()),
-                deltaY: Int(event.delta.height.rounded())
-            )
-            guard move.deltaX != 0 || move.deltaY != 0 else { return }
-            Task {
-                await Self.sendRelativeMouseMove(move, through: ws)
-            }
-            return
-        }
-
         let inputEvent = InputEvent(
             type: "mouse-move",
             data: [
@@ -709,6 +754,21 @@ class InputManager: ObservableObject {
 
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
+
+        for observer in pointerLockObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        deviceEventTask?.cancel()
+        deviceMouseModeRefreshDebounce?.cancel()
+
+        // isCursorHidden is a plain stored Bool that mirrors the lock state (set in lockPointer,
+        // cleared in unlockPointer); the @Published lock flag is not accessible from deinit.
+        if isCursorHidden {
+            Task { @MainActor in
+                NSCursor.unhide()
+                _ = CGAssociateMouseAndMouseCursorPosition(1)
+            }
+        }
     }
 
     private func reconnectGLKVMWebSocketIfNeeded() async {
@@ -723,6 +783,180 @@ class InputManager: ObservableObject {
             let ws = try? client.makeWebSocketClient(stream: false)
             glkvmWebSocketClient = ws
             await ws?.connect()
+            if let ws {
+                startDeviceEventListener(ws)
+            }
+            refreshMouseModeFromDevice()
+        }
+    }
+
+    // MARK: - Pointer lock (relative mouse mode)
+
+    /// Captures the pointer: the hardware cursor is frozen in place and hidden while movement
+    /// deltas keep flowing to the remote. Requires relative mode, mouse capture, and a key window.
+    @discardableResult
+    func lockPointer() -> Bool {
+        guard !isPointerLocked, isMouseCaptureEnabled, isRelativeMouseMode else { return false }
+        guard NSApp.isActive, let window = NSApp.keyWindow else { return false }
+
+        relativeResidual = .zero
+        pendingRelativeMouseMove = nil
+
+        _ = CGAssociateMouseAndMouseCursorPosition(0)
+        if !isCursorHidden {
+            NSCursor.hide()
+            isCursorHidden = true
+        }
+
+        if let monitor = mouseEventMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        mouseEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .flagsChanged]
+        ) { [weak self] event in
+            guard let self else { return event }
+            return self.handlePointerLockEvent(event)
+        }
+
+        // Observers run on the main queue; unlock synchronously so the cursor is restored before
+        // the app has fully left the foreground.
+        let center = NotificationCenter.default
+        pointerLockObservers = [
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.unlockPointer()
+                }
+            },
+            center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.unlockPointer()
+                }
+            },
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.unlockPointer()
+                }
+            },
+        ]
+
+        isPointerLocked = true
+        return true
+    }
+
+    /// Releases a captured pointer and restores the cursor where it was. Safe to call when unlocked.
+    func unlockPointer() {
+        captureClickButton = nil
+        guard isPointerLocked else { return }
+        isPointerLocked = false
+
+        // A button still held on the remote would otherwise stay down: its release arrives after
+        // unlock and is dropped by handleVideoMouseButton.
+        for button in heldRelativeButtons {
+            sendMouseButtonEvent(MouseButtonEvent(
+                button: button,
+                isDown: false,
+                position: CGPoint(x: -1, y: -1),
+                timestamp: CACurrentMediaTime()
+            ))
+        }
+        heldRelativeButtons.removeAll()
+
+        if let monitor = mouseEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            mouseEventMonitor = nil
+        }
+        for observer in pointerLockObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        pointerLockObservers.removeAll()
+
+        _ = CGAssociateMouseAndMouseCursorPosition(1)
+        if isCursorHidden {
+            NSCursor.unhide()
+            isCursorHidden = false
+        }
+        relativeResidual = .zero
+    }
+
+    private func releasePointerLockIfChordHeld(_ flags: NSEvent.ModifierFlags) {
+        guard isPointerLocked else { return }
+        let held = flags.intersection([.control, .option, .shift, .command])
+        if held == Self.pointerReleaseChord {
+            unlockPointer()
+        }
+    }
+
+    private func handlePointerLockEvent(_ event: NSEvent) -> NSEvent? {
+        switch event.type {
+        case .flagsChanged:
+            releasePointerLockIfChordHeld(event.modifierFlags)
+            return event
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            guard isPointerLocked, isMouseCaptureEnabled else { return event }
+            handleLockedPointerMove(event)
+            return nil
+        default:
+            return event
+        }
+    }
+
+    private func handleLockedPointerMove(_ event: NSEvent) {
+        // NSEvent deltas for mouse-moved / dragged events are in display space (y grows downward),
+        // which is also the HID relative-report convention, so no axis flip is applied.
+        var dx = event.deltaX
+        var dy = event.deltaY
+
+        if useUnacceleratedRelativeInput,
+           let cgEvent = event.cgEvent,
+           let fieldX = CGEventField(rawValue: Self.unacceleratedPointerMovementXField),
+           let fieldY = CGEventField(rawValue: Self.unacceleratedPointerMovementYField) {
+            let rawX = cgEvent.getIntegerValueField(fieldX)
+            let rawY = cgEvent.getIntegerValueField(fieldY)
+            if rawX != 0 || rawY != 0 {
+                dx = CGFloat(rawX)
+                dy = CGFloat(rawY)
+            }
+        }
+
+        let scale = relativeDeltaScale * CGFloat(relativeSensitivity)
+        accumulateRelativeDelta(CGSize(width: dx * scale, height: dy * scale))
+    }
+
+    /// Remote pixels per view point for the letterboxed video, so a captured pointer travels the
+    /// same on-screen distance the local cursor would have.
+    private func computeRelativeDeltaScale(viewSize: CGSize, videoSize: CGSize?) -> CGFloat {
+        guard viewSize.width > 0, viewSize.height > 0,
+              let videoSize, videoSize.width > 0, videoSize.height > 0 else { return 1.0 }
+        let content = videoContentRect(viewSize: viewSize, videoSize: videoSize)
+        guard content.width > 0 else { return 1.0 }
+        return videoSize.width / content.width
+    }
+
+    // MARK: - Device events
+
+    private func startDeviceEventListener(_ ws: GLKVMClient.WebSocketClient) {
+        deviceEventTask?.cancel()
+        deviceEventTask = Task { @MainActor [weak self] in
+            for await event in ws.events {
+                if Task.isCancelled { break }
+                self?.handleDeviceEvent(event)
+            }
+        }
+    }
+
+    private func handleDeviceEvent(_ event: GLKVMWebSocketEvent) {
+        // A HID state change (PiKVM-style `hid_state`) can mean the mouse mode was switched from the
+        // WebUI. Re-read the config, debounced so a burst costs one request.
+        guard event.eventType == "hid_state" else { return }
+        guard deviceMouseModeRefreshDebounce == nil else { return }
+        deviceMouseModeRefreshDebounce = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self else { return }
+            self.deviceMouseModeRefreshDebounce = nil
+            self.refreshMouseModeFromDevice()
         }
     }
 
@@ -752,20 +986,7 @@ class InputManager: ObservableObject {
             return CGPoint(x: clampedX, y: clampedY)
         }
 
-        let viewAspect = viewSize.width / viewSize.height
-        let videoAspect = videoSize.width / videoSize.height
-
-        var contentRect = CGRect(origin: .zero, size: viewSize)
-
-        if viewAspect > videoAspect {
-            let contentWidth = viewSize.height * videoAspect
-            let xOffset = (viewSize.width - contentWidth) / 2.0
-            contentRect = CGRect(x: xOffset, y: 0, width: contentWidth, height: viewSize.height)
-        } else {
-            let contentHeight = viewSize.width / videoAspect
-            let yOffset = (viewSize.height - contentHeight) / 2.0
-            contentRect = CGRect(x: 0, y: yOffset, width: viewSize.width, height: contentHeight)
-        }
+        let contentRect = videoContentRect(viewSize: viewSize, videoSize: videoSize)
 
         let clampedX = max(contentRect.minX, min(contentRect.maxX, pointInView.x))
         let clampedY = max(contentRect.minY, min(contentRect.maxY, pointInView.y))
@@ -774,6 +995,22 @@ class InputManager: ObservableObject {
         let normalizedY = (clampedY - contentRect.minY) / contentRect.height
 
         return CGPoint(x: max(0, min(1, normalizedX)), y: max(0, min(1, normalizedY)))
+    }
+
+    /// The letterboxed rect the video occupies inside a view of `viewSize`.
+    func videoContentRect(viewSize: CGSize, videoSize: CGSize) -> CGRect {
+        let viewAspect = viewSize.width / viewSize.height
+        let videoAspect = videoSize.width / videoSize.height
+
+        if viewAspect > videoAspect {
+            let contentWidth = viewSize.height * videoAspect
+            let xOffset = (viewSize.width - contentWidth) / 2.0
+            return CGRect(x: xOffset, y: 0, width: contentWidth, height: viewSize.height)
+        } else {
+            let contentHeight = viewSize.width / videoAspect
+            let yOffset = (viewSize.height - contentHeight) / 2.0
+            return CGRect(x: 0, y: yOffset, width: viewSize.width, height: contentHeight)
+        }
     }
 
     private func glkvmMouseButtonName(_ button: MouseButton) -> String? {

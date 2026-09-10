@@ -544,6 +544,32 @@ struct WebUISettingsPanel: View {
                                 Text("Absolute").tag(true)
                             }
 
+                            // Grouped so the enclosing VStack stays under the ViewBuilder child limit.
+                            Group {
+                                Divider()
+                                    .padding(.vertical, 2)
+
+                                Text("Relative mode on this Mac")
+                                    .font(.subheadline.weight(.semibold))
+
+                                HStack {
+                                    Text("Local sensitivity")
+                                    Spacer()
+                                    Text(String(format: "%.2f×", inputManager.relativeSensitivity))
+                                        .monospacedDigit()
+                                        .foregroundColor(.secondary)
+                                }
+                                Slider(value: $inputManager.relativeSensitivity, in: 0.25...4.0, step: 0.05)
+                                    .help("Multiplier on mouse movement while the pointer is captured. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have.")
+
+                                Toggle("Unaccelerated input (experimental)", isOn: $inputManager.useUnacceleratedRelativeInput)
+                                    .help("Send raw pointer counts instead of macOS-accelerated movement. Falls back to accelerated movement when the system does not provide them. Expect to re-tune sensitivity.")
+
+                                Text("Click the video to capture the pointer; press ⌃⌥ to release it.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
                             Stepper(
                                 "Fingerbot strength: \(bindingIntValue(get: { $0.fingerbotStrength }, defaultValue: 0))",
                                 value: bindingInt(

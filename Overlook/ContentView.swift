@@ -96,7 +96,15 @@ struct ContentView: View {
             fps = "— fps dynamic"
         }
 
-        return "Overlook - \(deviceLabel) / \(connectionState) / \(resolution) / \(kbps) / \(fps)"
+        var title = "Overlook - \(deviceLabel) / \(connectionState) / \(resolution) / \(kbps) / \(fps)"
+        if isConnected, inputManager.transportMode == .glkvmWebSocket {
+            if inputManager.isGLKVMAbsoluteMouseMode {
+                title += " / Mouse: Absolute"
+            } else {
+                title += inputManager.isPointerLocked ? " / Mouse: Relative (captured)" : " / Mouse: Relative"
+            }
+        }
+        return title
     }
 
     private func applyAppAppearance() {
