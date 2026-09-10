@@ -947,16 +947,8 @@ struct ConnectionsPopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Connections")
-                    .font(.headline)
-                Spacer()
-                Button(action: onToggleConnection) {
-                    Image(systemName: isConnected ? "personalhotspot.slash" : "personalhotspot")
-                }
-                .disabled(!isConnected && selectedDevice == nil)
-                .help(isConnected ? "Disconnect" : "Connect")
-            }
+            Text("Connections")
+                .font(.headline)
 
             Picker("Device", selection: $selectedDevice) {
                 Text("Select Device").tag(nil as KVMDevice?)
@@ -966,14 +958,26 @@ struct ConnectionsPopoverView: View {
             }
             .frame(maxWidth: .infinity)
 
+            // Actions on the selected device. Selecting a device does not connect to it; this
+            // row makes that second step visible (it used to be an unlabeled header icon).
+            HStack {
+                Button(isConnected ? "Disconnect" : "Connect") { onToggleConnection() }
+                    .disabled(!isConnected && selectedDevice == nil)
+
+                Button("Forget") { onForgetSelectedDevice() }
+                    .disabled(isConnected || selectedDevice?.id.hasPrefix("saved-") != true)
+
+                Spacer()
+            }
+
+            Divider()
+
+            // Ways to add devices to the list.
             HStack {
                 Button("Scan") { onScan() }
                     .disabled(isScanning)
 
                 Button("Manual Connect…") { onManualConnect() }
-
-                Button("Forget") { onForgetSelectedDevice() }
-                    .disabled(isConnected || selectedDevice?.id.hasPrefix("saved-") != true)
 
                 Spacer()
 
