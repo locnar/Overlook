@@ -108,6 +108,17 @@ ad-hoc *Debug* runs, which is why Build + Run never showed it.
 With a real Team ID (Developer ID export, as in `.github/workflows/release.yml`) Xcode re-signs the
 framework and the exception is not needed, but it does no harm and notarization accepts it.
 
+### Install a build in /Applications
+
+`scripts/install-local.sh` builds the Release configuration, verifies the signature, quits any
+running copy, and installs the app as `/Applications/Overlook.app` (pass another folder as the
+first argument, e.g. `~/Applications`). The Xcode equivalent is Product → Archive, then
+Distribute App → Custom → Copy App, and dragging the exported `Overlook.app` into Applications.
+
+An ad-hoc signature changes with every build, so after each install the login keychain asks once
+whether Overlook may read its saved device tokens and passwords — choose Always Allow. Setting a
+Team under Signing & Capabilities gives the app a stable identity and ends the prompts.
+
 ---
 
 ## Quick Start (How to use Overlook)
