@@ -95,6 +95,19 @@ Overlook uses the Swift Package:
 2. Select the `Overlook` scheme.
 3. Build + Run.
 
+### Release builds and code signing
+
+The embedded `WebRTC.framework` carries its publisher's code signature. The app is built with the
+hardened runtime, whose library validation only accepts frameworks signed with the app's own
+Team ID — so an archive signed without one (Xcode's "Sign to Run Locally" / ad-hoc, which is what
+`DEVELOPMENT_TEAM = ""` gives you) used to die at launch with a dyld error ("mapping process and
+mapped file (non-platform) have different Team IDs"). Xcode disables the hardened runtime for
+ad-hoc *Debug* runs, which is why Build + Run never showed it.
+
+`Overlook.entitlements` therefore carries `com.apple.security.cs.disable-library-validation`.
+With a real Team ID (Developer ID export, as in `.github/workflows/release.yml`) Xcode re-signs the
+framework and the exception is not needed, but it does no harm and notarization accepts it.
+
 ---
 
 ## Quick Start (How to use Overlook)

@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- The embedded WebRTC.framework is signed by its publisher (stasel), not by this app's
+	     identity. Hardened-runtime library validation rejects it at launch whenever the app is
+	     signed without the same Team ID (ad-hoc "Sign to Run Locally" archives). This exception
+	     keeps the rest of the hardened runtime and stays notarizable. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
 </dict>
 </plist>
