@@ -10,5 +10,10 @@
 	     keeps the rest of the hardened runtime and stays notarizable. -->
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
+	<!-- Hardened-runtime resource access: without this the microphone request is refused
+	     outright. Ad-hoc Debug runs never showed it because Xcode omits the runtime flag when it
+	     signs those to run locally, hardened-runtime setting notwithstanding. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

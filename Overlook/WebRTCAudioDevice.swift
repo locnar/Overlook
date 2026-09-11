@@ -31,8 +31,10 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     private var inputIOBufferDurationValue: TimeInterval = 0.01
     private var outputIOBufferDurationValue: TimeInterval = 0.01
 
+    // Mono capture (the device forwards one microphone channel), stereo playout: the stream is
+    // stereo Opus once the answer asks for it, and a mono device here would fold it down.
     private var inputChannels: Int = 1
-    private var outputChannels: Int = 1
+    private var outputChannels: Int = 2
 
     private var inputLatencyValue: TimeInterval = 0
     private var outputLatencyValue: TimeInterval = 0
@@ -105,9 +107,16 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return true
         }
 
-        guard let unit = createHALOutputUnit(deviceID: resolveOutputDeviceID()) else { return false }
+        let deviceID = resolveOutputDeviceID()
+        guard let unit = createHALOutputUnit(deviceID: deviceID) else { return false }
         outputUnit = unit
 
+        // Run the client side of the HAL unit at the device's own rate and report that rate back:
+        // WebRTC resamples to whatever we declare, while the HAL unit does not resample for us.
+        // A 44.1 kHz DAC used to be asked for 48 kHz and fail to initialize.
+        if let rate = Self.nominalSampleRate(of: deviceID) {
+            outputSampleRate = rate
+        }
         var format = makeLinearPCMFormat(sampleRate: outputSampleRate, channels: outputChannels)
         var status = AudioUnitSetProperty(
             unit,
@@ -168,9 +177,15 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return true
         }
 
-        guard let unit = createHALInputUnit(deviceID: resolveInputDeviceID()) else { return false }
+        let deviceID = resolveInputDeviceID()
+        guard let unit = createHALInputUnit(deviceID: deviceID) else { return false }
         inputUnit = unit
 
+        // Same as playout: capture at the device's native rate (Bluetooth headsets run at 16 or
+        // 24 kHz, many USB microphones at 44.1) and let WebRTC resample.
+        if let rate = Self.nominalSampleRate(of: deviceID) {
+            inputSampleRate = rate
+        }
         var format = makeLinearPCMFormat(sampleRate: inputSampleRate, channels: inputChannels)
         var status = AudioUnitSetProperty(
             unit,
@@ -240,6 +255,20 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return id
         }
         return defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+    }
+
+    private static func nominalSampleRate(of deviceID: AudioDeviceID) -> Double? {
+        guard deviceID != 0 else { return nil }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate: Double = 0
+        var dataSize = UInt32(MemoryLayout<Double>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &rate)
+        guard status == noErr, rate > 0 else { return nil }
+        return rate
     }
 
     private func defaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID {
@@ -328,9 +357,29 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
         return unit
     }
 
+    fileprivate var inputBytesPerFrame: Int { inputChannels * MemoryLayout<Int16>.size }
+    fileprivate var inputBufferCapacityBytes: Int { Int(inputBufferCapacityFrames) * inputBytesPerFrame }
+
+    /// The largest IO buffer the device can be configured for (Audio MIDI Setup, DAWs); the
+    /// capture buffer is sized to it so no callback ever has more frames than fit.
+    private static func maximumBufferFrames(of deviceID: AudioDeviceID) -> UInt32? {
+        guard deviceID != 0 else { return nil }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var range = AudioValueRange(mMinimum: 0, mMaximum: 0)
+        var dataSize = UInt32(MemoryLayout<AudioValueRange>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &range)
+        guard status == noErr, range.mMaximum > 0 else { return nil }
+        return UInt32(range.mMaximum)
+    }
+
     private func allocateInputBufferIfNeeded(sampleRate: Double) {
         let framesPerBuffer = max(UInt32(sampleRate * inputIOBufferDurationValue), 256)
-        inputBufferCapacityFrames = max(framesPerBuffer, 4096)
+        let deviceMaximum = Self.maximumBufferFrames(of: resolveInputDeviceID()) ?? 0
+        inputBufferCapacityFrames = max(framesPerBuffer, deviceMaximum, 4096)
         let bytes = Int(inputBufferCapacityFrames) * inputChannels * MemoryLayout<Int16>.size
 
         inputBufferData?.deallocate()
@@ -368,6 +417,12 @@ private func recordingInputCallback(
 ) -> OSStatus {
     let device = Unmanaged<WebRTCAudioDevice>.fromOpaque(inRefCon).takeUnretainedValue()
     guard let unit = device.inputUnit, let delegate = device.delegate, let bufferList = device.inputBufferList else { return noErr }
+
+    // AudioUnitRender reads the buffer size from the list and writes back what it produced, so
+    // the capacity has to be restated on every callback or it shrinks to the last frame count.
+    let needed = Int(inNumberFrames) * device.inputBytesPerFrame
+    guard needed <= device.inputBufferCapacityBytes else { return kAudioUnitErr_TooManyFramesToProcess }
+    bufferList.pointee.mBuffers.mDataByteSize = UInt32(device.inputBufferCapacityBytes)
 
     var flags = AudioUnitRenderActionFlags(rawValue: 0)
     let status = AudioUnitRender(unit, &flags, inTimeStamp, 1, inNumberFrames, bufferList)

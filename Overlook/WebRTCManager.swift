@@ -48,8 +48,25 @@ class WebRTCManager: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var currentFrame: CVPixelBuffer?
     @Published var videoSize: CGSize?
-    @Published var audioEnabled = false
-    @Published var micEnabled = false
+    /// Both take effect on the next connect (the peer connections are built then). Persisted on
+    /// this Mac, like the device choices below; they used to reset to off at every launch.
+    @Published var audioEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(audioEnabled, forKey: Self.audioEnabledDefaultsKey)
+            // Playback can follow the toggle at once; only the negotiation waits for a connect.
+            audioPeerConnection?.receivers
+                .compactMap { $0.track as? RTCAudioTrack }
+                .forEach { $0.isEnabled = audioEnabled }
+        }
+    }
+    @Published var micEnabled: Bool {
+        didSet { UserDefaults.standard.set(micEnabled, forKey: Self.micEnabledDefaultsKey) }
+    }
+    /// True after a connect asked for the microphone and macOS refused (System Settings ›
+    /// Privacy & Security › Microphone). The session goes on without the mic.
+    @Published private(set) var isMicrophoneAccessDenied = false
+    private static let audioEnabledDefaultsKey = "overlook.audio.enabled"
+    private static let micEnabledDefaultsKey = "overlook.audio.micEnabled"
     @Published var preferLowLatencyPlayout = true
     @Published var isConnecting = false
     @Published var hasEverConnectedToStream = false
@@ -67,6 +84,9 @@ class WebRTCManager: NSObject, ObservableObject {
     private var videoTrack: RTCVideoTrack?
     private var localAudioTrack: RTCAudioTrack?
     private var localAudioSender: RTCRtpSender?
+    /// What the current connect will actually send: the mic only when macOS granted it, so a
+    /// refused microphone is not negotiated as a silent sendrecv track.
+    private var negotiatedMicEnabled = false
     private var dataChannel: RTCDataChannel?
     private var factory: RTCPeerConnectionFactory?
     private var customAudioDevice: WebRTCAudioDevice?
@@ -136,6 +156,9 @@ class WebRTCManager: NSObject, ObservableObject {
     private var lastFrameCaptureTime: CFTimeInterval = 0
     
     override init() {
+        let defaults = UserDefaults.standard
+        audioEnabled = defaults.bool(forKey: Self.audioEnabledDefaultsKey)
+        micEnabled = defaults.bool(forKey: Self.micEnabledDefaultsKey)
         super.init()
         setupWebRTC()
         startAudioDeviceChangeMonitoring()
@@ -360,14 +383,19 @@ class WebRTCManager: NSObject, ObservableObject {
                 )
             }
 
+            var micGranted = false
             if micEnabled {
-                let granted = await ensureMicrophoneAccess()
+                micGranted = await ensureMicrophoneAccess()
                 // The permission prompt can outlive this attempt.
                 guard generation == connectionGeneration else { throw WebRTCError.superseded }
-                if granted {
+                isMicrophoneAccessDenied = !micGranted
+                if micGranted {
                     setupLocalMicrophoneTrackIfNeeded(factory: factory, peerConnection: audioPeerConnection ?? peerConnection)
                 }
+            } else {
+                isMicrophoneAccessDenied = false
             }
+            negotiatedMicEnabled = micGranted
             
             // Setup data channel for input events
             setupDataChannel()
@@ -591,7 +619,7 @@ class WebRTCManager: NSObject, ObservableObject {
             "handle_id": handleId,
         ])
 
-        if (audioEnabled || micEnabled), let audioPeerConnection {
+        if (audioEnabled || negotiatedMicEnabled), let audioPeerConnection {
             let audioAttachTransaction = makeJanusTransaction()
             try await sendJanusMessage([
                 "janus": "attach",
@@ -608,6 +636,9 @@ class WebRTCManager: NSObject, ObservableObject {
             }
             janusAudioHandleId = audioHandleId
 
+            // The device carries the microphone on the audio session's transceiver, so a mic-only
+            // request has to ask for audio too (its own web client enforces "mic only with audio").
+            // Playback of that audio is muted locally when the Audio toggle is off.
             let audioWatchTransaction = makeJanusTransaction()
             try await sendJanusMessage([
                 "janus": "message",
@@ -615,9 +646,9 @@ class WebRTCManager: NSObject, ObservableObject {
                     "request": "watch",
                     "params": [
                         "orientation": 0,
-                        "audio": audioEnabled,
+                        "audio": audioEnabled || negotiatedMicEnabled,
                         "video": false,
-                        "mic": micEnabled,
+                        "mic": negotiatedMicEnabled,
                         "camera": false,
                     ],
                 ],
@@ -856,7 +887,18 @@ class WebRTCManager: NSObject, ObservableObject {
         } catch {
             print("Failed to set remote description: \(error)")
         }
-        
+
+        // The audio handle asks for `video: false`, a parameter the device's own client never
+        // sends. If the plugin offers video anyway, decline it here rather than decode the
+        // stream twice.
+        if peerConnection === audioPeerConnection {
+            for transceiver in peerConnection.transceivers where transceiver.mediaType == .video {
+                // `-setDirection:error:` returns void, so Swift imports the error out-parameter
+                // rather than making the call throw.
+                transceiver.setDirection(.inactive, error: nil)
+            }
+        }
+
         // Create and send answer
         await createAndSendAnswer(peerConnection: peerConnection, handleId: handleId)
     }
@@ -864,8 +906,15 @@ class WebRTCManager: NSObject, ObservableObject {
     private func createAndSendAnswer(peerConnection: RTCPeerConnection, handleId: Int) async {
 
         do {
-            let sessionDescription = try await peerConnection.answer(
+            let generated = try await peerConnection.answer(
                 for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+            )
+            // libwebrtc configures its receive-side Opus decoder from the *local* description, so
+            // without `stereo=1` in our answer the device's stereo stream is decoded as mono. Same
+            // edit the device's own web client makes.
+            let sessionDescription = RTCSessionDescription(
+                type: generated.type,
+                sdp: generated.sdp.replacingOccurrences(of: "useinbandfec=1", with: "useinbandfec=1;stereo=1")
             )
             try await peerConnection.setLocalDescription(sessionDescription)
         } catch {
@@ -1648,7 +1697,14 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
         applyPlayoutDelayHintIfPossible()
-        guard let track = rtpReceiver.track as? RTCVideoTrack else { return }
+        if let audioTrack = rtpReceiver.track as? RTCAudioTrack {
+            // Present whenever the mic is on (see the audio watch request); heard only if asked for.
+            audioTrack.isEnabled = audioEnabled
+            return
+        }
+        // Only the video handle's stream is rendered; a second one would fight over the view.
+        guard peerConnection === self.peerConnection,
+              let track = rtpReceiver.track as? RTCVideoTrack else { return }
         videoTrack = track
         if let videoView {
             track.add(videoView)
@@ -1772,6 +1828,7 @@ final class WebRTCManager: NSObject, ObservableObject {
     @Published var currentFrame: CVPixelBuffer?
     @Published var audioEnabled = false
     @Published var micEnabled = false
+    @Published private(set) var isMicrophoneAccessDenied = false
 
     let telemetry = StreamTelemetryModel()
     

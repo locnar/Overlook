@@ -509,7 +509,14 @@ struct AudioSettingsSection: View {
         DisclosureGroup("Audio", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Audio", isOn: $webRTCManager.audioEnabled)
+                    .help("Play the target's audio. Takes effect on the next connect.")
                 Toggle("Microphone", isOn: $webRTCManager.micEnabled)
+                    .help("Send this Mac's microphone to the target as its USB microphone. The device carries it on the audio session, so this also opens audio; playback stays muted while Audio is off. Takes effect on the next connect.")
+                if webRTCManager.isMicrophoneAccessDenied {
+                    Text("macOS refused microphone access. Allow Overlook under System Settings › Privacy & Security › Microphone, then reconnect.")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
 
                 Picker("Microphone device", selection: $audioInputDeviceUID) {
                     Text("System Default").tag("")
