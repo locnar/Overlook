@@ -56,6 +56,7 @@ final class WebUISettingsPanelModel: ObservableObject {
     @Published var isRemoteExpanded = true
     @Published var isKeyboardExpanded = true
     @Published var isAudioExpanded = false
+    @Published var isCaptureExpanded = false
     @Published var isSystemExpanded = false
     @Published var isNetworkExpanded = false
     @Published var isAdvancedExpanded = false

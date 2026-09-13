@@ -19,10 +19,14 @@ struct OverlookApp: App {
                 .environmentObject(appDelegate.inputManager)
                 .environmentObject(appDelegate.ocrManager)
                 .environmentObject(appDelegate.kvmDeviceManager)
+                .environmentObject(appDelegate.captureManager)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.automatic)
+        .commands {
+            CaptureCommands(captureManager: appDelegate.captureManager)
+        }
     }
 }
 
@@ -30,10 +34,20 @@ struct OverlookApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var menuBarAgent: MenuBarAgent?
 
-    let webRTCManager = WebRTCManager()
+    let webRTCManager: WebRTCManager
     let inputManager = InputManager()
     let ocrManager = OCRManager()
-    let kvmDeviceManager = KVMDeviceManager()
+    let kvmDeviceManager: KVMDeviceManager
+    let captureManager: CaptureManager
+
+    override init() {
+        let webRTCManager = WebRTCManager()
+        let kvmDeviceManager = KVMDeviceManager()
+        self.webRTCManager = webRTCManager
+        self.kvmDeviceManager = kvmDeviceManager
+        captureManager = CaptureManager(webRTCManager: webRTCManager, kvmDeviceManager: kvmDeviceManager)
+        super.init()
+    }
 
     private var isTerminating = false
     private var hasRepliedToTermination = false
@@ -45,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             kvmDeviceManager: kvmDeviceManager,
             webRTCManager: webRTCManager,
             inputManager: inputManager,
+            captureManager: captureManager,
             showMainWindow: { [weak self] in
                 self?.showMainWindow()
             }
@@ -68,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quitting while keys or buttons are held on the remote would leave them held, and a video
     /// session abandoned without a hangup lingers on the device until its keepalive times out.
     /// So the app defers termination, releases HID state, hangs up, and only then lets AppKit exit.
+    /// A running recording is finalized first — an unfinished MP4 has no index and will not play.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateCancel }
         isTerminating = true
@@ -75,6 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         kvmDeviceManager.cancelScan()
 
         Task { @MainActor [self] in
+            await captureManager.finishRecordingForTermination()
             await inputManager.shutdown()
             webRTCManager.disconnect()
             finishTermination(sender)

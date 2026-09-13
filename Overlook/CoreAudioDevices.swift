@@ -21,10 +21,14 @@ enum CoreAudioDevices {
         var status = AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &dataSize)
         guard status == noErr, dataSize > 0 else { return nil }
 
-        var cfString: CFString?
-        status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &dataSize, &cfString)
-        guard status == noErr else { return nil }
-        return cfString as String?
+        // CoreAudio writes a +1 CFStringRef through the raw pointer. `Unmanaged` says so explicitly;
+        // letting it land in an `Optional<CFString>` relied on Swift guessing the ownership.
+        var unmanaged: Unmanaged<CFString>?
+        status = withUnsafeMutablePointer(to: &unmanaged) { pointer in
+            AudioObjectGetPropertyData(objectID, &address, 0, nil, &dataSize, pointer)
+        }
+        guard status == noErr, let cfString = unmanaged?.takeRetainedValue() else { return nil }
+        return cfString as String
     }
 
     private static func deviceHasStreamConfiguration(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool {

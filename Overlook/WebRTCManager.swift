@@ -41,6 +41,23 @@ struct InputEvent: Codable {
     }
 }
 
+/// System-object properties that can make the audio units bind to the wrong device: the device
+/// list (a chosen device unplugged) and the two defaults (followed when no UID is set). File scope
+/// so `deinit`, which is not main-actor isolated, can use them.
+private let audioHardwareListenerSelectors: [AudioObjectPropertySelector] = [
+    kAudioHardwarePropertyDevices,
+    kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioHardwarePropertyDefaultInputDevice,
+]
+
+private func audioHardwareAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+}
+
 #if canImport(WebRTC)
 @MainActor
 class WebRTCManager: NSObject, ObservableObject {
@@ -78,7 +95,28 @@ class WebRTCManager: NSObject, ObservableObject {
     /// `@Published`: the model publishes one equality-gated snapshot, so a stats tick invalidates
     /// only the views that render it — never `ContentView` or the video surface.
     let telemetry = StreamTelemetryModel()
-    
+
+    /// Hand-off point for screenshots and recordings: every decoded frame and every playout
+    /// buffer passes through it (see `renderFrame` and `WebRTCAudioDevice`). Also a plain `let`.
+    let captureHub = MediaCaptureHub()
+
+    /// True when the current connection can deliver remote audio to a recording: audio is on and
+    /// the audio peer connection exists. Playout runs through `WebRTCAudioDevice` on every
+    /// connection now, so that is the only condition.
+    var isAudioPlayoutAvailable: Bool {
+        audioEnabled && audioPeerConnection != nil
+    }
+
+    /// Channels and rate the playout unit delivers — what a recording's audio track is configured
+    /// for, so its AAC runs at the device's own rate with no resampling in between.
+    var playoutChannelCount: Int {
+        customAudioDevice?.outputNumberOfChannels ?? 2
+    }
+
+    var playoutSampleRate: Double {
+        customAudioDevice?.deviceOutputSampleRate ?? 48_000
+    }
+
     private var peerConnection: RTCPeerConnection?
     private var audioPeerConnection: RTCPeerConnection?
     private var videoTrack: RTCVideoTrack?
@@ -166,18 +204,15 @@ class WebRTCManager: NSObject, ObservableObject {
 
     deinit {
         if let block = audioDevicesListenerBlock {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDevices,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-
-            _ = AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                audioDevicesListenerQueue,
-                block
-            )
+            for selector in audioHardwareListenerSelectors {
+                var address = audioHardwareAddress(selector)
+                _ = AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &address,
+                    audioDevicesListenerQueue,
+                    block
+                )
+            }
         }
 
         audioDevicesListenerBlock = nil
@@ -200,11 +235,16 @@ class WebRTCManager: NSObject, ObservableObject {
     private func setupWebRTC() {
         let inputUID = (UserDefaults.standard.string(forKey: audioInputDeviceUIDDefaultsKey) ?? "")
         let outputUID = (UserDefaults.standard.string(forKey: audioOutputDeviceUIDDefaultsKey) ?? "")
-        let useCustomAudioDevice = !(inputUID.isEmpty && outputUID.isEmpty)
 
-        let audioDevice: WebRTCAudioDevice? = useCustomAudioDevice
-            ? WebRTCAudioDevice(inputDeviceUID: inputUID, outputDeviceUID: outputUID)
-            : nil
+        // Always our own audio device, even with the system defaults: it is the only place the
+        // received audio can be tapped for recordings (libwebrtc's built-in module exposes no
+        // playout sink). With no UID it binds to the default devices; a default that changes
+        // mid-session is followed by a reconnect (see `audioDeviceReconnectReason`).
+        let audioDevice = WebRTCAudioDevice(
+            inputDeviceUID: inputUID,
+            outputDeviceUID: outputUID,
+            playoutTap: captureHub
+        )
         customAudioDevice = audioDevice
 
         factory = WebRTCFactoryBuilder.makeFactory(with: audioDevice)
@@ -217,68 +257,80 @@ class WebRTCManager: NSObject, ObservableObject {
     private func startAudioDeviceChangeMonitoring() {
         guard audioDevicesListenerBlock == nil else { return }
 
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self else { return }
             Task { @MainActor in
-                self.handleAudioDevicesChanged()
+                self.handleAudioHardwareChanged()
             }
         }
 
         audioDevicesListenerBlock = block
-        _ = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            audioDevicesListenerQueue,
-            block
-        )
+        for selector in audioHardwareListenerSelectors {
+            var address = audioHardwareAddress(selector)
+            _ = AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                audioDevicesListenerQueue,
+                block
+            )
+        }
     }
 
     private func stopAudioDeviceChangeMonitoring() {
         guard let block = audioDevicesListenerBlock else { return }
 
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        _ = AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            audioDevicesListenerQueue,
-            block
-        )
+        for selector in audioHardwareListenerSelectors {
+            var address = audioHardwareAddress(selector)
+            _ = AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                audioDevicesListenerQueue,
+                block
+            )
+        }
 
         audioDevicesListenerBlock = nil
         audioDeviceChangeDebounceTask?.cancel()
         audioDeviceChangeDebounceTask = nil
     }
 
-    private func shouldAutoReconnectForMissingSelectedDevices() -> Bool {
-        guard peerConnection != nil else { return false }
+    /// Why the live session's audio units no longer match the configuration, or nil when they do.
+    /// Two cases, each only for a direction that is in use (mic on, or audio on):
+    /// - a chosen device (UID in defaults) is gone;
+    /// - no device is chosen and the system default moved away from the device the unit was
+    ///   bound to at init (`WebRTCAudioDevice` resolves the default once; libwebrtc's own module
+    ///   used to follow it silently — a reconnect is how this one follows).
+    private func audioDeviceReconnectReason() -> String? {
+        guard peerConnection != nil else { return nil }
 
         let inputUID = (UserDefaults.standard.string(forKey: audioInputDeviceUIDDefaultsKey) ?? "")
         let outputUID = (UserDefaults.standard.string(forKey: audioOutputDeviceUIDDefaultsKey) ?? "")
 
-        let selectedInputMissing = !inputUID.isEmpty && CoreAudioDevices.deviceID(forUID: inputUID) == nil
-        let selectedOutputMissing = !outputUID.isEmpty && CoreAudioDevices.deviceID(forUID: outputUID) == nil
-
         let inputRelevant = micEnabled
         let outputRelevant = audioEnabled
 
-        if selectedInputMissing && inputRelevant { return true }
-        if selectedOutputMissing && outputRelevant { return true }
-        return false
+        if inputRelevant, !inputUID.isEmpty, CoreAudioDevices.deviceID(forUID: inputUID) == nil {
+            return "Audio device changed"
+        }
+        if outputRelevant, !outputUID.isEmpty, CoreAudioDevices.deviceID(forUID: outputUID) == nil {
+            return "Audio device changed"
+        }
+
+        if let audioDevice = customAudioDevice {
+            if outputRelevant, outputUID.isEmpty, let bound = audioDevice.activeOutputDeviceID {
+                let current = WebRTCAudioDevice.systemDefaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+                if current != 0, current != bound { return "Default output device changed" }
+            }
+            if inputRelevant, inputUID.isEmpty, let bound = audioDevice.activeInputDeviceID {
+                let current = WebRTCAudioDevice.systemDefaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice)
+                if current != 0, current != bound { return "Default input device changed" }
+            }
+        }
+        return nil
     }
 
-    private func handleAudioDevicesChanged() {
-        guard shouldAutoReconnectForMissingSelectedDevices() else { return }
+    private func handleAudioHardwareChanged() {
+        guard audioDeviceReconnectReason() != nil else { return }
         guard peerConnection != nil else { return }
         guard lastConnectedDevice != nil else { return }
 
@@ -294,7 +346,7 @@ class WebRTCManager: NSObject, ObservableObject {
     private func autoReconnectIfStillNeeded() {
         guard isAutoReconnectInProgress == false else { return }
         guard let device = lastConnectedDevice else { return }
-        guard shouldAutoReconnectForMissingSelectedDevices() else { return }
+        guard let reason = audioDeviceReconnectReason() else { return }
 
         let now = Date()
         if let last = lastAutoReconnectAt, now.timeIntervalSince(last) < 3.0 {
@@ -306,7 +358,7 @@ class WebRTCManager: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.isAutoReconnectInProgress = false }
-            await self.reconnect(to: device, reason: "Audio device changed")
+            await self.reconnect(to: device, reason: reason)
         }
     }
     
@@ -1532,6 +1584,8 @@ class WebRTCManager: NSObject, ObservableObject {
         connectedIceTime = nil
         videoSize = nil
         isFrameCaptureEnabled = false
+        // The video view is gone too; a screenshot now would show a stream that no longer exists.
+        captureHub.clearLatestFrame()
         telemetry.clearStreamStats()
         lastInboundVideoBytesReceived = nil
         lastInboundVideoBytesTimestamp = nil
@@ -1753,6 +1807,7 @@ extension WebRTCManager: @preconcurrency RTCVideoRenderer {
         let now = CACurrentMediaTime()
 
         setLastVideoFrameTime(now)
+        captureHub.handleVideoFrame(frame, hostTime: now)
 
         if fpsWindowStartTime == 0 {
             fpsWindowStartTime = now

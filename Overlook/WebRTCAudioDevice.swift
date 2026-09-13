@@ -12,6 +12,18 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     private let inputDeviceUID: String?
     private let outputDeviceUID: String?
 
+    /// Receives every playout buffer after WebRTC has filled it — the recorder's audio feed.
+    /// Nil-able so the device can run without one, and read only on the HAL render thread.
+    fileprivate let playoutTap: MediaCaptureHub?
+
+    /// The CoreAudio devices the units were bound to at initialization. Following the system
+    /// default means resolving it once, here; `WebRTCManager` compares these with the current
+    /// defaults when they change and reconnects to move over.
+    private(set) var activeInputDeviceID: AudioDeviceID?
+    private(set) var activeOutputDeviceID: AudioDeviceID?
+    var isFollowingDefaultInput: Bool { inputDeviceUID == nil }
+    var isFollowingDefaultOutput: Bool { outputDeviceUID == nil }
+
     fileprivate var inputUnit: AudioComponentInstance?
     fileprivate var outputUnit: AudioComponentInstance?
 
@@ -26,7 +38,7 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     private var _isRecording: Bool = false
 
     private var inputSampleRate: Double = 48_000
-    private var outputSampleRate: Double = 48_000
+    fileprivate var outputSampleRate: Double = 48_000
 
     private var inputIOBufferDurationValue: TimeInterval = 0.01
     private var outputIOBufferDurationValue: TimeInterval = 0.01
@@ -34,14 +46,15 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     // Mono capture (the device forwards one microphone channel), stereo playout: the stream is
     // stereo Opus once the answer asks for it, and a mono device here would fold it down.
     private var inputChannels: Int = 1
-    private var outputChannels: Int = 2
+    fileprivate var outputChannels: Int = 2
 
     private var inputLatencyValue: TimeInterval = 0
     private var outputLatencyValue: TimeInterval = 0
 
-    init(inputDeviceUID: String?, outputDeviceUID: String?) {
+    init(inputDeviceUID: String?, outputDeviceUID: String?, playoutTap: MediaCaptureHub? = nil) {
         self.inputDeviceUID = inputDeviceUID?.isEmpty == true ? nil : inputDeviceUID
         self.outputDeviceUID = outputDeviceUID?.isEmpty == true ? nil : outputDeviceUID
+        self.playoutTap = playoutTap
         super.init()
     }
 
@@ -110,6 +123,7 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
         let deviceID = resolveOutputDeviceID()
         guard let unit = createHALOutputUnit(deviceID: deviceID) else { return false }
         outputUnit = unit
+        activeOutputDeviceID = deviceID
 
         // Run the client side of the HAL unit at the device's own rate and report that rate back:
         // WebRTC resamples to whatever we declare, while the HAL unit does not resample for us.
@@ -180,6 +194,7 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
         let deviceID = resolveInputDeviceID()
         guard let unit = createHALInputUnit(deviceID: deviceID) else { return false }
         inputUnit = unit
+        activeInputDeviceID = deviceID
 
         // Same as playout: capture at the device's native rate (Bluetooth headsets run at 16 or
         // 24 kHz, many USB microphones at 44.1) and let WebRTC resample.
@@ -272,6 +287,12 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     }
 
     private func defaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID {
+        Self.systemDefaultDeviceID(selector: selector)
+    }
+
+    /// The current system default device for `kAudioHardwarePropertyDefaultInputDevice` or
+    /// `kAudioHardwarePropertyDefaultOutputDevice`; 0 when there is none.
+    static func systemDefaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -404,7 +425,20 @@ private func playoutRenderCallback(
 ) -> OSStatus {
     let device = Unmanaged<WebRTCAudioDevice>.fromOpaque(inRefCon).takeUnretainedValue()
     guard let delegate = device.delegate, let ioData else { return noErr }
-    return delegate.getPlayoutData(ioActionFlags, inTimeStamp, Int(inBusNumber), inNumberFrames, ioData)
+    let status = delegate.getPlayoutData(ioActionFlags, inTimeStamp, Int(inBusNumber), inNumberFrames, ioData)
+
+    // What the speakers are about to get is exactly what a recording should keep, so tap it here,
+    // after WebRTC's jitter buffer and decoder and before the HAL. The tap copies and returns.
+    if status == noErr, let tap = device.playoutTap {
+        tap.handlePlayoutAudio(
+            UnsafePointer(ioData),
+            frameCount: inNumberFrames,
+            timestamp: inTimeStamp,
+            sampleRate: device.outputSampleRate,
+            channels: device.outputChannels
+        )
+    }
+    return status
 }
 
 private func recordingInputCallback(

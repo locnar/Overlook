@@ -38,6 +38,10 @@
 		01000026 /* WebUISettingsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000028 /* WebUISettingsSections.swift */; };
 		01000027 /* WebUISettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000029 /* WebUISettingsActions.swift */; };
 		01000028 /* DevicePasswordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002A /* DevicePasswordStore.swift */; };
+		01000029 /* MediaCaptureHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002B /* MediaCaptureHub.swift */; };
+		0100002A /* SessionRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002C /* SessionRecorder.swift */; };
+		0100002B /* CaptureManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002D /* CaptureManager.swift */; };
+		0100002C /* CaptureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002E /* CaptureViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -75,6 +79,10 @@
 		02000028 /* WebUISettingsSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsSections.swift; sourceTree = "<group>"; };
 		02000029 /* WebUISettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsActions.swift; sourceTree = "<group>"; };
 		0200002A /* DevicePasswordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePasswordStore.swift; sourceTree = "<group>"; };
+		0200002B /* MediaCaptureHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaCaptureHub.swift; sourceTree = "<group>"; };
+		0200002C /* SessionRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRecorder.swift; sourceTree = "<group>"; };
+		0200002D /* CaptureManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureManager.swift; sourceTree = "<group>"; };
+		0200002E /* CaptureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureViews.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -119,6 +127,10 @@
 				02000006 /* WebRTCManager.swift */,
 				0200001C /* CoreAudioDevices.swift */,
 				0200001D /* WebRTCAudioDevice.swift */,
+				0200002B /* MediaCaptureHub.swift */,
+				0200002C /* SessionRecorder.swift */,
+				0200002D /* CaptureManager.swift */,
+				0200002E /* CaptureViews.swift */,
 				02000021 /* WebRTCFactoryBuilder.m */,
 				02000020 /* WebRTCFactoryBuilder.h */,
 				0200001E /* RTCAudioDeviceShim.h */,
@@ -241,6 +253,10 @@
 				01000006 /* WebRTCManager.swift in Sources */,
 				0100001D /* CoreAudioDevices.swift in Sources */,
 				0100001E /* WebRTCAudioDevice.swift in Sources */,
+				01000029 /* MediaCaptureHub.swift in Sources */,
+				0100002A /* SessionRecorder.swift in Sources */,
+				0100002B /* CaptureManager.swift in Sources */,
+				0100002C /* CaptureViews.swift in Sources */,
 				0100001F /* WebRTCFactoryBuilder.m in Sources */,
 				01000007 /* InputManager.swift in Sources */,
 				01000008 /* OCRManager.swift in Sources */,

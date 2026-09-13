@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject var inputManager: InputManager
     @EnvironmentObject var ocrManager: OCRManager
     @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
+    @EnvironmentObject var captureManager: CaptureManager
     
     @State private var selectedDevice: KVMDevice?
     @State private var isConnected = false
@@ -177,6 +178,12 @@ struct ContentView: View {
                             .disabled(webRTCManager.videoSize == nil)
                             .help("Fit window to guest")
 
+                            ScreenshotButton(isConnected: isConnected)
+
+                            RecordingButton(isConnected: isConnected)
+
+                            RecordingModePicker()
+
                             Button(action: { toggleOCR() }) {
                                 Image(systemName: isOCRModeEnabled ? "text.viewfinder" : "doc.text")
                             }
@@ -202,6 +209,30 @@ struct ContentView: View {
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            // Capture feedback over the video: a flash per screenshot, a recording badge top-right
+            // (the toolbar is hidden in fullscreen, so this is the indicator there), and the
+            // saved/failed toast bottom-right. All sit under the panels and their dimming layer.
+            ScreenshotFlash(trigger: captureManager.screenshotFlashCount)
+
+            if captureManager.isRecording, let mode = captureManager.activeRecordingMode {
+                RecordingBadge(clock: captureManager.clock, mode: mode)
+                    .padding(.top, isFullscreen ? 10 : 12)
+                    .padding(.trailing, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.opacity)
+            }
+
+            if let notice = captureManager.notice {
+                CaptureNoticeView(
+                    notice: notice,
+                    onShow: { url in captureManager.revealInFinder(url) },
+                    onDismiss: { captureManager.dismissNotice() }
+                )
+                .padding(14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             if showingSettings || showingConnections {
@@ -265,6 +296,8 @@ struct ContentView: View {
         // which also covers call sites that flip the flags without `withAnimation`.
         .animation(.easeInOut(duration: 0.2), value: showingSettings)
         .animation(.easeInOut(duration: 0.2), value: showingConnections)
+        .animation(.easeInOut(duration: 0.2), value: captureManager.notice)
+        .animation(.easeInOut(duration: 0.2), value: captureManager.isRecording)
         .background(WindowAspectRatioSetter(videoSize: webRTCManager.videoSize))
         .background(WindowTitleTelemetryHost(titlePrefix: windowTitlePrefix, titleSuffix: windowTitleSuffix))
         .background(WindowReferenceSetter(window: $windowRef))
@@ -405,6 +438,16 @@ struct ContentView: View {
                     .disabled(webRTCManager.videoSize == nil)
                     .help("Fit window to guest")
 
+                    ScreenshotButton(isConnected: isConnected)
+
+                    RecordingButton(isConnected: isConnected)
+
+                    RecordingModePicker()
+
+                    if captureManager.isRecording {
+                        RecordingElapsedLabel(clock: captureManager.clock)
+                    }
+
                     Button(action: { toggleOCR() }) {
                         Image(systemName: isOCRModeEnabled ? "text.viewfinder" : "doc.text")
                     }
@@ -521,10 +564,10 @@ struct ContentView: View {
     }
 
     private func describeConnectionError(_ error: Error) -> String {
-        if let describable = error as? CustomStringConvertible {
-            return describable.description
-        }
-        return error.localizedDescription
+        // Every `Error` is `CustomStringConvertible` (the `as?` this replaced always succeeded), so
+        // this is what it always returned: the app's enum cases print as themselves, and an
+        // NSError prints its domain, code and reason.
+        String(describing: error)
     }
 
     private func toggleConnection() {

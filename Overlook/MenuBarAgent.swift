@@ -13,6 +13,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     private let kvmDeviceManager: KVMDeviceManager
     private let webRTCManager: WebRTCManager
     private let inputManager: InputManager
+    private let captureManager: CaptureManager
     private let showMainWindow: () -> Void
     
     @Published var isConnected = false
@@ -25,11 +26,13 @@ class MenuBarAgent: NSObject, ObservableObject {
         kvmDeviceManager: KVMDeviceManager,
         webRTCManager: WebRTCManager,
         inputManager: InputManager,
+        captureManager: CaptureManager,
         showMainWindow: @escaping () -> Void
     ) {
         self.kvmDeviceManager = kvmDeviceManager
         self.webRTCManager = webRTCManager
         self.inputManager = inputManager
+        self.captureManager = captureManager
         self.showMainWindow = showMainWindow
         super.init()
     }
@@ -64,7 +67,9 @@ class MenuBarAgent: NSObject, ObservableObject {
                 self.currentDevice = device
                 self.isConnected = (device != nil)
                 self.updateStatusIcon()
-                self.updateStatusMenuItem()
+                // `@Published` fires in `willSet`: the manager still holds the previous device
+                // here, so the status line takes the emitted value rather than reading it back.
+                self.updateStatusMenuItem(device: device)
                 self.updateDeviceMenu()
             }
             .store(in: &cancellables)
@@ -116,7 +121,8 @@ class MenuBarAgent: NSObject, ObservableObject {
         connectItem.target = self
         menu?.addItem(connectItem)
         
-        let scanItem = NSMenuItem(title: "Scan for Devices", action: #selector(scanForDevices), keyEquivalent: "r")
+        let scanItem = NSMenuItem(title: "Scan for Devices", action: #selector(scanForDevices), keyEquivalent: "d")
+        scanItem.keyEquivalentModifierMask = [.command, .shift]
         scanItem.target = self
         menu?.addItem(scanItem)
         
@@ -128,6 +134,21 @@ class MenuBarAgent: NSObject, ObservableObject {
         ocrItem.tag = 200
         menu?.addItem(ocrItem)
         
+        // Capture. The key equivalents shown here are the Capture menu's; in this status menu
+        // they are labels only (a status item menu has no key window to receive them). Enabled
+        // state and the Start/Stop title come from `validateMenuItem` as the menu opens.
+        let screenshotItem = NSMenuItem(title: "Save Screenshot", action: #selector(saveScreenshot), keyEquivalent: "s")
+        screenshotItem.keyEquivalentModifierMask = [.command, .shift]
+        screenshotItem.target = self
+        screenshotItem.tag = 400
+        menu?.addItem(screenshotItem)
+
+        let recordItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "r")
+        recordItem.keyEquivalentModifierMask = [.command, .shift]
+        recordItem.target = self
+        recordItem.tag = 401
+        menu?.addItem(recordItem)
+
         menu?.addItem(NSMenuItem.separator())
         
         // Preferences
@@ -237,16 +258,28 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func updateStatusMenuItem() {
+        updateStatusMenuItem(device: kvmDeviceManager.connectedDevice)
+    }
+
+    private func updateStatusMenuItem(device: KVMDevice?) {
         if let statusItem = menu?.items.first(where: { $0.tag == 100 }) {
-            if let device = kvmDeviceManager.connectedDevice {
+            if let device {
                 statusItem.title = "Connected to \(device.name)"
             } else {
                 statusItem.title = "Status: Disconnected"
             }
         }
         if let disconnectItem = menu?.items.first(where: { $0.tag == 101 }) {
-            disconnectItem.isEnabled = (kvmDeviceManager.connectedDevice != nil)
+            disconnectItem.isEnabled = (device != nil)
         }
+    }
+
+    @objc private func saveScreenshot() {
+        captureManager.saveScreenshot()
+    }
+
+    @objc private func toggleRecording() {
+        captureManager.toggleRecording()
     }
 
     private func promptForPassword(deviceName: String) -> (password: String, save: Bool)? {
@@ -588,7 +621,7 @@ class MenuBarAgent: NSObject, ObservableObject {
             showQuickConnect()
         case 31: // O key - Toggle OCR
             toggleOCR()
-        case 15: // R key - Scan devices
+        case 2: // D key - Scan devices (was R; ⇧⌘R starts and stops a recording in the app now)
             scanForDevices()
         default:
             break
@@ -632,6 +665,26 @@ class MenuBarAgent: NSObject, ObservableObject {
         popover = nil
         monitoringWindow = nil
         cancellables.removeAll()
+    }
+}
+
+// The status menu auto-enables its items, so without this every item with a target and action
+// shows enabled — the `isEnabled` flag on Disconnect never took effect. Validation runs as the menu
+// opens, which also makes it the right place to read live state for the connection-dependent items
+// (a Combine sink sees `@Published` values one step early, in `willSet`).
+extension MenuBarAgent: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let connected = kvmDeviceManager.connectedDevice != nil
+        switch menuItem.tag {
+        case 101, 400:   // Disconnect, Save Screenshot
+            return connected
+        case 401:        // Start/Stop Recording
+            let recording = captureManager.isRecording
+            menuItem.title = recording ? "Stop Recording" : "Start Recording"
+            return connected || recording
+        default:
+            return menuItem.isEnabled
+        }
     }
 }
 

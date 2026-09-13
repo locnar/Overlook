@@ -6,6 +6,9 @@ import SwiftUI
 
 extension Notification.Name {
     static let overlookToggleCopyMode = Notification.Name("overlook.toggleCopyMode")
+    /// ⇧⌘S and ⇧⌘R, intercepted while keys are being sent to the target; `CaptureManager` listens.
+    static let overlookSaveScreenshot = Notification.Name("overlook.saveScreenshot")
+    static let overlookToggleRecording = Notification.Name("overlook.toggleRecording")
 }
 
 @MainActor
@@ -492,6 +495,31 @@ class InputManager: ObservableObject {
                     prepareForLocalCommandShortcut()
                     suppressedKeyUps.insert(keyCode)
                     pasteClipboardToRemote()
+                    return
+                }
+                // ⇧⌘S saves a screenshot, ⇧⌘R starts/stops a recording — the Capture menu's
+                // shortcuts, reproduced here because capture swallows every key event before the
+                // menu can see it. Key repeat is ignored so a held ⇧⌘R cannot toggle twice.
+                if modifiers.contains(.shift), keyCode == 1 || keyCode == 15 {
+                    prepareForLocalCommandShortcut()
+                    suppressedKeyUps.insert(keyCode)
+                    if !event.isARepeat {
+                        NotificationCenter.default.post(
+                            name: keyCode == 1 ? .overlookSaveScreenshot : .overlookToggleRecording,
+                            object: nil
+                        )
+                    }
+                    return
+                }
+                // ⌘Q quits Overlook, as it does every other Mac app; it used to go to the target
+                // as Meta+Q, which left no keyboard way to quit while connected. The termination
+                // path releases held keys and hangs up before the process exits.
+                if keyCode == 12, modifiers.intersection([.shift, .option, .control]).isEmpty {
+                    prepareForLocalCommandShortcut()
+                    suppressedKeyUps.insert(keyCode)
+                    if !event.isARepeat {
+                        NSApp.terminate(nil)
+                    }
                     return
                 }
 

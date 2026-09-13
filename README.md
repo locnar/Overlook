@@ -56,6 +56,13 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **EDID** selection and custom EDID entry.
 - Audio + microphone toggles (reconnect required).
 
+### 5) Screenshots and recordings
+
+- **Screenshot** (camera button, `⇧⌘S`): saves the frame on screen as a PNG at the stream's native resolution.
+- **Record** (record button, `⇧⌘R`): saves the received stream as it plays. The button's menu picks what is kept — **Video and Audio** or **Video Only** (`.mp4`, H.264 by default or HEVC) or **Audio Only** (`.m4a`, AAC).
+- Files land in `~/Pictures/Overlook` and `~/Movies/Overlook` under timestamped names (folders and codec are in Settings → Capture); a toast with **Show** appears after each save.
+- Both shortcuts work while keys are being sent to the target, and the target never sees them.
+
 ---
 
 ## What devices are supported?
@@ -225,13 +232,18 @@ Overlook includes a few “quality of life” shortcuts.
 
 - `⌘C`: toggles OCR selection mode (so you can “copy” from the remote screen).
 - `⌘V`: pastes macOS clipboard to the remote.
+- `⇧⌘S`: saves a screenshot.
+- `⇧⌘R`: starts or stops a recording.
+- `⌘Q`: quits Overlook (releases any held keys and hangs up first).
+
+All five are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+S (Snipping Tool), Win+Shift+R and Win+Q are not reachable through Overlook. `⇧⌘S` and `⇧⌘R` are also the **Capture** menu's shortcuts, so they work when keyboard capture is off as well.
 
 ### Menu bar global shortcuts
 
 The menu bar agent listens for global shortcuts using `⌘⇧` modifiers:
 
 - `⌘⇧O`: Toggle OCR.
-- `⌘⇧R`: Scan for devices.
+- `⌘⇧D`: Scan for devices.
 - `⌘⇧V`: Open Quick Connect.
 
 (These are intended as fast, “from anywhere” actions.)
@@ -263,6 +275,14 @@ Overlook’s settings UI lives in `Overlook/WebUISettingsPanel.swift` and is des
 - Microphone toggle.
 
 **Important:** the UI indicates reconnect is required for audio/mic changes.
+
+Playback and capture always go through Overlook's own CoreAudio device (`WebRTCAudioDevice`), bound to the chosen devices or, with **System Default**, to the defaults at connect time. A default that changes mid-session (headphones plugged in) is followed with an automatic reconnect.
+
+### Capture
+
+- **Screenshots** / **Recordings** folders: where files are saved (`~/Pictures/Overlook`, `~/Movies/Overlook` by default). Click the path to open it.
+- **Video codec**: H.264 (plays everywhere) or HEVC (smaller files). Applies to the next recording; audio is always AAC.
+- What a recording keeps is chosen from the record button's menu (or Capture → Record): video and audio, video only, or audio only. A recording asked to include audio while Audio is off falls back to video only and says so.
 
 ### Mouse
 
@@ -336,6 +356,8 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - Discovery, saved devices, authentication.
 - `Overlook/MenuBarAgent.swift`
   - Menu bar UI + quick actions.
+- `Overlook/MediaCaptureHub.swift`, `Overlook/SessionRecorder.swift`, `Overlook/CaptureManager.swift`, `Overlook/CaptureViews.swift`
+  - Screenshots and recordings. `MediaCaptureHub` is where decoded frames (`WebRTCManager.renderFrame`) and playout PCM (`WebRTCAudioDevice`) are handed over; `SessionRecorder` muxes them with `AVAssetWriter`; `CaptureManager` owns the UI state, folders and file names; `CaptureViews` has the toolbar controls, overlays, the Capture menu and the settings section.
 
 ### Security notes
 

@@ -90,6 +90,9 @@ struct WebUISettingsPanel: View {
                         actions: actions
                     )
 
+                    // Local to this Mac (folders, codec); lives in CaptureViews.swift.
+                    CaptureSettingsSection(isExpanded: $model.isCaptureExpanded)
+
                     SystemSettingsSection(
                         isExpanded: $model.isSystemExpanded,
                         actions: actions
