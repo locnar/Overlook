@@ -41,6 +41,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let captureManager: CaptureManager
 
     override init() {
+        // How long the pointer rests on a control before its tooltip appears. AppKit reads this
+        // from user defaults (milliseconds); registering it here shortens it for Overlook alone —
+        // a value the user has set globally still wins. The system default is well over a second,
+        // which is a long wait on a toolbar of bare icons.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 500])
+
         let webRTCManager = WebRTCManager()
         let kvmDeviceManager = KVMDeviceManager()
         self.webRTCManager = webRTCManager

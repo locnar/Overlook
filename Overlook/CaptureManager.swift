@@ -55,6 +55,9 @@ final class RecordingClock: ObservableObject {
 /// with a Show button appears for a few seconds after each save. Triggered from the toolbar, the
 /// Capture menu (⇧⌘S / ⇧⌘R), the menu bar agent, and — while keyboard capture would otherwise
 /// swallow the shortcuts — `InputManager`, which posts the notifications handled here.
+///
+/// An optional capture region (`captureRegion`, drawn on the video by the operator) limits both to
+/// part of the guest screen until it is cleared or the app quits.
 @MainActor
 final class CaptureManager: ObservableObject {
     struct Notice: Identifiable, Equatable {
@@ -106,6 +109,17 @@ final class CaptureManager: ObservableObject {
     /// Bumped once per screenshot; the video surface flashes when it changes.
     @Published private(set) var screenshotFlashCount = 0
 
+    /// The part of the guest screen that screenshots and recordings keep, as fractions of the frame
+    /// (0…1, origin top-left), or nil for the whole screen. Deliberately not saved: a region is for
+    /// the session it was drawn in, and a relaunch starts with the whole screen again.
+    @Published private(set) var captureRegion: CGRect?
+    /// True from the toolbar click (or Capture › Select Capture Region…) until the drag ends or is
+    /// cancelled; the video surface shows the selection overlay while this is set.
+    @Published private(set) var isSelectingRegion = false
+    /// The region the running recording was started with (nil = whole screen). A region set or
+    /// cleared mid-recording applies to the next one: the file's frame size is fixed at start.
+    @Published private(set) var activeRecordingRegion: CGRect?
+
     @Published var recordingMode: RecordingMode {
         didSet { UserDefaults.standard.set(recordingMode.rawValue, forKey: Self.recordingModeDefaultsKey) }
     }
@@ -118,11 +132,17 @@ final class CaptureManager: ObservableObject {
     @Published var recordingsFolder: URL {
         didSet { UserDefaults.standard.set(recordingsFolder.path, forKey: Folder.recordings.defaultsKey) }
     }
+    /// Whether the dashed outline of the set region is drawn over the video. Off hides the outline
+    /// only; the region stays in effect.
+    @Published var showsRegionOutline: Bool {
+        didSet { UserDefaults.standard.set(showsRegionOutline, forKey: Self.showsRegionOutlineDefaultsKey) }
+    }
 
     let clock = RecordingClock()
 
     private static let recordingModeDefaultsKey = "overlook.capture.recordingMode"
     private static let videoCodecDefaultsKey = "overlook.capture.videoCodec"
+    private static let showsRegionOutlineDefaultsKey = "overlook.capture.showsRegionOutline"
 
     private let webRTCManager: WebRTCManager
     private let kvmDeviceManager: KVMDeviceManager
@@ -148,6 +168,7 @@ final class CaptureManager: ObservableObject {
         videoCodec = RecordingVideoCodec(rawValue: defaults.string(forKey: Self.videoCodecDefaultsKey) ?? "") ?? .h264
         screenshotsFolder = Self.storedFolder(.screenshots)
         recordingsFolder = Self.storedFolder(.recordings)
+        showsRegionOutline = defaults.object(forKey: Self.showsRegionOutlineDefaultsKey) as? Bool ?? true
 
         NotificationCenter.default.publisher(for: .overlookSaveScreenshot)
             .sink { [weak self] _ in self?.saveScreenshot() }
@@ -161,8 +182,11 @@ final class CaptureManager: ObservableObject {
         kvmDeviceManager.$connectedDevice
             .dropFirst()
             .sink { [weak self] device in
-                guard let self, device == nil, self.isRecording else { return }
-                self.stopRecording()
+                guard let self, device == nil else { return }
+                self.cancelRegionSelection()
+                if self.isRecording {
+                    self.stopRecording()
+                }
             }
             .store(in: &cancellables)
     }
@@ -176,11 +200,12 @@ final class CaptureManager: ObservableObject {
         }
 
         let url = makeFileURL(in: screenshotsFolder, extension: "png")
+        let region = captureRegion
         screenshotFlashCount += 1
 
         Task.detached(priority: .userInitiated) {
             do {
-                try ScreenshotWriter.writePNG(frame: frame, to: url)
+                try ScreenshotWriter.writePNG(frame: frame, region: region, to: url)
                 await MainActor.run {
                     self.showNotice(title: "Screenshot saved", detail: url.lastPathComponent, fileURL: url, isError: false)
                 }
@@ -227,6 +252,7 @@ final class CaptureManager: ObservableObject {
         }
 
         let url = makeFileURL(in: recordingsFolder, extension: mode.fileExtension)
+        let region = captureRegion
         do {
             let recorder = try SessionRecorder(
                 url: url,
@@ -234,11 +260,13 @@ final class CaptureManager: ObservableObject {
                 codec: videoCodec,
                 initialVideoSize: webRTCManager.videoSize,
                 audioChannels: webRTCManager.playoutChannelCount,
-                audioSampleRate: webRTCManager.playoutSampleRate
+                audioSampleRate: webRTCManager.playoutSampleRate,
+                cropRegion: region
             )
             self.recorder = recorder
             hub.setRecorder(recorder)
             activeRecordingMode = mode
+            activeRecordingRegion = region
             isRecording = true
             clock.start()
             if let downgradeDetail {
@@ -257,6 +285,7 @@ final class CaptureManager: ObservableObject {
         self.recorder = nil
         isRecording = false
         activeRecordingMode = nil
+        activeRecordingRegion = nil
         clock.stop()
 
         recorder.stop { [weak self] result in
@@ -273,6 +302,7 @@ final class CaptureManager: ObservableObject {
         self.recorder = nil
         isRecording = false
         activeRecordingMode = nil
+        activeRecordingRegion = nil
         clock.stop()
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -293,6 +323,70 @@ final class CaptureManager: ObservableObject {
         case .failure(let error):
             showNotice(title: "Recording not saved", detail: error.localizedDescription, fileURL: nil, isError: true)
         }
+    }
+
+    // MARK: Capture region
+
+    /// The toolbar button: nothing set → start selecting; selecting → cancel; a region set → clear it.
+    func toggleRegionSelection() {
+        if isSelectingRegion {
+            cancelRegionSelection()
+        } else if captureRegion != nil {
+            clearCaptureRegion()
+        } else {
+            beginRegionSelection()
+        }
+    }
+
+    /// Puts the video surface into drag-to-select mode. Starting over an existing region keeps it
+    /// until the new drag ends, so a cancelled re-selection changes nothing.
+    func beginRegionSelection() {
+        guard kvmDeviceManager.connectedDevice != nil else {
+            showNotice(title: "Not connected", detail: "Connect to a device before selecting a capture region.", fileURL: nil, isError: true)
+            return
+        }
+        dismissNotice()
+        isSelectingRegion = true
+    }
+
+    func cancelRegionSelection() {
+        guard isSelectingRegion else { return }
+        isSelectingRegion = false
+    }
+
+    /// The drag ended. `region` is in frame fractions (origin top-left); `videoSize` only feeds the
+    /// notice — the crop itself is computed per frame from that frame's own size.
+    func setCaptureRegion(_ region: CGRect, videoSize: CGSize?) {
+        isSelectingRegion = false
+        let clamped = region.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !clamped.isNull, clamped.width > 0, clamped.height > 0 else { return }
+        captureRegion = clamped
+
+        var title = "Capture region set"
+        if let videoSize, videoSize.width >= 2, videoSize.height >= 2 {
+            title += " — " + CaptureRegionGeometry.sizeText(for: clamped, in: videoSize)
+        }
+        let detail = isRecording
+            ? "Screenshots keep only this area from now on; recordings from the next one. The recording in progress keeps its framing."
+            : "Screenshots and recordings keep only this area until you turn it off."
+        showNotice(title: title, detail: detail, fileURL: nil, isError: false)
+    }
+
+    func clearCaptureRegion() {
+        isSelectingRegion = false
+        guard captureRegion != nil else { return }
+        captureRegion = nil
+        let detail = isRecording
+            ? "The recording in progress keeps its framing; the next one is the whole screen."
+            : "Screenshots and recordings are the whole screen again."
+        showNotice(title: "Capture region off", detail: detail, fileURL: nil, isError: false)
+    }
+
+    /// `1280 × 720`: the set region as it lands in a frame of `videoSize`; nil with no region or
+    /// while the stream's size is unknown.
+    func regionSizeText(videoSize: CGSize?) -> String? {
+        guard let captureRegion, let videoSize, videoSize.width >= 2, videoSize.height >= 2 else { return nil }
+        return CaptureRegionGeometry.sizeText(for: captureRegion, in: videoSize)
     }
 
     // MARK: Folders
@@ -425,13 +519,26 @@ enum ScreenshotWriter {
 
     private static let context = CIContext(options: [.useSoftwareRenderer: false])
 
-    static func writePNG(frame: RTCVideoFrame, to url: URL) throws {
+    /// `region`, when given, is the capture region in frame fractions (origin top-left); only that
+    /// part of the frame is written.
+    static func writePNG(frame: RTCVideoFrame, region: CGRect?, to url: URL) throws {
         guard let pixelBuffer = VideoFrameConversion.pixelBuffer(for: frame) else {
             throw WriteError.unsupportedFrame
         }
         // Core Image applies the buffer's YCbCr matrix and range when it reads a 4:2:0 buffer.
         let image = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let cgImage = context.createCGImage(image, from: image.extent) else {
+        var extent = image.extent
+        if let region {
+            // Core Image's origin is bottom-left; the region's is top-left, like the frame's rows.
+            let pixels = CaptureRegionGeometry.pixelRect(for: region, in: extent.size)
+            extent = CGRect(
+                x: extent.minX + pixels.minX,
+                y: extent.maxY - pixels.maxY,
+                width: pixels.width,
+                height: pixels.height
+            )
+        }
+        guard let cgImage = context.createCGImage(image, from: extent) else {
             throw WriteError.imageCreationFailed
         }
 

@@ -120,11 +120,18 @@ enum RecordingError: LocalizedError {
 /// The video input needs the frame size up front and `AVAssetWriter` cannot take new inputs once
 /// writing, so a recording whose size is not yet known waits for its first frame before
 /// `startWriting()`; audio that arrives before then is dropped.
+///
+/// A capture region (`cropRegion`) is fixed for the recording: the video track is sized to the
+/// region as it lands in the first frame, and every frame is cropped to it on the recorder's queue
+/// before encoding. A region changed mid-recording applies to the next recording.
 final class SessionRecorder: @unchecked Sendable {
     let url: URL
     let mode: RecordingMode
     let codec: RecordingVideoCodec
+    /// Frame fractions (origin top-left) of the part of the screen kept, or nil for all of it.
+    let cropRegion: CGRect?
 
+    private let cropper: FrameCropper?
     private let queue = DispatchQueue(label: "com.overlook.session-recorder", qos: .userInitiated)
     private let writer: AVAssetWriter
     private let startHostTime: CFTimeInterval
@@ -169,11 +176,14 @@ final class SessionRecorder: @unchecked Sendable {
         codec: RecordingVideoCodec,
         initialVideoSize: CGSize?,
         audioChannels: Int,
-        audioSampleRate: Double
+        audioSampleRate: Double,
+        cropRegion: CGRect? = nil
     ) throws {
         self.url = url
         self.mode = mode
         self.codec = codec
+        self.cropRegion = cropRegion
+        self.cropper = cropRegion.map { FrameCropper(region: $0) }
         self.audioChannels = max(1, min(2, audioChannels))
         // AAC takes 8–96 kHz; anything else (or a missing rate) gets 48 kHz and a resample.
         self.audioSampleRate = (8_000...96_000).contains(audioSampleRate) ? audioSampleRate : 48_000
@@ -191,7 +201,7 @@ final class SessionRecorder: @unchecked Sendable {
             addAudioInput()
         }
         if mode.recordsVideo, let size = initialVideoSize, size.width >= 16, size.height >= 16 {
-            addVideoInput(size: size)
+            addVideoInput(size: cropper?.outputSize(forFrameSize: size) ?? size)
         }
         startWritingIfReady()
         if let failure {
@@ -398,7 +408,8 @@ final class SessionRecorder: @unchecked Sendable {
         guard !isStopping, failure == nil else { return }
 
         if videoInput == nil {
-            addVideoInput(size: CGSize(width: Int(frame.width), height: Int(frame.height)))
+            let frameSize = CGSize(width: Int(frame.width), height: Int(frame.height))
+            addVideoInput(size: cropper?.outputSize(forFrameSize: frameSize) ?? frameSize)
             startWritingIfReady()
         }
         guard isWriting, let videoInput, let pixelBufferAdaptor else { return }
@@ -410,7 +421,11 @@ final class SessionRecorder: @unchecked Sendable {
         if lastVideoPTS.isValid, pts <= lastVideoPTS { return }
 
         guard videoInput.isReadyForMoreMediaData else { return }   // encoder behind: drop
-        guard let pixelBuffer = VideoFrameConversion.pixelBuffer(for: frame) else { return }
+        guard var pixelBuffer = VideoFrameConversion.pixelBuffer(for: frame) else { return }
+        if let cropper {
+            guard let cropped = cropper.crop(pixelBuffer) else { return }
+            pixelBuffer = cropped
+        }
 
         if pixelBufferAdaptor.append(pixelBuffer, withPresentationTime: pts) {
             lastVideoPTS = pts

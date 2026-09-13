@@ -178,11 +178,19 @@ struct ContentView: View {
                             .disabled(webRTCManager.videoSize == nil)
                             .help("Fit window to guest")
 
+                            Divider()
+                                .frame(height: 18)
+
+                            CaptureRegionToggle(isConnected: isConnected)
+
                             ScreenshotButton(isConnected: isConnected)
 
                             RecordingButton(isConnected: isConnected)
 
                             RecordingModePicker()
+
+                            Divider()
+                                .frame(height: 18)
 
                             Button(action: { toggleOCR() }) {
                                 Image(systemName: isOCRModeEnabled ? "text.viewfinder" : "doc.text")
@@ -217,7 +225,7 @@ struct ContentView: View {
             ScreenshotFlash(trigger: captureManager.screenshotFlashCount)
 
             if captureManager.isRecording, let mode = captureManager.activeRecordingMode {
-                RecordingBadge(clock: captureManager.clock, mode: mode)
+                RecordingBadge(clock: captureManager.clock, mode: mode, isCropped: captureManager.activeRecordingRegion != nil)
                     .padding(.top, isFullscreen ? 10 : 12)
                     .padding(.trailing, 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -319,6 +327,22 @@ struct ContentView: View {
         }
         .onChange(of: showingConnections) { _, _ in
             updateInputCaptureForUIOverlays()
+        }
+        .onChange(of: captureManager.isSelectingRegion) { _, selecting in
+            if selecting {
+                // The drag needs the video: close anything covering it and leave OCR mode.
+                isOCRModeEnabled = false
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showingSettings = false
+                    showingConnections = false
+                }
+            }
+            updateInputCaptureForUIOverlays()
+        }
+        .onChange(of: isOCRModeEnabled) { _, enabled in
+            if enabled {
+                captureManager.cancelRegionSelection()
+            }
         }
         .onChange(of: windowRef) { _, newValue in
             isFullscreen = newValue?.styleMask.contains(.fullScreen) ?? false
@@ -424,6 +448,10 @@ struct ContentView: View {
         } message: { prompt in
             Text(prompt.message)
         }
+        // Three groups: the session (where the video comes from, window size), capture, and
+        // tools. On macOS 26 each group is one glass pill and a pop-up button always gets a pill
+        // of its own, so the capture group is fenced with fixed spacers — its pills (buttons,
+        // mode pop-up, elapsed time) then sit closer to each other than to the neighbours.
         .toolbar {
             if isFullscreen == false {
                 ToolbarItemGroup(placement: .automatic) {
@@ -437,6 +465,16 @@ struct ContentView: View {
                     }
                     .disabled(webRTCManager.videoSize == nil)
                     .help("Fit window to guest")
+                }
+
+                if #available(macOS 26.0, *) {
+                    ToolbarSpacer(.fixed)
+                }
+
+                // Region first: it frames what the next two capture; the mode pop-up belongs to
+                // the record button, so it stays next to it.
+                ToolbarItemGroup(placement: .automatic) {
+                    CaptureRegionToggle(isConnected: isConnected)
 
                     ScreenshotButton(isConnected: isConnected)
 
@@ -447,7 +485,13 @@ struct ContentView: View {
                     if captureManager.isRecording {
                         RecordingElapsedLabel(clock: captureManager.clock)
                     }
+                }
 
+                if #available(macOS 26.0, *) {
+                    ToolbarSpacer(.fixed)
+                }
+
+                ToolbarItemGroup(placement: .automatic) {
                     Button(action: { toggleOCR() }) {
                         Image(systemName: isOCRModeEnabled ? "text.viewfinder" : "doc.text")
                     }
@@ -626,7 +670,9 @@ struct ContentView: View {
 
     @MainActor
     private func updateInputCaptureForUIOverlays() {
-        let overlayOpen = showingSettings || showingConnections
+        // Drawing a capture region counts as an overlay: the drag must not reach the target, and
+        // Esc has to reach the app.
+        let overlayOpen = showingSettings || showingConnections || captureManager.isSelectingRegion
 
         if overlayOpen {
             if isInputCapturePausedForUI == false {

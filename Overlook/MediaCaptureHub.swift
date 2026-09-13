@@ -1,5 +1,6 @@
 import Foundation
 import AudioToolbox
+import CoreImage
 import CoreVideo
 import QuartzCore
 import os
@@ -163,5 +164,197 @@ enum VideoFrameConversion {
         }
 
         return pixelBuffer
+    }
+}
+
+// MARK: - Capture region
+
+/// Where the capture region lands in a frame. The region is kept as fractions of the frame
+/// (0…1, origin top-left) so a guest that changes resolution keeps the same part of its screen;
+/// this turns it into pixels for one frame size: edges snapped to even coordinates (4:2:0 chroma
+/// is shared between pixel pairs, and the encoders want even dimensions), at least `minimumSide`
+/// on each side, and inside the frame.
+enum CaptureRegionGeometry {
+    static let minimumSide = 16
+
+    static func pixelRect(for region: CGRect, in frameSize: CGSize) -> CGRect {
+        let frameWidth = Int(frameSize.width) & ~1
+        let frameHeight = Int(frameSize.height) & ~1
+        guard frameWidth >= 2, frameHeight >= 2 else {
+            return CGRect(origin: .zero, size: frameSize)
+        }
+
+        let clamped = region.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !clamped.isNull else {
+            return CGRect(x: 0, y: 0, width: frameWidth, height: frameHeight)
+        }
+
+        func even(_ value: CGFloat) -> Int { Int(value.rounded()) & ~1 }
+        let left = even(clamped.minX * CGFloat(frameWidth))
+        let top = even(clamped.minY * CGFloat(frameHeight))
+        let right = even(clamped.maxX * CGFloat(frameWidth))
+        let bottom = even(clamped.maxY * CGFloat(frameHeight))
+
+        let width = min(frameWidth, max(minimumSide, right - left))
+        let height = min(frameHeight, max(minimumSide, bottom - top))
+        let x = max(0, min(left, frameWidth - width))
+        let y = max(0, min(top, frameHeight - height))
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// `1280 × 720`: the region's size in a frame of `frameSize`.
+    static func sizeText(for region: CGRect, in frameSize: CGSize) -> String {
+        let rect = pixelRect(for: region, in: frameSize)
+        return "\(Int(rect.width)) × \(Int(rect.height))"
+    }
+}
+
+/// Cuts the capture region out of decoded frames for a cropped recording.
+///
+/// Owned by one `SessionRecorder` and used only on its queue (the buffer pool is not shared). The
+/// device's H.264 stream decodes to NV12 (`RTCCVPixelBuffer`) and software-decoded frames are
+/// converted to NV12 by `VideoFrameConversion`, so the usual path is a row copy of the two planes
+/// into a pooled buffer — no colour conversion and no GPU round trip per frame. BGRA gets the same
+/// treatment; any other layout goes through Core Image.
+final class FrameCropper {
+    let region: CGRect
+
+    private var pool: CVPixelBufferPool?
+    private var poolFormat: OSType = 0
+    private var poolWidth = 0
+    private var poolHeight = 0
+    private static let context = CIContext(options: [.useSoftwareRenderer: false])
+
+    init(region: CGRect) {
+        self.region = region
+    }
+
+    /// Size of the frames `crop` produces from frames of `frameSize`.
+    func outputSize(forFrameSize frameSize: CGSize) -> CGSize {
+        CaptureRegionGeometry.pixelRect(for: region, in: frameSize).size
+    }
+
+    /// The region of `source` in a new buffer, or `source` itself when the region covers all of it.
+    /// Nil when the frame could not be copied; the caller skips the frame and tries the next.
+    func crop(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        let frameWidth = CVPixelBufferGetWidth(source)
+        let frameHeight = CVPixelBufferGetHeight(source)
+        let rect = CaptureRegionGeometry.pixelRect(for: region, in: CGSize(width: frameWidth, height: frameHeight))
+        let x = Int(rect.minX)
+        let y = Int(rect.minY)
+        let width = Int(rect.width)
+        let height = Int(rect.height)
+        if x == 0, y == 0, width == frameWidth, height == frameHeight {
+            return source
+        }
+
+        let format = CVPixelBufferGetPixelFormatType(source)
+        switch format {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+            guard CVPixelBufferGetPlaneCount(source) == 2 else { return nil }
+            return copyBiPlanar(source, x: x, y: y, width: width, height: height, format: format)
+        case kCVPixelFormatType_32BGRA, kCVPixelFormatType_32ARGB:
+            guard CVPixelBufferGetPlaneCount(source) == 0 else { return nil }
+            return copyPacked(source, x: x, y: y, width: width, height: height, format: format, bytesPerPixel: 4)
+        default:
+            return renderWithCoreImage(source, rect: rect, frameHeight: frameHeight)
+        }
+    }
+
+    private func copyBiPlanar(_ source: CVPixelBuffer, x: Int, y: Int, width: Int, height: Int, format: OSType) -> CVPixelBuffer? {
+        guard let destination = makeBuffer(format: format, width: width, height: height) else { return nil }
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+        guard let sourceY = CVPixelBufferGetBaseAddressOfPlane(source, 0),
+              let sourceUV = CVPixelBufferGetBaseAddressOfPlane(source, 1),
+              let destinationY = CVPixelBufferGetBaseAddressOfPlane(destination, 0),
+              let destinationUV = CVPixelBufferGetBaseAddressOfPlane(destination, 1) else {
+            return nil
+        }
+
+        let sourceStrideY = CVPixelBufferGetBytesPerRowOfPlane(source, 0)
+        let destinationStrideY = CVPixelBufferGetBytesPerRowOfPlane(destination, 0)
+        for row in 0..<height {
+            memcpy(destinationY + row * destinationStrideY, sourceY + (y + row) * sourceStrideY + x, width)
+        }
+
+        // Chroma: one row per two luma rows, and an interleaved Cb/Cr pair per two luma columns —
+        // so the byte offset into a row equals the luma x and the byte count equals the width.
+        // Both are even by construction (`CaptureRegionGeometry`).
+        let sourceStrideUV = CVPixelBufferGetBytesPerRowOfPlane(source, 1)
+        let destinationStrideUV = CVPixelBufferGetBytesPerRowOfPlane(destination, 1)
+        for row in 0..<(height / 2) {
+            memcpy(destinationUV + row * destinationStrideUV, sourceUV + (y / 2 + row) * sourceStrideUV + x, width)
+        }
+
+        CVBufferPropagateAttachments(source, destination)
+        return destination
+    }
+
+    private func copyPacked(_ source: CVPixelBuffer, x: Int, y: Int, width: Int, height: Int, format: OSType, bytesPerPixel: Int) -> CVPixelBuffer? {
+        guard let destination = makeBuffer(format: format, width: width, height: height) else { return nil }
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+        guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+              let destinationBase = CVPixelBufferGetBaseAddress(destination) else {
+            return nil
+        }
+        let sourceStride = CVPixelBufferGetBytesPerRow(source)
+        let destinationStride = CVPixelBufferGetBytesPerRow(destination)
+        for row in 0..<height {
+            memcpy(
+                destinationBase + row * destinationStride,
+                sourceBase + (y + row) * sourceStride + x * bytesPerPixel,
+                width * bytesPerPixel
+            )
+        }
+        CVBufferPropagateAttachments(source, destination)
+        return destination
+    }
+
+    /// Any other layout: let Core Image read it and write BGRA, which the encoders accept.
+    private func renderWithCoreImage(_ source: CVPixelBuffer, rect: CGRect, frameHeight: Int) -> CVPixelBuffer? {
+        guard let destination = makeBuffer(format: kCVPixelFormatType_32BGRA, width: Int(rect.width), height: Int(rect.height)) else {
+            return nil
+        }
+        // Core Image's origin is bottom-left; the region's is top-left.
+        let flipped = CGRect(x: rect.minX, y: CGFloat(frameHeight) - rect.maxY, width: rect.width, height: rect.height)
+        let image = CIImage(cvPixelBuffer: source)
+            .cropped(to: flipped)
+            .transformed(by: CGAffineTransform(translationX: -flipped.minX, y: -flipped.minY))
+        Self.context.render(image, to: destination)
+        return destination
+    }
+
+    /// A buffer from a pool of the given format and size; the pool is rebuilt when either changes
+    /// (the guest switched resolution, or the decoder changed layout).
+    private func makeBuffer(format: OSType, width: Int, height: Int) -> CVPixelBuffer? {
+        if pool == nil || poolFormat != format || poolWidth != width || poolHeight != height {
+            let attributes: [CFString: Any] = [
+                kCVPixelBufferPixelFormatTypeKey: format,
+                kCVPixelBufferWidthKey: width,
+                kCVPixelBufferHeightKey: height,
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+            ]
+            var created: CVPixelBufferPool?
+            let status = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &created)
+            guard status == kCVReturnSuccess, let created else { return nil }
+            pool = created
+            poolFormat = format
+            poolWidth = width
+            poolHeight = height
+        }
+        guard let pool else { return nil }
+        var buffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer) == kCVReturnSuccess else { return nil }
+        return buffer
     }
 }

@@ -62,6 +62,7 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **Record** (record button, `⇧⌘R`): saves the received stream as it plays. The button's menu picks what is kept — **Video and Audio** or **Video Only** (`.mp4`, H.264 by default or HEVC) or **Audio Only** (`.m4a`, AAC).
 - Files land in `~/Pictures/Overlook` and `~/Movies/Overlook` under timestamped names (folders and codec are in Settings → Capture); a toast with **Show** appears after each save.
 - Both shortcuts work while keys are being sent to the target, and the target never sees them.
+- **Capture region** (dashed-rectangle button): click it, then drag a rectangle on the video. From then on screenshots and recordings keep only that part of the screen; the button stays lit and a dashed outline marks the region on the video. Click the lit button to go back to the whole screen. The region lasts until you turn it off or quit Overlook — it is not saved. **Capture → Select Capture Region…** starts a fresh drag over an existing region, and **Show Capture Region Outline** hides the outline without dropping the region. A region set or cleared while recording applies to the next recording.
 
 ---
 
@@ -283,6 +284,7 @@ Playback and capture always go through Overlook's own CoreAudio device (`WebRTCA
 - **Screenshots** / **Recordings** folders: where files are saved (`~/Pictures/Overlook`, `~/Movies/Overlook` by default). Click the path to open it.
 - **Video codec**: H.264 (plays everywhere) or HEVC (smaller files). Applies to the next recording; audio is always AAC.
 - What a recording keeps is chosen from the record button's menu (or Capture → Record): video and audio, video only, or audio only. A recording asked to include audio while Audio is off falls back to video only and says so.
+- **Capture region**: the current region's size in guest pixels with **Clear**, or **Select…** to draw one; **Outline the region on the video** hides or shows the dashed outline. The region is kept as a fraction of the guest screen, so a guest that changes resolution keeps the same portion; crops are snapped to even pixel edges and are at least 16 × 16.
 
 ### Mouse
 
@@ -357,7 +359,7 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
 - `Overlook/MenuBarAgent.swift`
   - Menu bar UI + quick actions.
 - `Overlook/MediaCaptureHub.swift`, `Overlook/SessionRecorder.swift`, `Overlook/CaptureManager.swift`, `Overlook/CaptureViews.swift`
-  - Screenshots and recordings. `MediaCaptureHub` is where decoded frames (`WebRTCManager.renderFrame`) and playout PCM (`WebRTCAudioDevice`) are handed over; `SessionRecorder` muxes them with `AVAssetWriter`; `CaptureManager` owns the UI state, folders and file names; `CaptureViews` has the toolbar controls, overlays, the Capture menu and the settings section.
+  - Screenshots and recordings. `MediaCaptureHub` is where decoded frames (`WebRTCManager.renderFrame`) and playout PCM (`WebRTCAudioDevice`) are handed over, and holds `CaptureRegionGeometry` / `FrameCropper` (region → even-aligned pixel rect; per-frame NV12/BGRA plane copy into a pooled buffer); `SessionRecorder` muxes them with `AVAssetWriter`, cropping to the region it was started with; `CaptureManager` owns the UI state (including the session-only capture region), folders and file names; `CaptureViews` has the toolbar controls, the region selection overlay and outline, the Capture menu and the settings section. The drag itself lives in `VideoSurfaceView`, next to the OCR drag.
 
 ### Security notes
 

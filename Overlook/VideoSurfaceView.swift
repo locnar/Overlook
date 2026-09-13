@@ -11,6 +11,7 @@ struct VideoSurfaceView: View {
     @EnvironmentObject var webRTCManager: WebRTCManager
     @EnvironmentObject var inputManager: InputManager
     @EnvironmentObject var ocrManager: OCRManager
+    @EnvironmentObject var captureManager: CaptureManager
 
     @Binding var isOCRModeEnabled: Bool
     @Binding var selectedText: String
@@ -21,6 +22,9 @@ struct VideoSurfaceView: View {
     @State private var ocrDragStart: CGPoint?
     @State private var ocrDragCurrent: CGPoint?
     @State private var ocrRegionsTask: Task<Void, Never>?
+
+    @State private var regionDragStart: CGPoint?
+    @State private var regionDragCurrent: CGPoint?
 
     private var ocrSelectionRect: CGRect? {
         guard let start = ocrDragStart, let current = ocrDragCurrent else { return nil }
@@ -41,7 +45,7 @@ struct VideoSurfaceView: View {
                     VideoViewRepresentable(
                         videoView: videoView,
                         onMouseMove: { pointInView, deltaInView in
-                            guard !isOCRModeEnabled else { return }
+                            guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
                             inputManager.handleVideoMouseMove(
                                 pointInView: pointInView,
                                 deltaInView: deltaInView,
@@ -50,7 +54,7 @@ struct VideoSurfaceView: View {
                             )
                         },
                         onMouseButton: { button, isDown, pointInView in
-                            guard !isOCRModeEnabled else { return }
+                            guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
                             inputManager.handleVideoMouseButton(
                                 button: button,
                                 isDown: isDown,
@@ -60,7 +64,7 @@ struct VideoSurfaceView: View {
                             )
                         },
                         onScrollWheel: { deltaX, deltaY in
-                            guard !isOCRModeEnabled else { return }
+                            guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
                             inputManager.handleVideoMouseScroll(deltaX: deltaX, deltaY: deltaY)
                         }
                     )
@@ -74,6 +78,12 @@ struct VideoSurfaceView: View {
                     .foregroundColor(.white)
 #endif
 
+                if let region = captureManager.captureRegion,
+                   captureManager.showsRegionOutline,
+                   !captureManager.isSelectingRegion {
+                    CaptureRegionOutline(rectInView: regionRectInView(region, viewSize: geometry.size))
+                }
+
                 if isOCRModeEnabled {
                     OCRSelectionOverlay(
                         regions: ocrManager.recognizedRegions,
@@ -81,6 +91,57 @@ struct VideoSurfaceView: View {
                         viewSize: geometry.size,
                         videoSize: currentVideoSize()
                     )
+                }
+
+                if captureManager.isSelectingRegion {
+                    let selectionRect = regionSelectionRectInView(viewSize: geometry.size)
+                    CaptureRegionSelectionOverlay(
+                        selectionRectInView: selectionRect,
+                        sizeText: selectionRect.flatMap { rect -> String? in
+                            guard let videoSize = currentVideoSize() else { return nil }
+                            return CaptureRegionGeometry.sizeText(
+                                for: normalizedRegion(forViewRect: rect, viewSize: geometry.size),
+                                in: videoSize
+                            )
+                        },
+                        viewSize: geometry.size,
+                        onCancel: { captureManager.cancelRegionSelection() }
+                    )
+
+                    // Same arrangement as OCR mode below: a clear layer over the video view takes
+                    // the drag. Input capture is paused by ContentView while this is up, so the
+                    // target sees none of it.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active: NSCursor.crosshair.set()
+                            case .ended: NSCursor.arrow.set()
+                            }
+                        }
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    if regionDragStart == nil {
+                                        regionDragStart = value.startLocation
+                                    }
+                                    regionDragCurrent = value.location
+                                    NSCursor.crosshair.set()
+                                }
+                                .onEnded { _ in
+                                    defer {
+                                        regionDragStart = nil
+                                        regionDragCurrent = nil
+                                    }
+                                    // A click or a tiny drag is not a region; stay in selection mode.
+                                    guard let rect = regionSelectionRectInView(viewSize: geometry.size),
+                                          rect.width >= 4, rect.height >= 4 else { return }
+                                    captureManager.setCaptureRegion(
+                                        normalizedRegion(forViewRect: rect, viewSize: geometry.size),
+                                        videoSize: currentVideoSize()
+                                    )
+                                }
+                        )
                 }
 
                 if !isOCRModeEnabled, inputManager.isMouseCaptureEnabled, inputManager.isRelativeMouseMode {
@@ -160,6 +221,12 @@ struct VideoSurfaceView: View {
         .onChange(of: isOCRModeEnabled) { _, enabled in
             setOCRMode(enabled)
         }
+        .onChange(of: captureManager.isSelectingRegion) { _, selecting in
+            guard !selecting else { return }
+            regionDragStart = nil
+            regionDragCurrent = nil
+            NSCursor.arrow.set()
+        }
         .onAppear {
             setOCRMode(isOCRModeEnabled)
         }
@@ -204,6 +271,67 @@ struct VideoSurfaceView: View {
         }
         return CGSize(width: width, height: height)
     }
+
+    // MARK: Capture region geometry
+
+    /// The letterboxed rect the video occupies; the whole view until the stream's size is known.
+    private func videoContentRect(viewSize: CGSize) -> CGRect {
+        guard viewSize.width > 0, viewSize.height > 0 else { return .zero }
+        guard let videoSize = currentVideoSize() else { return CGRect(origin: .zero, size: viewSize) }
+        return inputManager.videoContentRect(viewSize: viewSize, videoSize: videoSize)
+    }
+
+    /// The rubber band in view points, clamped to the video so the black bars cannot be selected.
+    private func regionSelectionRectInView(viewSize: CGSize) -> CGRect? {
+        guard let start = regionDragStart, let current = regionDragCurrent else { return nil }
+        let content = videoContentRect(viewSize: viewSize)
+        guard content.width > 0, content.height > 0 else { return nil }
+        func clamp(_ point: CGPoint) -> CGPoint {
+            CGPoint(
+                x: min(max(point.x, content.minX), content.maxX),
+                y: min(max(point.y, content.minY), content.maxY)
+            )
+        }
+        let a = clamp(start)
+        let b = clamp(current)
+        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+
+    /// View points → frame fractions (origin top-left, the frame's own orientation).
+    private func normalizedRegion(forViewRect rect: CGRect, viewSize: CGSize) -> CGRect {
+        let content = videoContentRect(viewSize: viewSize)
+        guard content.width > 0, content.height > 0 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
+        return CGRect(
+            x: (rect.minX - content.minX) / content.width,
+            y: (rect.minY - content.minY) / content.height,
+            width: rect.width / content.width,
+            height: rect.height / content.height
+        )
+    }
+
+    /// Frame fractions → view points, showing the region as it is actually cut (snapped to even
+    /// pixels and the 16 px minimum) once the stream's size is known.
+    private func regionRectInView(_ region: CGRect, viewSize: CGSize) -> CGRect {
+        let content = videoContentRect(viewSize: viewSize)
+        var shown = region
+        if let videoSize = currentVideoSize(), videoSize.width >= 2, videoSize.height >= 2 {
+            let pixels = CaptureRegionGeometry.pixelRect(for: region, in: videoSize)
+            shown = CGRect(
+                x: pixels.minX / videoSize.width,
+                y: pixels.minY / videoSize.height,
+                width: pixels.width / videoSize.width,
+                height: pixels.height / videoSize.height
+            )
+        }
+        return CGRect(
+            x: content.minX + shown.minX * content.width,
+            y: content.minY + shown.minY * content.height,
+            width: shown.width * content.width,
+            height: shown.height * content.height
+        )
+    }
+
+    // MARK: OCR
 
     private func performOCR(at location: CGPoint, in geometry: GeometryProxy) {
         let normalized = inputManager.normalizePointInViewToVideo(
