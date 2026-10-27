@@ -73,7 +73,21 @@ class InputManager: ObservableObject {
     private var activeCommandKeyCode: UInt16?
     private var commandKeySentToRemote: Bool = false
     private var suppressedKeyUps: Set<UInt16> = []
-    
+
+    /// Keys pressed on the target and not yet released, by kvmd key name. Released when capture
+    /// stops or Overlook loses focus: the key-up would otherwise go to another app and the key
+    /// would stay down on the target.
+    private var remoteHeldKeys: Set<String> = []
+    private var keyboardFocusObservers: [NSObjectProtocol] = []
+
+    /// Caps Lock as the target last reported it through its keyboard LEDs; nil until reported.
+    private var remoteCapsLockLED: Bool?
+    /// Cleared when a corrective tap did not move the LED. Some targets (firmware setup screens,
+    /// some BIOSes) never drive the keyboard LEDs, and correcting against a stale report would
+    /// toggle Caps Lock every time the window came forward.
+    private var remoteCapsLockLEDIsLive = true
+    private var capsLockVerifyTask: Task<Void, Never>?
+
     @Published var isKeyboardCaptureEnabled = false
     @Published var isMouseCaptureEnabled = false
 
@@ -152,6 +166,7 @@ class InputManager: ObservableObject {
             disconnectGLKVMWebSocket()
         }
         glkvmClient = client
+        resetRemoteKeyboardState()
         deviceReportedAbsoluteMouse = nil
         hidDropReconnectRounds = 0
         isGLKVMAbsoluteMouseMode = true
@@ -440,27 +455,50 @@ class InputManager: ObservableObject {
         guard keyEventMonitor == nil else {
             isCapturing = true
             isKeyboardCaptureEnabled = true
+            syncRemoteCapsLock()
             return
         }
-        
+
         isCapturing = true
         isKeyboardCaptureEnabled = true
-        
+
         keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
             self?.handleKeyEvent(event)
             guard let self, self.isKeyboardCaptureEnabled else { return event }
             return nil
         }
+
+        // A local monitor sees nothing while another app is active, so a key held when focus
+        // leaves never gets its key-up, and Caps Lock can be toggled behind our back.
+        let center = NotificationCenter.default
+        keyboardFocusObservers = [
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.releaseRemoteHeldKeys()
+                }
+            },
+            center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.syncRemoteCapsLock()
+                }
+            },
+        ]
+        syncRemoteCapsLock()
     }
-    
+
     func stopKeyboardCapture() {
         isKeyboardCaptureEnabled = false
-        
+
         if let monitor = keyEventMonitor {
             NSEvent.removeMonitor(monitor)
             keyEventMonitor = nil
         }
-        
+        for observer in keyboardFocusObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        keyboardFocusObservers.removeAll()
+        releaseRemoteHeldKeys()
+
         if !isMouseCaptureEnabled {
             isCapturing = false
         }
@@ -548,6 +586,8 @@ class InputManager: ObservableObject {
                     activeCommandKeyCode = pending
                     pendingCommandKeyCode = nil
                     commandKeySentToRemote = true
+                    remoteHeldKeys.insert(metaKey)
+                    remoteHeldKeys.insert(keyName)
 
                     enqueueHIDCommand(label: "key combination") {
                         try await ws.sendHidKey(key: metaKey, state: true)
@@ -576,14 +616,10 @@ class InputManager: ObservableObject {
             let flags = event.modifierFlags
             let isDown: Bool
             switch keyName {
-            case "ShiftLeft", "ShiftRight":
-                isDown = flags.contains(.shift)
-            case "ControlLeft", "ControlRight":
-                isDown = flags.contains(.control)
-            case "AltLeft", "AltRight":
-                isDown = flags.contains(.option)
+            case "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight":
+                isDown = Self.isModifierSideDown(keyName, flags: flags)
             case "MetaLeft", "MetaRight":
-                isDown = flags.contains(.command)
+                isDown = Self.isModifierSideDown(keyName, flags: flags)
                 if isDown {
                     pendingCommandKeyCode = keyCode
                     activeCommandKeyCode = nil
@@ -604,7 +640,11 @@ class InputManager: ObservableObject {
                 clearPendingCommandKey()
                 return
             case "CapsLock":
-                isDown = flags.contains(.capsLock)
+                // macOS reports a lock *toggle*, one event per press, never the key's release.
+                // Forwarding that as down-then-(next press)-up made the target toggle on every
+                // other press. Each toggle here is a full press on the target.
+                sendCapsLockTap(timestamp: event.timestamp)
+                return
             default:
                 return
             }
@@ -622,12 +662,134 @@ class InputManager: ObservableObject {
         }
     }
 
+    /// Device-dependent modifier bits (IOKit's `NX_DEVICE…KEYMASK`) in `modifierFlags.rawValue`,
+    /// as (this side, other side). The device-independent flags (`.shift`, …) stay set while
+    /// *either* side is down, so releasing Left Shift with Right Shift held read as a press and
+    /// Left Shift stayed down on the target.
+    private static let modifierSideMasks: [String: (family: NSEvent.ModifierFlags, mask: UInt, other: UInt)] = [
+        "ControlLeft": (.control, 0x0001, 0x2000),
+        "ControlRight": (.control, 0x2000, 0x0001),
+        "ShiftLeft": (.shift, 0x0002, 0x0004),
+        "ShiftRight": (.shift, 0x0004, 0x0002),
+        "MetaLeft": (.command, 0x0008, 0x0010),
+        "MetaRight": (.command, 0x0010, 0x0008),
+        "AltLeft": (.option, 0x0020, 0x0040),
+        "AltRight": (.option, 0x0040, 0x0020),
+    ]
+
+    private static func isModifierSideDown(_ keyName: String, flags: NSEvent.ModifierFlags) -> Bool {
+        guard let side = modifierSideMasks[keyName] else { return false }
+        guard flags.contains(side.family) else { return false }
+        let raw = flags.rawValue
+        if raw & side.mask != 0 { return true }
+        if raw & side.other != 0 { return false }
+        // No side bits at all (some remappers and synthesized events): the family flag is all
+        // there is to go on.
+        return true
+    }
+
+    private func sendCapsLockTap(timestamp: TimeInterval = CACurrentMediaTime()) {
+        let capsLockKeyCode: UInt16 = 57
+        sendKeyEvent(KeyEvent(keyCode: capsLockKeyCode, isKeyDown: true, modifiers: [], timestamp: timestamp))
+        sendKeyEvent(KeyEvent(keyCode: capsLockKeyCode, isKeyDown: false, modifiers: [], timestamp: timestamp))
+    }
+
+    /// Releases every key still held on the target. Runs when capture stops and when Overlook
+    /// loses focus; the keys' real key-ups will go to whichever app is active instead.
+    private func releaseRemoteHeldKeys() {
+        let held = remoteHeldKeys
+        remoteHeldKeys.removeAll()
+        clearPendingCommandKey()
+        suppressedKeyUps.removeAll()
+        guard !held.isEmpty, transportMode == .glkvmWebSocket, let ws = glkvmWebSocketClient else { return }
+        clog.info(.hid, "Releasing keys held on the target: \(held.sorted().joined(separator: ", "))")
+        enqueueHIDCommand(label: "release held keys") {
+            for key in held {
+                try await ws.sendHidKey(key: key, state: false)
+            }
+        }
+    }
+
+    /// Brings the target's Caps Lock into line with this Mac's, using the keyboard LED state
+    /// kvmd reports. Runs when capture starts, when Overlook comes forward, and when the first
+    /// LED report arrives on a new socket — the moments a toggle may have happened unseen.
+    private func syncRemoteCapsLock() {
+        guard isKeyboardCaptureEnabled, NSApp.isActive, remoteCapsLockLEDIsLive, capsLockVerifyTask == nil,
+              transportMode == .glkvmWebSocket, glkvmWebSocketClient != nil,
+              let remote = remoteCapsLockLED else { return }
+        let local = NSEvent.modifierFlags.contains(.capsLock)
+        guard local != remote else { return }
+
+        clog.info(.hid, "Caps Lock is \(local ? "on" : "off") here but \(remote ? "on" : "off") on the target; toggling it")
+        sendCapsLockTap()
+        capsLockVerifyTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.capsLockVerifyTask = nil
+            if self.remoteCapsLockLED == remote {
+                self.remoteCapsLockLEDIsLive = false
+                clog.notice(.hid, "Target's Caps Lock LED did not follow; not syncing Caps Lock on this connection")
+            }
+        }
+    }
+
+    /// Puts the target's keyboard in a known state when a new HID socket comes up. Whatever was
+    /// held when the previous socket went away is cleared — after a drop its key-ups failed, and
+    /// after a crash nothing sent them — and the modifiers physically held right now are pressed
+    /// again. Caps Lock is handled separately, by `syncRemoteCapsLock` on the first LED report.
+    private func resyncRemoteKeys(through ws: GLKVMClient.WebSocketClient) {
+        var toPress: [String] = []
+        if isKeyboardCaptureEnabled, NSApp.isActive {
+            let flags = NSEvent.modifierFlags
+            for (left, right) in [("ShiftLeft", "ShiftRight"), ("ControlLeft", "ControlRight"), ("AltLeft", "AltRight")] {
+                guard let leftSide = Self.modifierSideMasks[left], flags.contains(leftSide.family) else { continue }
+                let leftDown = flags.rawValue & leftSide.mask != 0
+                let rightDown = flags.rawValue & leftSide.other != 0
+                // No side bits at all: one of them is down, and which one rarely matters.
+                if leftDown || !rightDown { toPress.append(left) }
+                if rightDown { toPress.append(right) }
+            }
+            // Command is only on the target once it has been combined with another key; a
+            // still-pending Command stays pending.
+            if commandKeySentToRemote {
+                if flags.contains(.command), let code = activeCommandKeyCode, let metaKey = glkvmKeyForMacKeyCode(code) {
+                    toPress.append(metaKey)
+                } else {
+                    clearPendingCommandKey()
+                }
+            }
+        } else {
+            clearPendingCommandKey()
+        }
+
+        let pressAgain = toPress
+        remoteHeldKeys = Set(pressAgain)
+        clog.info(.hid, pressAgain.isEmpty
+            ? "Cleared held keys on the target"
+            : "Cleared held keys on the target; pressing again: \(pressAgain.joined(separator: ", "))")
+        enqueueHIDCommand(label: "resync keyboard") {
+            try await ws.releaseAllHIDInputs()
+            for key in pressAgain {
+                try await ws.sendHidKey(key: key, state: true)
+            }
+        }
+    }
+
+    private func resetRemoteKeyboardState() {
+        remoteHeldKeys.removeAll()
+        remoteCapsLockLED = nil
+        remoteCapsLockLEDIsLive = true
+        capsLockVerifyTask?.cancel()
+        capsLockVerifyTask = nil
+    }
+
     private func prepareForLocalCommandShortcut() {
         if commandKeySentToRemote,
            transportMode == .glkvmWebSocket,
            let ws = glkvmWebSocketClient,
            let code = activeCommandKeyCode,
            let metaKey = glkvmKeyForMacKeyCode(code) {
+            remoteHeldKeys.remove(metaKey)
             enqueueHIDCommand(label: "modifier release") {
                 try await ws.sendHidKey(key: metaKey, state: false)
             }
@@ -707,6 +869,11 @@ class InputManager: ObservableObject {
         if transportMode == .glkvmWebSocket,
            let key = glkvmKeyForMacKeyCode(event.keyCode),
            let ws = glkvmWebSocketClient {
+            if event.isKeyDown {
+                remoteHeldKeys.insert(key)
+            } else {
+                remoteHeldKeys.remove(key)
+            }
             enqueueHIDCommand(label: event.isKeyDown ? "key down" : "key up") {
                 try await ws.sendHidKey(key: key, state: event.isKeyDown)
             }
@@ -899,10 +1066,11 @@ class InputManager: ObservableObject {
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
 
-        for observer in pointerLockObservers {
+        for observer in pointerLockObservers + keyboardFocusObservers {
             NotificationCenter.default.removeObserver(observer)
         }
         deviceEventTask?.cancel()
+        capsLockVerifyTask?.cancel()
         deviceMouseModeRefreshDebounce?.cancel()
 
         // isCursorHidden is a plain stored Bool that mirrors the lock state (set in lockPointer,
@@ -1150,6 +1318,10 @@ class InputManager: ObservableObject {
 
     private func startDeviceEventListener(_ ws: GLKVMClient.WebSocketClient) {
         deviceEventTask?.cancel()
+        // The new socket opens with kvmd's full state; take the LED state fresh from it.
+        remoteCapsLockLED = nil
+        capsLockVerifyTask?.cancel()
+        capsLockVerifyTask = nil
         deviceEventTask = Task { @MainActor [weak self] in
             var isFirstEvent = true
             for await event in ws.events {
@@ -1160,6 +1332,9 @@ class InputManager: ObservableObject {
                     isFirstEvent = false
                     self.hidDropReconnectRounds = 0
                     self.publishHIDLink(.connected)
+                    if self.glkvmWebSocketClient === ws {
+                        self.resyncRemoteKeys(through: ws)
+                    }
                 }
                 self.handleDeviceEvent(event)
             }
@@ -1215,6 +1390,14 @@ class InputManager: ObservableObject {
         }
         if let usbConnected = state["connected"]?.boolValue {
             telemetry?.update { $0.hidUSBConnected = usbConnected }
+        }
+        // `keyboard.leds` is the LED state the target's OS last set on the HID gadget.
+        if let caps = state["keyboard"]?["leds"]?["caps"]?.boolValue {
+            let isFirstReport = remoteCapsLockLED == nil
+            remoteCapsLockLED = caps
+            if isFirstReport {
+                syncRemoteCapsLock()
+            }
         }
     }
 
