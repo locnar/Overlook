@@ -21,7 +21,7 @@ struct WebUISettingsActions {
     let model: WebUISettingsPanelModel
     let webRTCManager: WebRTCManager
     let inputManager: InputManager
-    let kvmDeviceManager: KVMDeviceManager
+    let connection: SessionConnection
 
     /// Resolution presets offered by the streamer resolution picker. `static` so the binding's
     /// getter does not rebuild a `Set` on every evaluation.
@@ -45,7 +45,7 @@ extension WebUISettingsActions {
     // MARK: - Load
 
     func load() async {
-        guard let client = kvmDeviceManager.glkvmClient else {
+        guard let client = connection.glkvmClient else {
             await MainActor.run {
                 model.config = nil
                 model.keymaps = nil
@@ -126,7 +126,7 @@ extension WebUISettingsActions {
 
     func applyVideoQualityPreset(_ preset: Int) async {
         guard preset != WebUISettingsPanelModel.videoQualityCustomTag else { return }
-        guard let client = kvmDeviceManager.glkvmClient else { return }
+        guard let client = connection.glkvmClient else { return }
 
         var params: [String: String] = [:]
         var streamQuality: Int? = nil
@@ -216,7 +216,7 @@ extension WebUISettingsActions {
     }
 
     func applyEdid(_ value: String) async {
-        guard let client = kvmDeviceManager.glkvmClient else { return }
+        guard let client = connection.glkvmClient else { return }
 
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -274,7 +274,7 @@ extension WebUISettingsActions {
     }
 
     func applyStreamerParams() async {
-        guard let client = kvmDeviceManager.glkvmClient else { return }
+        guard let client = connection.glkvmClient else { return }
         guard model.streamerState != nil else { return }
 
         guard model.isProgrammaticStreamerDraftUpdate == false else { return }
@@ -414,7 +414,7 @@ extension WebUISettingsActions {
     }
 
     func reconnectWebRTC() async {
-        guard let device = kvmDeviceManager.connectedDevice else { return }
+        guard let device = connection.connectedDevice else { return }
 
         await webRTCManager.reconnect(to: device, reason: "Stream settings changed")
         if let reason = webRTCManager.lastDisconnectReason {
@@ -423,7 +423,7 @@ extension WebUISettingsActions {
     }
 
     func resetKVM() async {
-        guard let client = kvmDeviceManager.glkvmClient else { return }
+        guard let client = connection.glkvmClient else { return }
         do {
             try await client.resetHid()
             try await client.resetStreamer()
@@ -457,7 +457,7 @@ extension WebUISettingsActions {
     }
 
     func apply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) async {
-        guard let client = kvmDeviceManager.glkvmClient else { return }
+        guard let client = connection.glkvmClient else { return }
         await MainActor.run { model.isApplying = true }
         do {
             let updated = try await client.setSystemConfig(newConfig)

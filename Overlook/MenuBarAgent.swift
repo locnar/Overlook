@@ -11,10 +11,14 @@ class MenuBarAgent: NSObject, ObservableObject {
     private var globalKeyMonitor: Any?
 
     private let kvmDeviceManager: KVMDeviceManager
-    private let webRTCManager: WebRTCManager
-    private let inputManager: InputManager
-    private let captureManager: CaptureManager
+    /// The console the status menu acts on — the only one, while there is one window.
+    private let session: ConsoleSession
     private let showMainWindow: () -> Void
+
+    private var connection: SessionConnection { session.connection }
+    private var webRTCManager: WebRTCManager { session.webRTCManager }
+    private var inputManager: InputManager { session.inputManager }
+    private var captureManager: CaptureManager { session.captureManager }
     
     @Published var isConnected = false
     @Published var currentDevice: KVMDevice?
@@ -24,15 +28,11 @@ class MenuBarAgent: NSObject, ObservableObject {
 
     init(
         kvmDeviceManager: KVMDeviceManager,
-        webRTCManager: WebRTCManager,
-        inputManager: InputManager,
-        captureManager: CaptureManager,
+        session: ConsoleSession,
         showMainWindow: @escaping () -> Void
     ) {
         self.kvmDeviceManager = kvmDeviceManager
-        self.webRTCManager = webRTCManager
-        self.inputManager = inputManager
-        self.captureManager = captureManager
+        self.session = session
         self.showMainWindow = showMainWindow
         super.init()
     }
@@ -48,8 +48,8 @@ class MenuBarAgent: NSObject, ObservableObject {
 
     private func bindManagers() {
         availableDevices = kvmDeviceManager.availableDevices
-        currentDevice = kvmDeviceManager.connectedDevice
-        isConnected = (kvmDeviceManager.connectedDevice != nil)
+        currentDevice = connection.connectedDevice
+        isConnected = (connection.connectedDevice != nil)
         updateStatusIcon()
         updateDeviceMenu()
 
@@ -61,13 +61,13 @@ class MenuBarAgent: NSObject, ObservableObject {
             }
             .store(in: &cancellables)
 
-        kvmDeviceManager.$connectedDevice
+        connection.$connectedDevice
             .sink { [weak self] device in
                 guard let self else { return }
                 self.currentDevice = device
                 self.isConnected = (device != nil)
                 self.updateStatusIcon()
-                // `@Published` fires in `willSet`: the manager still holds the previous device
+                // `@Published` fires in `willSet`: the connection still holds the previous device
                 // here, so the status line takes the emitted value rather than reading it back.
                 self.updateStatusMenuItem(device: device)
                 self.updateDeviceMenu()
@@ -258,7 +258,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func updateStatusMenuItem() {
-        updateStatusMenuItem(device: kvmDeviceManager.connectedDevice)
+        updateStatusMenuItem(device: connection.connectedDevice)
     }
 
     private func updateStatusMenuItem(device: KVMDevice?) {
@@ -337,6 +337,7 @@ class MenuBarAgent: NSObject, ObservableObject {
             popover?.contentViewController = NSHostingController(
                 rootView: MenuBarView(
                     kvmDeviceManager: kvmDeviceManager,
+                    connection: connection,
                     onShowWindow: { [weak self] in self?.showMainWindow() },
                     onScan: { [weak self] in self?.kvmDeviceManager.scanForDevices() },
                     onConnect: { [weak self] device in
@@ -372,13 +373,13 @@ class MenuBarAgent: NSObject, ObservableObject {
         showMainWindow()
 
         do {
-            let connected = try await kvmDeviceManager.connectToDevice(device)
+            let connected = try await connection.connectToDevice(device)
             await finishSessionConnect(connected)
         } catch {
             if let kvmError = error as? KVMError, kvmError == .authenticationFailed {
                 guard let entry = promptForPassword(deviceName: device.name) else { return }
                 do {
-                    let connected = try await kvmDeviceManager.connectToDevice(
+                    let connected = try await connection.connectToDevice(
                         device,
                         password: entry.password,
                         savePassword: entry.save
@@ -395,7 +396,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func finishSessionConnect(_ connectedDevice: KVMDevice) async {
-        if let client = kvmDeviceManager.glkvmClient {
+        if let client = connection.glkvmClient {
             inputManager.setGLKVMClient(client)
             inputManager.startFullInputCapture()
             try? await client.setHidConnected(true)
@@ -422,12 +423,12 @@ class MenuBarAgent: NSObject, ObservableObject {
     private func disconnectSession() {
         webRTCManager.disconnect()
 
-        let client = kvmDeviceManager.glkvmClient
+        let client = connection.glkvmClient
         Task {
             try? await client?.setHidConnected(false)
         }
 
-        kvmDeviceManager.disconnectFromDevice()
+        connection.disconnectFromDevice()
         inputManager.setGLKVMClient(nil)
         inputManager.stopFullInputCapture()
 
@@ -498,7 +499,7 @@ class MenuBarAgent: NSObject, ObservableObject {
             } else {
                 showMainWindow()
                 do {
-                    let connected = try await kvmDeviceManager.connectToDevice(
+                    let connected = try await connection.connectToDevice(
                         device,
                         password: password,
                         savePassword: savePassword
@@ -568,7 +569,7 @@ class MenuBarAgent: NSObject, ObservableObject {
 
     @objc private func forgetDevice(_ sender: NSMenuItem) {
         guard let device = sender.representedObject as? KVMDevice else { return }
-        if kvmDeviceManager.connectedDevice?.host == device.host, kvmDeviceManager.connectedDevice?.port == device.port {
+        if connection.connectedDevice?.host == device.host, connection.connectedDevice?.port == device.port {
             showError(title: "Cannot forget", message: "Disconnect before forgetting this device.")
             return
         }
@@ -577,7 +578,7 @@ class MenuBarAgent: NSObject, ObservableObject {
 
     @objc private func removeManualDevice(_ sender: NSMenuItem) {
         guard let device = sender.representedObject as? KVMDevice else { return }
-        if kvmDeviceManager.connectedDevice?.host == device.host, kvmDeviceManager.connectedDevice?.port == device.port {
+        if connection.connectedDevice?.host == device.host, connection.connectedDevice?.port == device.port {
             showError(title: "Cannot remove", message: "Disconnect before removing this device.")
             return
         }
@@ -674,7 +675,7 @@ class MenuBarAgent: NSObject, ObservableObject {
 // (a Combine sink sees `@Published` values one step early, in `willSet`).
 extension MenuBarAgent: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        let connected = kvmDeviceManager.connectedDevice != nil
+        let connected = connection.connectedDevice != nil
         switch menuItem.tag {
         case 101, 400:   // Disconnect, Save Screenshot
             return connected
@@ -691,6 +692,7 @@ extension MenuBarAgent: NSMenuItemValidation {
 // MARK: - Menu Bar View
 struct MenuBarView: View {
     @ObservedObject var kvmDeviceManager: KVMDeviceManager
+    @ObservedObject var connection: SessionConnection
 
     let onShowWindow: () -> Void
     let onScan: () -> Void
@@ -728,7 +730,7 @@ struct MenuBarView: View {
                         ForEach(kvmDeviceManager.availableDevices) { device in
                             MenuBarDeviceRow(
                                 device: device,
-                                isConnected: kvmDeviceManager.connectedDevice?.host == device.host && kvmDeviceManager.connectedDevice?.port == device.port,
+                                isConnected: connection.connectedDevice?.host == device.host && connection.connectedDevice?.port == device.port,
                                 onConnect: {
                                     onConnect(device)
                                 },

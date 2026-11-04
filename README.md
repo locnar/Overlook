@@ -426,8 +426,12 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - Text region overlay + “Recognized Text” sheet.
 - `Overlook/GLKVMClient.swift`
   - Device HTTP APIs (streamer params, system config, EDID, HID print, etc.).
+- `Overlook/ConsoleSession.swift`
+  - Everything one console window drives: its connection, stream, input, OCR, capture and panels.
+- `Overlook/SessionConnection.swift`
+  - A session's connection to one device: authentication, connect and disconnect.
 - `Overlook/KVMDeviceManager.swift`
-  - Discovery, saved devices, authentication.
+  - The device catalog shared by every session: discovery and saved devices.
 - `Overlook/MenuBarAgent.swift`
   - Menu bar UI + quick actions.
 - `Overlook/MediaCaptureHub.swift`, `Overlook/SessionRecorder.swift`, `Overlook/CaptureManager.swift`, `Overlook/CaptureViews.swift`

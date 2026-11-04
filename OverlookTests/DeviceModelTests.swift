@@ -51,19 +51,19 @@ struct DeviceModelTests {
     @Test(arguments: [401, 403, 200, 204])
     func httpRejectionsAreAuthRejections(status: Int) {
         let error = GLKVMClient.ClientError.httpError(statusCode: status, body: nil)
-        #expect(KVMDeviceManager.isAuthRejection(error))
+        #expect(SessionConnection.isAuthRejection(error))
     }
 
     @Test(arguments: [400, 404, 500, 502])
     func otherHTTPFailuresAreNot(status: Int) {
         let error = GLKVMClient.ClientError.httpError(statusCode: status, body: nil)
-        #expect(KVMDeviceManager.isAuthRejection(error) == false)
+        #expect(SessionConnection.isAuthRejection(error) == false)
     }
 
     @Test func transportFailuresAreNot() {
-        #expect(KVMDeviceManager.isAuthRejection(URLError(.timedOut)) == false)
-        #expect(KVMDeviceManager.isAuthRejection(KVMError.connectionFailed) == false)
-        #expect(KVMDeviceManager.isAuthRejection(GLKVMClient.ClientError.decodingFailed) == false)
+        #expect(SessionConnection.isAuthRejection(URLError(.timedOut)) == false)
+        #expect(SessionConnection.isAuthRejection(KVMError.connectionFailed) == false)
+        #expect(SessionConnection.isAuthRejection(GLKVMClient.ClientError.decodingFailed) == false)
     }
 
     // MARK: - Keys the secrets are stored under

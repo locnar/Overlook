@@ -6,24 +6,25 @@ import Testing
 @Suite("Capture manager")
 struct CaptureManagerTests {
     let scratch = ScratchDefaults()
-    let catalog: KVMDeviceManager
+    let connection: SessionConnection
     let capture: CaptureManager
 
     init() {
-        catalog = KVMDeviceManager(
+        let catalog = KVMDeviceManager(
             defaults: scratch.defaults,
             credentials: FakeCredentialStore(),
             trustStore: Fixtures.trustStore(scratch)
         )
-        capture = CaptureManager(webRTCManager: WebRTCManager(), kvmDeviceManager: catalog, defaults: scratch.defaults)
+        connection = SessionConnection(catalog: catalog)
+        capture = CaptureManager(webRTCManager: WebRTCManager(), connection: connection, defaults: scratch.defaults)
     }
 
     private func connect(name: String = "Test KVM") {
-        catalog.connectedDevice = Fixtures.device(name: name)
+        connection.connectedDevice = Fixtures.device(name: name)
     }
 
     private func disconnect() {
-        catalog.connectedDevice = nil
+        connection.connectedDevice = nil
     }
 
     /// A fixed local time, so the expected file names can be written out in full.
@@ -74,7 +75,7 @@ struct CaptureManagerTests {
         defaults.set("/tmp/shots", forKey: "overlook.capture.screenshotsFolder")
         defaults.set("/tmp/movies", forKey: "overlook.capture.recordingsFolder")
 
-        let reloaded = CaptureManager(webRTCManager: WebRTCManager(), kvmDeviceManager: catalog, defaults: defaults)
+        let reloaded = CaptureManager(webRTCManager: WebRTCManager(), connection: connection, defaults: defaults)
 
         #expect(reloaded.recordingMode == .audioOnly)
         #expect(reloaded.videoCodec == .hevc)
@@ -88,7 +89,7 @@ struct CaptureManagerTests {
         scratch.defaults.set("mpeg2", forKey: "overlook.capture.videoCodec")
         scratch.defaults.set("", forKey: "overlook.capture.screenshotsFolder")
 
-        let reloaded = CaptureManager(webRTCManager: WebRTCManager(), kvmDeviceManager: catalog, defaults: scratch.defaults)
+        let reloaded = CaptureManager(webRTCManager: WebRTCManager(), connection: connection, defaults: scratch.defaults)
 
         #expect(reloaded.recordingMode == .videoAndAudio)
         #expect(reloaded.videoCodec == .h264)

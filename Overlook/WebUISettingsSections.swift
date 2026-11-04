@@ -16,7 +16,7 @@ import AppKit
 // MARK: - Video
 
 struct VideoSettingsSection: View {
-    @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
+    @EnvironmentObject var connection: SessionConnection
     @ObservedObject var model: WebUISettingsPanelModel
 
     @Binding var isExpanded: Bool
@@ -52,7 +52,7 @@ struct VideoSettingsSection: View {
                     Text("Insane").tag(WebUISettingsPanelModel.videoQualityInsaneTag)
                     Text("Custom").tag(WebUISettingsPanelModel.videoQualityCustomTag)
                 }
-                .disabled(kvmDeviceManager.glkvmClient == nil || model.isLoading || model.isApplying || model.isApplyingStreamer || model.isApplyingEdid)
+                .disabled(connection.glkvmClient == nil || model.isLoading || model.isApplying || model.isApplyingStreamer || model.isApplyingEdid)
                 .onChange(of: model.selectedVideoQualityPreset) { _, newValue in
                     guard model.isLoading == false else { return }
                     Task { await actions.applyVideoQualityPreset(newValue) }
@@ -63,7 +63,7 @@ struct VideoSettingsSection: View {
                         Text(opt.label).tag(opt.id)
                     }
                 }
-                .disabled(kvmDeviceManager.glkvmClient == nil || model.isLoading || model.isApplyingEdid)
+                .disabled(connection.glkvmClient == nil || model.isLoading || model.isApplyingEdid)
                 .onChange(of: model.selectedEdidOption) { _, newValue in
                     guard model.isProgrammaticEdidSelectionUpdate == false else { return }
                     guard newValue != EDIDCatalog.customOptionID else { return }
@@ -79,14 +79,14 @@ struct VideoSettingsSection: View {
                             RoundedRectangle(cornerRadius: 6)
                                 .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
                         )
-                        .disabled(kvmDeviceManager.glkvmClient == nil || model.isApplyingEdid)
+                        .disabled(connection.glkvmClient == nil || model.isApplyingEdid)
 
                     HStack {
                         Button("Apply custom EDID") {
                             Task { await actions.applyEdid(model.customEdidDraft) }
                         }
                         .disabled(
-                            kvmDeviceManager.glkvmClient == nil ||
+                            connection.glkvmClient == nil ||
                                 model.isApplyingEdid ||
                                 model.customEdidDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         )
@@ -496,7 +496,7 @@ struct KeyboardSettingsSection: View {
 
 struct AudioSettingsSection: View {
     @EnvironmentObject var webRTCManager: WebRTCManager
-    @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
+    @EnvironmentObject var connection: SessionConnection
     @ObservedObject var model: WebUISettingsPanelModel
 
     @Binding var isExpanded: Bool
@@ -547,7 +547,7 @@ struct AudioSettingsSection: View {
                 Button("Reconnect WebRTC") {
                     Task { await actions.reconnectWebRTC() }
                 }
-                .disabled(kvmDeviceManager.connectedDevice == nil)
+                .disabled(connection.connectedDevice == nil)
             }
             .padding(.top, 6)
             .onAppear { actions.refreshAudioDevices() }
@@ -622,7 +622,7 @@ struct NetworkSettingsSection: View {
 // MARK: - Advanced
 
 struct AdvancedSettingsSection: View {
-    @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
+    @EnvironmentObject var connection: SessionConnection
 
     @Binding var isExpanded: Bool
     let actions: WebUISettingsActions
@@ -633,7 +633,7 @@ struct AdvancedSettingsSection: View {
                 Button("Reset KVM") {
                     Task { await actions.resetKVM() }
                 }
-                .disabled(kvmDeviceManager.glkvmClient == nil)
+                .disabled(connection.glkvmClient == nil)
             }
             .padding(.top, 6)
         }

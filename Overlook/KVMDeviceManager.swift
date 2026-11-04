@@ -33,14 +33,27 @@ struct KeychainDeviceCredentials: DeviceCredentialStore {
     }
 }
 
+/// A device leaving the catalog, as a session connected to it needs to hear about it.
+enum KVMDeviceRemoval: Equatable {
+    /// `removeDevice`: that one list entry, by id.
+    case removed(id: String)
+    /// `forgetDevice`: everything saved for that address.
+    case forgotten(host: String, port: Int)
+}
+
+/// The devices the app knows about: discovered by a scan, added by hand, or saved after a
+/// connection. Shared by the whole app; which device a console is connected to is that console's
+/// business, and lives in its `SessionConnection`.
 @MainActor
 final class KVMDeviceManager: NSObject, ObservableObject {
     @Published var availableDevices: [KVMDevice] = []
-    @Published var connectedDevice: KVMDevice?
-    @Published var glkvmClient: GLKVMClient?
     @Published var isScanning = false
     @Published var scanProgress: Double = 0.0
     @Published var autoScanEnabled: Bool = false
+
+    /// Announces removed and forgotten devices. The catalog does not know which sessions exist,
+    /// so each session watches this and lets go of a device it was connected to.
+    let deviceRemovals = PassthroughSubject<KVMDeviceRemoval, Never>()
     
     private var networkMonitor: NWPathMonitor?
     private var scanTimer: Timer?
@@ -690,10 +703,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     
     func removeDevice(_ device: KVMDevice) {
         availableDevices.removeAll { $0.id == device.id }
-        
-        if connectedDevice?.id == device.id {
-            connectedDevice = nil
-        }
+        deviceRemovals.send(.removed(id: device.id))
     }
 
     func forgetDevice(_ device: KVMDevice) {
@@ -708,115 +718,19 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         trustStore.reset(host: host, port: port)
 
         availableDevices.removeAll { $0.host == host && $0.port == port }
-        if connectedDevice?.host == host, connectedDevice?.port == port {
-            connectedDevice = nil
-            glkvmClient = nil
+        deviceRemovals.send(.forgotten(host: host, port: port))
+    }
+
+    /// Replaces the listed entry with the same id, if there is one. A connect uses it to show a
+    /// fresh token in the list before the device is saved.
+    func updateDevice(_ device: KVMDevice) {
+        if let index = availableDevices.firstIndex(where: { $0.id == device.id }) {
+            availableDevices[index] = device
         }
     }
     
-    @discardableResult
-    func connectToDevice(
-        _ device: KVMDevice,
-        authToken: String? = nil,
-        password: String? = nil,
-        user: String = "admin",
-        savePassword: Bool = false
-    ) async throws -> KVMDevice {
-        // Validate device connection
-        let isValid = try await validateDeviceConnection(device)
-        guard isValid else {
-            throw KVMError.connectionFailed
-        }
-        
-        // Update device auth token if provided
-        var finalDevice: KVMDevice
-        if let token = authToken {
-            var updatedDevice = device
-            updatedDevice.authToken = token
-
-            // Update in available devices
-            if let index = availableDevices.firstIndex(where: { $0.id == device.id }) {
-                availableDevices[index] = updatedDevice
-            }
-
-            finalDevice = updatedDevice
-        } else {
-            finalDevice = device
-        }
-
-        guard let client = try? GLKVMClient(device: finalDevice) else {
-            throw KVMError.connectionFailed
-        }
-
-        DeviceTrustStore.shared.clearMismatch(host: finalDevice.host, port: finalDevice.port)
-
-        do {
-            try await client.authCheck()
-        } catch {
-            if let mismatch = DeviceTrustStore.shared.pendingMismatch(host: finalDevice.host, port: finalDevice.port) {
-                throw KVMError.certificateChanged(host: mismatch.host, port: mismatch.port, fingerprint: mismatch.actual)
-            }
-            // Only a genuine rejection from the device means the token is missing or expired.
-            // Network and transport failures must not turn into a password prompt.
-            guard Self.isAuthRejection(error) else {
-                throw error
-            }
-
-            // A password typed for this attempt wins; otherwise fall back to one saved for the
-            // device, so an expired token logs back in without a prompt.
-            let provided = (password?.isEmpty == false) ? password : nil
-            let saved = provided == nil
-                ? DevicePasswordStore.load(host: finalDevice.host, port: finalDevice.port)
-                : nil
-            guard let candidate = provided ?? saved else {
-                throw KVMError.authenticationFailed
-            }
-
-            do {
-                let token = try await client.authLogin(user: user, password: candidate)
-                client.authToken = token
-
-                if provided != nil, savePassword {
-                    DevicePasswordStore.save(candidate, host: finalDevice.host, port: finalDevice.port)
-                }
-
-                var updated = finalDevice
-                updated.authToken = token
-                if let index = availableDevices.firstIndex(where: { $0.id == updated.id }) {
-                    availableDevices[index] = updated
-                }
-                finalDevice = updated
-            } catch {
-                // A wrong password is an auth rejection and re-prompts; anything else is a
-                // transport problem and the password may be fine.
-                guard Self.isAuthRejection(error) else {
-                    throw error
-                }
-                if saved != nil {
-                    // Stale saved password: drop it so the operator is re-prompted rather than
-                    // looping on it.
-                    DevicePasswordStore.delete(host: finalDevice.host, port: finalDevice.port)
-                }
-                throw KVMError.authenticationFailed
-            }
-        }
-
-        let persisted = persistDevice(finalDevice)
-        connectedDevice = persisted
-        glkvmClient = client
-        return persisted
-    }
-
-    /// True only when the device itself rejected the credentials or token: an HTTP 401/403, or an
-    /// application-level `ok=false` on a 2xx response (how the GL.iNet login endpoint reports a
-    /// wrong password). URL/network errors and 5xx responses are not auth rejections.
-    static func isAuthRejection(_ error: Error) -> Bool {
-        if case GLKVMClient.ClientError.httpError(let statusCode, _) = error {
-            return statusCode == 401 || statusCode == 403 || (200...299).contains(statusCode)
-        }
-        return false
-    }
-
+    /// Saves a device a session has just connected to, with its token in the credential store,
+    /// and lists it under its saved id in place of whatever entry it was connected from.
     func persistDevice(_ device: KVMDevice) -> KVMDevice {
         let record = PersistedDevice(
             host: device.host,
@@ -906,61 +820,6 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         defaults.set(data, forKey: Self.savedDevicesKey)
     }
     
-    private func validateDeviceConnection(_ device: KVMDevice) async throws -> Bool {
-        guard let port = NWEndpoint.Port(rawValue: UInt16(device.port)) else {
-            return false
-        }
-
-        final class Flag {
-            var value: Bool = false
-        }
-
-        let queue = DispatchQueue(label: "com.overlook.validate")
-        let connection = NWConnection(host: NWEndpoint.Host(device.host), port: port, using: .tcp)
-
-        return await withCheckedContinuation { continuation in
-            let finished = Flag()
-
-            let timeoutWorkItem = DispatchWorkItem {
-                if finished.value { return }
-                finished.value = true
-                connection.stateUpdateHandler = nil
-                connection.cancel()
-                continuation.resume(returning: false)
-            }
-
-            queue.asyncAfter(deadline: .now() + 5, execute: timeoutWorkItem)
-
-            connection.stateUpdateHandler = { (state: NWConnection.State) in
-                switch state {
-                case .ready:
-                    if finished.value { return }
-                    finished.value = true
-                    timeoutWorkItem.cancel()
-                    connection.stateUpdateHandler = nil
-                    connection.cancel()
-                    continuation.resume(returning: true)
-                case .failed, .cancelled:
-                    if finished.value { return }
-                    finished.value = true
-                    timeoutWorkItem.cancel()
-                    connection.stateUpdateHandler = nil
-                    connection.cancel()
-                    continuation.resume(returning: false)
-                default:
-                    break
-                }
-            }
-
-            connection.start(queue: queue)
-        }
-    }
-    
-    func disconnectFromDevice() {
-        connectedDevice = nil
-        glkvmClient = nil
-    }
-
     /// Drops the pinned certificate for a device so the next connection pins the one it presents.
     /// Only call this after the user has confirmed the change is expected.
     func trustNewCertificate(host: String, port: Int) {

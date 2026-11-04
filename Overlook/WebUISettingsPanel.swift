@@ -12,7 +12,7 @@ import AppKit
 struct WebUISettingsPanel: View {
     @EnvironmentObject var webRTCManager: WebRTCManager
     @EnvironmentObject var inputManager: InputManager
-    @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
+    @EnvironmentObject var connection: SessionConnection
 
     @Binding var isPresented: Bool
 
@@ -28,7 +28,7 @@ struct WebUISettingsPanel: View {
     /// the only thing that needs to re-drive `load()` for a mounted panel. Mounting itself runs
     /// `.task` once, which keeps the previous load-on-open behaviour.
     private var settingsLoadID: String {
-        kvmDeviceManager.connectedDevice?.id ?? "none"
+        connection.connectedDevice?.id ?? "none"
     }
 
     private var actions: WebUISettingsActions {
@@ -36,7 +36,7 @@ struct WebUISettingsPanel: View {
             model: model,
             webRTCManager: webRTCManager,
             inputManager: inputManager,
-            kvmDeviceManager: kvmDeviceManager
+            connection: connection
         )
     }
 

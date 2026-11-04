@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject var inputManager: InputManager
     @EnvironmentObject var ocrManager: OCRManager
     @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
+    @EnvironmentObject var connection: SessionConnection
     @EnvironmentObject var captureManager: CaptureManager
     
     @State private var selectedDevice: KVMDevice?
@@ -87,7 +88,7 @@ struct ContentView: View {
     /// `WindowTitleTelemetryHost`, which observes `StreamTelemetryModel` on its own, so a stats
     /// tick never re-evaluates this view's body.
     private var windowTitlePrefix: String {
-        let device = kvmDeviceManager.connectedDevice
+        let device = connection.connectedDevice
 
         let deviceLabel: String
         if let device {
@@ -138,7 +139,7 @@ struct ContentView: View {
                     selectedText: $selectedText,
                     isShowingOCRResult: $isShowingOCRResult,
                     onReconnect: {
-                        guard let device = kvmDeviceManager.connectedDevice else { return }
+                        guard let device = connection.connectedDevice else { return }
                         Task { @MainActor in
                             await webRTCManager.reconnect(to: device, reason: "Reconnect button")
                         }
@@ -152,7 +153,7 @@ struct ContentView: View {
                     selectedText: $selectedText,
                     isShowingOCRResult: $isShowingOCRResult,
                     onReconnect: {
-                        guard let device = kvmDeviceManager.connectedDevice else { return }
+                        guard let device = connection.connectedDevice else { return }
                         Task { @MainActor in
                             await webRTCManager.reconnect(to: device, reason: "Reconnect button")
                         }
@@ -306,7 +307,7 @@ struct ContentView: View {
                         isConnected: isConnected,
                         isScanning: kvmDeviceManager.isScanning,
                         devices: kvmDeviceManager.availableDevices,
-                        connectedDeviceName: kvmDeviceManager.connectedDevice?.name,
+                        connectedDeviceName: connection.connectedDevice?.name,
                         videoSize: webRTCManager.videoSize,
                         onScan: {
                             kvmDeviceManager.scanForDevices()
@@ -362,7 +363,7 @@ struct ContentView: View {
         .onAppear {
             applyAppAppearance()
             inputManager.setup(with: webRTCManager)
-            inputManager.setGLKVMClient(kvmDeviceManager.glkvmClient)
+            inputManager.setGLKVMClient(connection.glkvmClient)
 
             updateInputCaptureForUIOverlays()
 
@@ -405,10 +406,10 @@ struct ContentView: View {
             isFullscreen = false
             showFullscreenControls = false
         }
-        .onReceive(kvmDeviceManager.$glkvmClient) { client in
+        .onReceive(connection.$glkvmClient) { client in
             inputManager.setGLKVMClient(client)
         }
-        .onReceive(kvmDeviceManager.$connectedDevice) { device in
+        .onReceive(connection.$connectedDevice) { device in
             Task { @MainActor in
                 if let device {
                     suppressDeviceAutoConnect = true
@@ -571,7 +572,7 @@ struct ContentView: View {
     private func connectToDevice(_ device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
         Task {
             do {
-                let connectedDevice = try await kvmDeviceManager.connectToDevice(
+                let connectedDevice = try await connection.connectToDevice(
                     device,
                     password: password,
                     savePassword: savePassword
@@ -586,7 +587,7 @@ struct ContentView: View {
                     suppressDeviceAutoConnect = false
                 }
 
-                if let client = kvmDeviceManager.glkvmClient {
+                if let client = connection.glkvmClient {
                     await MainActor.run {
                         inputManager.setGLKVMClient(client)
                         inputManager.startFullInputCapture()
@@ -678,12 +679,12 @@ struct ContentView: View {
         if isConnected {
             webRTCManager.disconnect()
 
-            let client = kvmDeviceManager.glkvmClient
+            let client = connection.glkvmClient
             Task {
                 try? await client?.setHidConnected(false)
             }
 
-            kvmDeviceManager.disconnectFromDevice()
+            connection.disconnectFromDevice()
             inputManager.setGLKVMClient(nil)
             inputManager.stopFullInputCapture()
             isConnected = false
@@ -1167,19 +1168,11 @@ struct ConnectionsPopoverView: View {
 }
 
 #Preview {
-    let webRTCManager = WebRTCManager()
     let kvmDeviceManager = KVMDeviceManager()
     return ContentView()
-        .environmentObject(webRTCManager)
-        .environmentObject(webRTCManager.telemetry)
-        .environmentObject(InputManager())
-        .environmentObject(OCRManager())
+        .consoleSession(ConsoleSession(catalog: kvmDeviceManager))
         .environmentObject(kvmDeviceManager)
-        .environmentObject(
-            CaptureManager(webRTCManager: webRTCManager, kvmDeviceManager: kvmDeviceManager)
-        )
         .environmentObject(ConnectionLog.shared.store)
-        .environmentObject(PanelPresentation())
 }
 
 

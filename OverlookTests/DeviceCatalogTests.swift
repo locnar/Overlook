@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Testing
 @testable import Overlook
@@ -40,7 +41,6 @@ struct DeviceCatalogTests {
     @Test func startsEmptyWithNothingSaved() {
         let catalog = makeCatalog()
         #expect(catalog.availableDevices.isEmpty)
-        #expect(catalog.connectedDevice == nil)
         #expect(catalog.isScanning == false)
     }
 
@@ -248,57 +248,42 @@ struct DeviceCatalogTests {
         #expect(Fixtures.trustStore(scratch).pinnedFingerprint(host: "192.0.2.60", port: 443) == nil)
     }
 
-    // MARK: - Connection state the catalog clears
+    // MARK: - Announcing removals
 
-    @Test func removingTheConnectedDeviceClearsTheConnectedDevice() throws {
+    @Test func removingADeviceAnnouncesItsID() {
         let catalog = makeCatalog()
         let device = catalog.addManualDevice(host: "192.0.2.70", port: 443, type: .glinetComet)
-        catalog.connectedDevice = device
-        catalog.glkvmClient = try GLKVMClient(device: device)
+        var heard: [KVMDeviceRemoval] = []
+        let watch = catalog.deviceRemovals.sink { heard.append($0) }
+        defer { watch.cancel() }
 
         catalog.removeDevice(device)
 
-        #expect(catalog.connectedDevice == nil)
-        // Only the device is cleared on removal; the client is left as it was.
-        #expect(catalog.glkvmClient != nil)
+        #expect(heard == [.removed(id: device.id)])
     }
 
-    @Test func removingAnotherDeviceLeavesTheConnectionAlone() {
+    @Test func forgettingADeviceAnnouncesItsAddress() {
         let catalog = makeCatalog()
-        let connected = catalog.addManualDevice(host: "192.0.2.70", port: 443, type: .glinetComet)
-        let other = catalog.addManualDevice(host: "192.0.2.71", port: 443, type: .glinetComet)
-        catalog.connectedDevice = connected
-
-        catalog.removeDevice(other)
-
-        #expect(catalog.connectedDevice?.id == connected.id)
-    }
-
-    @Test func forgettingTheConnectedAddressClearsTheConnection() throws {
-        let catalog = makeCatalog()
-        let saved = catalog.persistDevice(Fixtures.device(host: "192.0.2.80"))
-        // Matched by host and port, not id.
-        let connected = Fixtures.device(id: "something-else", host: "192.0.2.80")
-        catalog.connectedDevice = connected
-        catalog.glkvmClient = try GLKVMClient(device: connected)
+        let saved = catalog.persistDevice(Fixtures.device(host: "192.0.2.80", port: 8443))
+        var heard: [KVMDeviceRemoval] = []
+        let watch = catalog.deviceRemovals.sink { heard.append($0) }
+        defer { watch.cancel() }
 
         catalog.forgetDevice(saved)
 
-        #expect(catalog.connectedDevice == nil)
-        #expect(catalog.glkvmClient == nil)
+        #expect(heard == [.forgotten(host: "192.0.2.80", port: 8443)])
     }
 
-    @Test func forgettingAnotherAddressLeavesTheConnectionAlone() throws {
+    @Test func updatingADeviceReplacesTheEntryWithTheSameID() {
         let catalog = makeCatalog()
-        let saved = catalog.persistDevice(Fixtures.device(host: "192.0.2.80"))
-        let connected = Fixtures.device(host: "192.0.2.81")
-        catalog.connectedDevice = connected
-        catalog.glkvmClient = try GLKVMClient(device: connected)
+        var device = catalog.addManualDevice(host: "192.0.2.90", port: 443, type: .glinetComet)
+        device.authToken = "fresh"
 
-        catalog.forgetDevice(saved)
+        catalog.updateDevice(device)
+        catalog.updateDevice(Fixtures.device(id: "not-listed", host: "192.0.2.91"))
 
-        #expect(catalog.connectedDevice?.host == "192.0.2.81")
-        #expect(catalog.glkvmClient != nil)
+        #expect(catalog.availableDevices.map(\.id) == [device.id])
+        #expect(catalog.availableDevices.first?.authToken == "fresh")
     }
 
     // MARK: - Scanning

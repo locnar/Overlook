@@ -52,9 +52,9 @@ final class PanelPresentation: ObservableObject {
     @Published var openPanel: Panel?
 
     /// Whether a device is connected, so the menu can disable what a panel needs a session for.
-    /// Driven from `KVMDeviceManager` in the app delegate rather than mirrored from a view: menu
-    /// items stay clickable with no window open, and a view-scoped mirror stops updating the
-    /// moment that window closes.
+    /// Driven from the session's `SessionConnection` (see `ConsoleSession`) rather than mirrored
+    /// from a view: menu items stay clickable with no window open, and a view-scoped mirror stops
+    /// updating the moment that window closes.
     @Published var isSessionActive = false
 
     // MARK: - Input capture paused behind a panel

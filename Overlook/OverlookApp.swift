@@ -13,16 +13,9 @@ struct OverlookApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(appDelegate.webRTCManager)
-                // Telemetry is a separate observable so only the views that render stats
-                // re-evaluate when it ticks.
-                .environmentObject(appDelegate.webRTCManager.telemetry)
-                .environmentObject(appDelegate.inputManager)
-                .environmentObject(appDelegate.ocrManager)
+                .consoleSession(appDelegate.session)
                 .environmentObject(appDelegate.kvmDeviceManager)
-                .environmentObject(appDelegate.captureManager)
                 .environmentObject(ConnectionLog.shared.store)
-                .environmentObject(appDelegate.panels)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact)
@@ -32,13 +25,13 @@ struct OverlookApp: App {
             // window, and `PanelCommands` anchors to the group it contributes.
             ToolbarCommands()
 
-            PanelCommands(panels: appDelegate.panels)
+            PanelCommands(panels: appDelegate.session.panels)
 
             // One window: the panel state, `showMainWindow()` and `MenuBarAgent` all assume a
             // single console, and a second window would fight the first over which panel is open.
             CommandGroup(replacing: .newItem) { }
 
-            CaptureCommands(captureManager: appDelegate.captureManager)
+            CaptureCommands(captureManager: appDelegate.session.captureManager)
         }
     }
 }
@@ -47,15 +40,14 @@ struct OverlookApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var menuBarAgent: MenuBarAgent?
 
-    let webRTCManager: WebRTCManager
-    let inputManager = InputManager()
-    let ocrManager = OCRManager()
+    /// The devices every console chooses from.
     let kvmDeviceManager: KVMDeviceManager
-    let captureManager: CaptureManager
-    /// Owned here rather than by `ContentView`: the View menu is built in the `App` scope, where
-    /// a view's `@State` is out of reach, and the menu stays live with no window open.
-    let panels = PanelPresentation()
-    private var cancellables = Set<AnyCancellable>()
+    /// The one console window's session. See `sessions`.
+    let session: ConsoleSession
+
+    /// Every live session. One window means one session; code that has to reach all of them —
+    /// quitting, for one — goes through this rather than `session`.
+    private var sessions: [ConsoleSession] { [session] }
 
     override init() {
         // How long the pointer rests on a control before its tooltip appears. AppKit reads this
@@ -64,21 +56,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // which is a long wait on a toolbar of bare icons.
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 500])
 
-        let webRTCManager = WebRTCManager()
         let kvmDeviceManager = KVMDeviceManager()
-        self.webRTCManager = webRTCManager
         self.kvmDeviceManager = kvmDeviceManager
-        captureManager = CaptureManager(webRTCManager: webRTCManager, kvmDeviceManager: kvmDeviceManager)
+        session = ConsoleSession(catalog: kvmDeviceManager)
         super.init()
-
-        // Straight off the device manager, not mirrored from `ContentView`: the menu-bar agent
-        // connects and disconnects with no window open, and a view-scoped mirror would leave the
-        // View menu's Settings item enabled over a dead session (or greyed out over a live one).
-        kvmDeviceManager.$connectedDevice
-            .map { $0 != nil }
-            .removeDuplicates()
-            .assign(to: \.isSessionActive, on: panels)
-            .store(in: &cancellables)
     }
 
     private var isTerminating = false
@@ -96,9 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !Self.isHostingUnitTests {
             menuBarAgent = MenuBarAgent(
                 kvmDeviceManager: kvmDeviceManager,
-                webRTCManager: webRTCManager,
-                inputManager: inputManager,
-                captureManager: captureManager,
+                session: session,
                 showMainWindow: { [weak self] in
                     self?.showMainWindow()
                 }
@@ -124,16 +103,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// session abandoned without a hangup lingers on the device until its keepalive times out.
     /// So the app defers termination, releases HID state, hangs up, and only then lets AppKit exit.
     /// A running recording is finalized first — an unfinished MP4 has no index and will not play.
+    /// (`ConsoleSession.shutDownForTermination` does those steps for one session.)
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateCancel }
         isTerminating = true
         menuBarAgent?.cleanup()
         kvmDeviceManager.cancelScan()
 
+        let sessions = self.sessions
         Task { @MainActor [self] in
-            await captureManager.finishRecordingForTermination()
-            await inputManager.shutdown()
-            webRTCManager.disconnect()
+            // Side by side rather than one after another, so a session whose HID socket is slow
+            // to close does not use up the grace period the others need to hang up.
+            await withTaskGroup(of: Void.self) { group in
+                for session in sessions {
+                    group.addTask { await session.shutDownForTermination() }
+                }
+            }
             finishTermination(sender)
         }
         // Don't let a wedged HID socket hold the process open.

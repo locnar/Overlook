@@ -145,7 +145,7 @@ final class CaptureManager: ObservableObject {
     private static let showsRegionOutlineDefaultsKey = "overlook.capture.showsRegionOutline"
 
     private let webRTCManager: WebRTCManager
-    private let kvmDeviceManager: KVMDeviceManager
+    private let connection: SessionConnection
     private let defaults: UserDefaults
     private var hub: MediaCaptureHub { webRTCManager.captureHub }
 
@@ -161,9 +161,9 @@ final class CaptureManager: ObservableObject {
     }()
 
     /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
-    init(webRTCManager: WebRTCManager, kvmDeviceManager: KVMDeviceManager, defaults: UserDefaults = .standard) {
+    init(webRTCManager: WebRTCManager, connection: SessionConnection, defaults: UserDefaults = .standard) {
         self.webRTCManager = webRTCManager
-        self.kvmDeviceManager = kvmDeviceManager
+        self.connection = connection
         self.defaults = defaults
 
         recordingMode = RecordingMode(rawValue: defaults.string(forKey: Self.recordingModeDefaultsKey) ?? "") ?? .videoAndAudio
@@ -181,7 +181,7 @@ final class CaptureManager: ObservableObject {
 
         // An operator disconnect ends the recording; a dropped connection does not (the
         // auto-reconnect keeps the same recorder, with a gap in the file).
-        kvmDeviceManager.$connectedDevice
+        connection.$connectedDevice
             .dropFirst()
             .sink { [weak self] device in
                 guard let self, device == nil else { return }
@@ -231,7 +231,7 @@ final class CaptureManager: ObservableObject {
 
     func startRecording() {
         guard recorder == nil else { return }
-        guard kvmDeviceManager.connectedDevice != nil else {
+        guard connection.connectedDevice != nil else {
             showNotice(title: "Not connected", detail: "Connect to a device before recording.", fileURL: nil, isError: true)
             return
         }
@@ -343,7 +343,7 @@ final class CaptureManager: ObservableObject {
     /// Puts the video surface into drag-to-select mode. Starting over an existing region keeps it
     /// until the new drag ends, so a cancelled re-selection changes nothing.
     func beginRegionSelection() {
-        guard kvmDeviceManager.connectedDevice != nil else {
+        guard connection.connectedDevice != nil else {
             showNotice(title: "Not connected", detail: "Connect to a device before selecting a capture region.", fileURL: nil, isError: true)
             return
         }
@@ -471,7 +471,7 @@ final class CaptureManager: ObservableObject {
     /// `date` is a parameter so tests can pin the timestamp.
     func makeFileURL(in folder: URL, extension ext: String, date: Date = Date()) -> URL {
         var stem = "Overlook"
-        if let deviceName = kvmDeviceManager.connectedDevice?.name {
+        if let deviceName = connection.connectedDevice?.name {
             let cleaned = deviceName
                 .replacingOccurrences(of: "/", with: "-")
                 .replacingOccurrences(of: ":", with: "-")
