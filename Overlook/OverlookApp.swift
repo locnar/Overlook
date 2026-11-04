@@ -39,6 +39,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let kvmDeviceManager: KVMDeviceManager
     /// Every console window's session, and which one is active.
     let sessionRegistry: SessionRegistry
+    /// Plays the active window's audio, or every window's, and gives the microphone to the active
+    /// window, following the shared audio settings.
+    private let audioRouter: SessionAudioRouter
 
     override init() {
         // How long the pointer rests on a control before its tooltip appears. AppKit reads this
@@ -53,7 +56,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let kvmDeviceManager = KVMDeviceManager()
         self.kvmDeviceManager = kvmDeviceManager
-        sessionRegistry = SessionRegistry(catalog: kvmDeviceManager)
+        let sessionRegistry = SessionRegistry(catalog: kvmDeviceManager)
+        self.sessionRegistry = sessionRegistry
+        audioRouter = SessionAudioRouter(registry: sessionRegistry, preferences: .shared)
         super.init()
     }
 

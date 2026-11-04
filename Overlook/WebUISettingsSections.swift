@@ -497,43 +497,49 @@ struct KeyboardSettingsSection: View {
 struct AudioSettingsSection: View {
     @EnvironmentObject var webRTCManager: WebRTCManager
     @EnvironmentObject var connection: SessionConnection
+    /// The app's audio settings, the same object in every window, so every window's Settings
+    /// shows what was last chosen in any of them.
+    @EnvironmentObject var audioPreferences: AudioPreferences
     @ObservedObject var model: WebUISettingsPanelModel
 
     @Binding var isExpanded: Bool
     let actions: WebUISettingsActions
 
-    @AppStorage("overlook.audio.inputDeviceUID") private var audioInputDeviceUID: String = ""
-    @AppStorage("overlook.audio.outputDeviceUID") private var audioOutputDeviceUID: String = ""
-
     var body: some View {
         DisclosureGroup("Audio", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Audio", isOn: $webRTCManager.audioEnabled)
+                Toggle("Audio", isOn: $audioPreferences.audioEnabled)
                     .help("Play the target's audio. Takes effect on the next connect.")
-                Toggle("Microphone", isOn: $webRTCManager.micEnabled)
-                    .help("Send this Mac's microphone to the target as its USB microphone. The device carries it on the audio session, so this also opens audio; playback stays muted while Audio is off. Takes effect on the next connect.")
+                Picker("Play audio from", selection: $audioPreferences.playbackScope) {
+                    ForEach(AudioPreferences.PlaybackScope.allCases) { scope in
+                        Text(scope.title).tag(scope)
+                    }
+                }
+                .help("Applies to every window, at once. With \"Active window only\", the other windows stay connected and keep recording their audio; only this Mac's speakers skip them.")
+                Toggle("Microphone", isOn: $audioPreferences.micEnabled)
+                    .help("Send this Mac's microphone to the target as its USB microphone. The device carries it on the audio session, so this also opens audio; playback stays muted while Audio is off. Takes effect on the next connect. Only the active window sends it; the others send silence.")
                 if webRTCManager.isMicrophoneAccessDenied {
                     Text("macOS refused microphone access. Allow Overlook under System Settings › Privacy & Security › Microphone, then reconnect.")
                         .font(.caption)
                         .foregroundColor(.orange)
                 }
 
-                Picker("Microphone device", selection: $audioInputDeviceUID) {
+                Picker("Microphone device", selection: $audioPreferences.inputDeviceUID) {
                     Text("System Default").tag("")
-                    if !audioInputDeviceUID.isEmpty,
-                       model.audioInputDevices.contains(where: { $0.uid == audioInputDeviceUID }) == false {
-                        Text("Unavailable").tag(audioInputDeviceUID)
+                    if !audioPreferences.inputDeviceUID.isEmpty,
+                       model.audioInputDevices.contains(where: { $0.uid == audioPreferences.inputDeviceUID }) == false {
+                        Text("Unavailable").tag(audioPreferences.inputDeviceUID)
                     }
                     ForEach(model.audioInputDevices, id: \.uid) { device in
                         Text(device.name).tag(device.uid)
                     }
                 }
 
-                Picker("Output device", selection: $audioOutputDeviceUID) {
+                Picker("Output device", selection: $audioPreferences.outputDeviceUID) {
                     Text("System Default").tag("")
-                    if !audioOutputDeviceUID.isEmpty,
-                       model.audioOutputDevices.contains(where: { $0.uid == audioOutputDeviceUID }) == false {
-                        Text("Unavailable").tag(audioOutputDeviceUID)
+                    if !audioPreferences.outputDeviceUID.isEmpty,
+                       model.audioOutputDevices.contains(where: { $0.uid == audioPreferences.outputDeviceUID }) == false {
+                        Text("Unavailable").tag(audioPreferences.outputDeviceUID)
                     }
                     ForEach(model.audioOutputDevices, id: \.uid) { device in
                         Text(device.name).tag(device.uid)

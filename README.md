@@ -243,6 +243,8 @@ Each window is a console of its own. **File › New Window** (`⌘N`) opens anot
 
 Closing a window disconnects it. If it is recording, Overlook asks first; stopping saves the recording so far.
 
+Audio plays from the active window only (the one in front, or the one you used last) unless **Settings › Audio › Play audio from** is set to **All windows**. The setting is the same for every window and takes effect at once; the other windows stay connected, muted, and still record their audio. The microphone always goes to the active window only.
+
 ---
 
 ## OCR Copy Mode (Remote → Local)
@@ -351,7 +353,10 @@ Overlook’s settings UI lives in `Overlook/WebUISettingsPanel.swift` and is des
 ### Audio
 
 - Audio output toggle.
+- **Play audio from**: the active window only (default) or all windows. Takes effect at once.
 - Microphone toggle.
+
+These, and the device choices below, are app-wide: every window's Settings shows and uses the same values.
 
 **Important:** the UI indicates reconnect is required for audio/mic changes.
 
@@ -438,6 +443,8 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - Every window's session, which one is active (the key window's, or the last one key), one window per device, and quitting.
 - `Overlook/ConsoleWindow.swift`
   - A console window's root view and its hookup to the session and registry, including the question before closing a window that is recording.
+- `Overlook/AudioPreferences.swift`
+  - The audio settings every window shares, and which windows play their audio and which one sends the microphone (`AudioRoute`, `SessionAudioRouter`).
 - `Overlook/InputFocusGate.swift`
   - Which keyboard and mouse events a session may send: only its own window's, only while that window is key.
 - `Overlook/SessionConnection.swift`

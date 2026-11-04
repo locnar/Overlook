@@ -38,12 +38,18 @@ final class ConsoleSession: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`. `link` is
-    /// for tests too: the app's reaches the device, the stream and the connection log.
-    init(catalog: KVMDeviceManager, defaults: UserDefaults = .standard, link: ConsoleSessionLink? = nil) {
+    /// for tests too: the app's reaches the device, the stream and the connection log. So is
+    /// `audioPreferences`: the app's sessions all share `AudioPreferences.shared`.
+    init(
+        catalog: KVMDeviceManager,
+        defaults: UserDefaults = .standard,
+        link: ConsoleSessionLink? = nil,
+        audioPreferences: AudioPreferences? = nil
+    ) {
         // Made here rather than as the default argument, which is evaluated outside the main actor.
         self.link = link ?? LiveSessionLink()
         let connection = SessionConnection(catalog: catalog)
-        let webRTCManager = WebRTCManager()
+        let webRTCManager = WebRTCManager(audioPreferences: audioPreferences)
         self.connection = connection
         self.webRTCManager = webRTCManager
         inputManager = InputManager(defaults: defaults)
@@ -346,6 +352,7 @@ extension View {
             .environmentObject(session.ocrManager)
             .environmentObject(session.captureManager)
             .environmentObject(session.panels)
+            .environmentObject(session.webRTCManager.audioPreferences)
             // For the menus, which act on whichever window is key: the scene's focused objects
             // are that window's, and nil while no console window is key.
             .focusedSceneObject(session.panels)

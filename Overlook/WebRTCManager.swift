@@ -68,25 +68,18 @@ class WebRTCManager: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var currentFrame: CVPixelBuffer?
     @Published var videoSize: CGSize?
-    /// Both take effect on the next connect (the peer connections are built then). Persisted on
-    /// this Mac, like the device choices below; they used to reset to off at every launch.
-    @Published var audioEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(audioEnabled, forKey: Self.audioEnabledDefaultsKey)
-            // Playback can follow the toggle at once; only the negotiation waits for a connect.
-            audioPeerConnection?.receivers
-                .compactMap { $0.track as? RTCAudioTrack }
-                .forEach { $0.isEnabled = audioEnabled }
-        }
-    }
-    @Published var micEnabled: Bool {
-        didSet { UserDefaults.standard.set(micEnabled, forKey: Self.micEnabledDefaultsKey) }
-    }
+    /// The app's audio settings, shared by every window's manager. Audio and Microphone both take
+    /// effect on the next connect (the peer connections are built then); turning either off acts
+    /// at once.
+    let audioPreferences: AudioPreferences
+    var audioEnabled: Bool { audioPreferences.audioEnabled }
+    var micEnabled: Bool { audioPreferences.micEnabled }
+    /// Whether this window plays its audio and sends the microphone, as `SessionAudioRouter` last
+    /// decided from which window is active.
+    private(set) var audioRoute: AudioRoute = .unrouted
     /// True after a connect asked for the microphone and macOS refused (System Settings ›
     /// Privacy & Security › Microphone). The session goes on without the mic.
     @Published private(set) var isMicrophoneAccessDenied = false
-    private static let audioEnabledDefaultsKey = "overlook.audio.enabled"
-    private static let micEnabledDefaultsKey = "overlook.audio.micEnabled"
     @Published var preferLowLatencyPlayout = true
     @Published var isConnecting = false
     @Published var hasEverConnectedToStream = false
@@ -158,9 +151,6 @@ class WebRTCManager: NSObject, ObservableObject {
 
     private var lastPlayoutHintApplyTime: TimeInterval?
 
-    private let audioInputDeviceUIDDefaultsKey = "overlook.audio.inputDeviceUID"
-    private let audioOutputDeviceUIDDefaultsKey = "overlook.audio.outputDeviceUID"
-
     private var fpsWindowStartTime: CFTimeInterval = 0
     private var fpsFrameCount: Int = 0
     private var lastFpsPublishTime: CFTimeInterval = 0
@@ -224,13 +214,52 @@ class WebRTCManager: NSObject, ObservableObject {
     private var isFrameCaptureEnabled: Bool = false
     private var lastFrameCaptureTime: CFTimeInterval = 0
     
-    override init() {
-        let defaults = UserDefaults.standard
-        audioEnabled = defaults.bool(forKey: Self.audioEnabledDefaultsKey)
-        micEnabled = defaults.bool(forKey: Self.micEnabledDefaultsKey)
+    private var cancellables = Set<AnyCancellable>()
+
+    /// `audioPreferences` is the app's shared object unless a test hands in its own.
+    init(audioPreferences: AudioPreferences? = nil) {
+        self.audioPreferences = audioPreferences ?? .shared
         super.init()
         setupWebRTC()
         startAudioDeviceChangeMonitoring()
+
+        // The toggles are shared by every window, so a change made in another window's Settings
+        // lands here too. `@Published` fires in `willSet`: the new value is the emitted one.
+        self.audioPreferences.$audioEnabled
+            .dropFirst()
+            .sink { [weak self] enabled in
+                // Playback follows the toggle at once; only the negotiation waits for a connect.
+                self?.audioPeerConnection?.receivers
+                    .compactMap { $0.track as? RTCAudioTrack }
+                    .forEach { $0.isEnabled = enabled }
+            }
+            .store(in: &cancellables)
+        self.audioPreferences.$micEnabled
+            .dropFirst()
+            .sink { [weak self] enabled in
+                self?.applyMicrophoneRoute(micEnabled: enabled)
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Plays or mutes this window's audio and sends or silences the microphone, without touching
+    /// the connection. Muting happens at the output, after the recording tap, so a muted window
+    /// still records its audio; the microphone track stays negotiated and sends silence while
+    /// another window has it.
+    func setAudioRoute(_ route: AudioRoute) {
+        guard route != audioRoute else { return }
+        audioRoute = route
+        customAudioDevice?.isOutputMuted = !route.playsAudio
+        applyMicrophoneRoute(micEnabled: micEnabled)
+    }
+
+    private func applyMicrophoneRoute(micEnabled: Bool) {
+        localAudioTrack?.isEnabled = micEnabled && audioRoute.sendsMicrophone
+    }
+
+    /// Whether the output device is silenced for this window right now.
+    var isPlaybackMuted: Bool {
+        customAudioDevice?.isOutputMuted ?? !audioRoute.playsAudio
     }
 
     deinit {
@@ -264,8 +293,8 @@ class WebRTCManager: NSObject, ObservableObject {
     }
     
     private func setupWebRTC() {
-        let inputUID = (UserDefaults.standard.string(forKey: audioInputDeviceUIDDefaultsKey) ?? "")
-        let outputUID = (UserDefaults.standard.string(forKey: audioOutputDeviceUIDDefaultsKey) ?? "")
+        let inputUID = audioPreferences.inputDeviceUID
+        let outputUID = audioPreferences.outputDeviceUID
 
         // Always our own audio device, even with the system defaults: it is the only place the
         // received audio can be tapped for recordings (libwebrtc's built-in module exposes no
@@ -276,6 +305,7 @@ class WebRTCManager: NSObject, ObservableObject {
             outputDeviceUID: outputUID,
             playoutTap: captureHub
         )
+        audioDevice.isOutputMuted = !audioRoute.playsAudio
         customAudioDevice = audioDevice
 
         factory = WebRTCFactoryBuilder.makeFactory(with: audioDevice)
@@ -334,8 +364,8 @@ class WebRTCManager: NSObject, ObservableObject {
     private func audioDeviceReconnectReason() -> String? {
         guard peerConnection != nil else { return nil }
 
-        let inputUID = (UserDefaults.standard.string(forKey: audioInputDeviceUIDDefaultsKey) ?? "")
-        let outputUID = (UserDefaults.standard.string(forKey: audioOutputDeviceUIDDefaultsKey) ?? "")
+        let inputUID = audioPreferences.inputDeviceUID
+        let outputUID = audioPreferences.outputDeviceUID
 
         let inputRelevant = micEnabled
         let outputRelevant = audioEnabled
@@ -2047,6 +2077,8 @@ class WebRTCManager: NSObject, ObservableObject {
 
         let audioSource = factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
         let audioTrack = factory.audioTrack(with: audioSource, trackId: "audio0")
+        // Made for every connect with Microphone on, but live only in the active window.
+        audioTrack.isEnabled = audioRoute.sendsMicrophone
         localAudioTrack = audioTrack
         localAudioSender = peerConnection.add(audioTrack, streamIds: ["stream0"])
     }
@@ -2300,11 +2332,24 @@ final class WebRTCManager: NSObject, ObservableObject {
     @Published var lastDisconnectReason: String?
     @Published var lastVideoFrameAgeSeconds: Int?
     @Published var currentFrame: CVPixelBuffer?
-    @Published var audioEnabled = false
-    @Published var micEnabled = false
+    let audioPreferences: AudioPreferences
+    var audioEnabled: Bool { audioPreferences.audioEnabled }
+    var micEnabled: Bool { audioPreferences.micEnabled }
+    private(set) var audioRoute: AudioRoute = .unrouted
     @Published private(set) var isMicrophoneAccessDenied = false
 
     let telemetry = StreamTelemetryModel()
+
+    init(audioPreferences: AudioPreferences? = nil) {
+        self.audioPreferences = audioPreferences ?? .shared
+        super.init()
+    }
+
+    func setAudioRoute(_ route: AudioRoute) {
+        audioRoute = route
+    }
+
+    var isPlaybackMuted: Bool { !audioRoute.playsAudio }
     
     func connect(to device: KVMDevice) async throws {
         isConnected = false

@@ -16,6 +16,12 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     /// Nil-able so the device can run without one, and read only on the HAL render thread.
     fileprivate let playoutTap: MediaCaptureHub?
 
+    /// Set while this window is not one that plays its audio (`AudioRoute`). Read on the render
+    /// thread after the recording tap has had the buffer, so a muted window still records what it
+    /// receives. Written on the main thread with no lock: a Bool is written whole, and a stale read
+    /// costs at most one buffer of sound or silence, which no lock on the render thread is worth.
+    var isOutputMuted = false
+
     /// The CoreAudio devices the units were bound to at initialization. Following the system
     /// default means resolving it once, here; `WebRTCManager` compares these with the current
     /// defaults when they change and reconnects to move over.
@@ -427,11 +433,13 @@ private func playoutRenderCallback(
     guard let delegate = device.delegate, let ioData else { return noErr }
     let status = delegate.getPlayoutData(ioActionFlags, inTimeStamp, Int(inBusNumber), inNumberFrames, ioData)
 
-    // What the speakers are about to get is exactly what a recording should keep, so tap it here,
-    // after WebRTC's jitter buffer and decoder and before the HAL. The tap copies and returns.
-    if status == noErr, let tap = device.playoutTap {
-        tap.handlePlayoutAudio(
-            UnsafePointer(ioData),
+    // What WebRTC decoded is exactly what a recording should keep, so tap it here, after the
+    // jitter buffer and decoder and before the HAL — and before a muted window's output is
+    // silenced. The tap copies and returns.
+    let tap = status == noErr ? device.playoutTap : nil
+    WebRTCAudioDevice.finishPlayout(ioData, flags: ioActionFlags, isMuted: device.isOutputMuted) { buffers in
+        tap?.handlePlayoutAudio(
+            buffers,
             frameCount: inNumberFrames,
             timestamp: inTimeStamp,
             sampleRate: device.outputSampleRate,
@@ -439,6 +447,27 @@ private func playoutRenderCallback(
         )
     }
     return status
+}
+
+extension WebRTCAudioDevice {
+    /// The last step of every playout callback: the recording tap is handed the buffer as WebRTC
+    /// filled it, and only then, if this window is muted, is it silenced on its way to the output
+    /// device. In that order a window muted because another one is active still records its audio.
+    static func finishPlayout(
+        _ ioData: UnsafeMutablePointer<AudioBufferList>,
+        flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+        isMuted: Bool,
+        tap: (UnsafePointer<AudioBufferList>) -> Void
+    ) {
+        tap(UnsafePointer(ioData))
+        guard isMuted else { return }
+        for buffer in UnsafeMutableAudioBufferListPointer(ioData) {
+            if let data = buffer.mData {
+                memset(data, 0, Int(buffer.mDataByteSize))
+            }
+        }
+        flags.pointee.insert(.unitRenderAction_OutputIsSilence)
+    }
 }
 
 private func recordingInputCallback(

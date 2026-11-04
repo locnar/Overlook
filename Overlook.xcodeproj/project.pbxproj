@@ -64,6 +64,8 @@
 		0100010C /* SessionRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010C /* SessionRegistryTests.swift */; };
 		0100010B /* InputFocusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010B /* InputFocusTests.swift */; };
 		0100010A /* SessionConnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010A /* SessionConnectTests.swift */; };
+		01000036 /* AudioPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003A /* AudioPreferences.swift */; };
+		0100010E /* AudioRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010E /* AudioRoutingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -141,6 +143,8 @@
 		0200010A /* SessionConnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnectTests.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		03000002 /* OverlookTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OverlookTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0200003A /* AudioPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPreferences.swift; sourceTree = "<group>"; };
+		0200010E /* AudioRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRoutingTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -212,6 +216,7 @@
 				02000039 /* ConsoleWindow.swift */,
 				02000038 /* SessionRegistry.swift */,
 				02000037 /* InputFocusGate.swift */,
+				0200003A /* AudioPreferences.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
 				02000023 /* KeychainTokenStore.swift */,
@@ -242,6 +247,7 @@
 				0200010C /* SessionRegistryTests.swift */,
 				0200010B /* InputFocusTests.swift */,
 				0200010A /* SessionConnectTests.swift */,
+				0200010E /* AudioRoutingTests.swift */,
 			);
 			path = OverlookTests;
 			sourceTree = "<group>";
@@ -404,6 +410,7 @@
 				01000035 /* ConsoleWindow.swift in Sources */,
 				01000034 /* SessionRegistry.swift in Sources */,
 				01000033 /* InputFocusGate.swift in Sources */,
+				01000036 /* AudioPreferences.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
 				01000021 /* KeychainTokenStore.swift in Sources */,
@@ -432,6 +439,7 @@
 				0100010C /* SessionRegistryTests.swift in Sources */,
 				0100010B /* InputFocusTests.swift in Sources */,
 				0100010A /* SessionConnectTests.swift in Sources */,
+				0100010E /* AudioRoutingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
