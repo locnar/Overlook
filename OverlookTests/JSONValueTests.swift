@@ -97,15 +97,20 @@ struct EDIDCatalogTests {
             #expect(bytes.allSatisfy { $0.count == 2 && UInt8($0, radix: 16) != nil }, "\(option.id)")
             #expect(bytes.prefix(8).joined(separator: " ") == "00 ff ff ff ff ff ff 00", "\(option.id)")
             // A base block is 128 bytes; extension blocks add 128 each.
-            if option.id == "E2560x1664AOC" {
-                // The eighth row of its base block has 15 bytes, so the base block is 127 bytes
-                // and the extension block starts one byte early. Recorded rather than fixed
-                // here: this suite pins what ships.
-                withKnownIssue("E2560x1664AOC is one byte short of two blocks") {
-                    #expect(bytes.count % 128 == 0, "\(option.id) has \(bytes.count) bytes")
-                }
-            } else {
-                #expect(bytes.count % 128 == 0, "\(option.id) has \(bytes.count) bytes")
+            #expect(bytes.count % 128 == 0, "\(option.id) has \(bytes.count) bytes")
+        }
+    }
+
+    @Test func everyBlockOfEveryBlobHasAZeroChecksum() {
+        // Each 128-byte block ends with a checksum byte that makes the block sum to 0 mod 256.
+        // A missing or extra byte anywhere shifts the checksum out of place and fails here.
+        for option in EDIDCatalog.options {
+            guard let blob = EDIDCatalog.resolvedEdid(for: option) else { continue }
+            let bytes = blob.split(whereSeparator: { $0 == " " || $0 == "\n" }).compactMap { UInt8($0, radix: 16) }
+            for start in stride(from: 0, to: bytes.count, by: 128) {
+                let block = bytes[start..<min(start + 128, bytes.count)]
+                let sum = block.reduce(UInt8(0), &+)
+                #expect(sum == 0, "\(option.id) block \(start / 128) sums to \(sum)")
             }
         }
     }
