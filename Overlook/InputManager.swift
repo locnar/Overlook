@@ -4,15 +4,21 @@ import CoreGraphics
 import Combine
 import SwiftUI
 
-extension Notification.Name {
-    static let overlookToggleCopyMode = Notification.Name("overlook.toggleCopyMode")
-    /// ⇧⌘S and ⇧⌘R, intercepted while keys are being sent to the target; `CaptureManager` listens.
-    static let overlookSaveScreenshot = Notification.Name("overlook.saveScreenshot")
-    static let overlookToggleRecording = Notification.Name("overlook.toggleRecording")
-}
-
 @MainActor
 class InputManager: ObservableObject {
+    /// The app's own chords that keyboard capture keeps rather than sends: ⇧⌘S, ⇧⌘R, and ⌘C for
+    /// OCR copy mode. Capture swallows every key before the menus can see it, so it reproduces
+    /// them itself.
+    enum LocalShortcut: Equatable {
+        case saveScreenshot
+        case toggleRecording
+        case toggleCopyMode
+    }
+
+    /// Where those chords go: this input manager's own session (`ConsoleSession` sets it), never
+    /// another window's.
+    var onLocalShortcut: ((LocalShortcut) -> Void)?
+
     private var webRTCManager: WebRTCManager?
     private var glkvmClient: GLKVMClient?
     private var glkvmWebSocketClient: GLKVMClient.WebSocketClient?
@@ -550,7 +556,7 @@ class InputManager: ObservableObject {
                 if keyCode == 8 {
                     prepareForLocalCommandShortcut()
                     suppressedKeyUps.insert(keyCode)
-                    NotificationCenter.default.post(name: .overlookToggleCopyMode, object: nil)
+                    onLocalShortcut?(.toggleCopyMode)
                     return
                 }
                 if keyCode == 9 {
@@ -566,10 +572,7 @@ class InputManager: ObservableObject {
                     prepareForLocalCommandShortcut()
                     suppressedKeyUps.insert(keyCode)
                     if !event.isARepeat {
-                        NotificationCenter.default.post(
-                            name: keyCode == 1 ? .overlookSaveScreenshot : .overlookToggleRecording,
-                            object: nil
-                        )
+                        onLocalShortcut?(keyCode == 1 ? .saveScreenshot : .toggleRecording)
                     }
                     return
                 }

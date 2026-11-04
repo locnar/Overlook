@@ -424,7 +424,7 @@ struct ContentView: View {
                 }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .overlookToggleCopyMode)) { _ in
+        .onReceive(session.copyModeRequests) { _ in
             Task { @MainActor in
                 isOCRModeEnabled.toggle()
             }

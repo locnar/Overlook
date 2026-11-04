@@ -172,13 +172,6 @@ final class CaptureManager: ObservableObject {
         recordingsFolder = Self.storedFolder(.recordings, in: defaults)
         showsRegionOutline = defaults.object(forKey: Self.showsRegionOutlineDefaultsKey) as? Bool ?? true
 
-        NotificationCenter.default.publisher(for: .overlookSaveScreenshot)
-            .sink { [weak self] _ in self?.saveScreenshot() }
-            .store(in: &cancellables)
-        NotificationCenter.default.publisher(for: .overlookToggleRecording)
-            .sink { [weak self] _ in self?.toggleRecording() }
-            .store(in: &cancellables)
-
         // An operator disconnect ends the recording; a dropped connection does not (the
         // auto-reconnect keeps the same recorder, with a gap in the file).
         connection.$connectedDevice

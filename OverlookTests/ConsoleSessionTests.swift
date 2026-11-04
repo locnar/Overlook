@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Testing
 @testable import Overlook
@@ -97,6 +98,51 @@ struct ConsoleSessionTests {
         #expect(a.webRTCManager !== b.webRTCManager)
         #expect(a.inputManager !== b.inputManager)
         #expect(a.captureManager !== b.captureManager)
+    }
+
+    // MARK: - Shortcuts reach only their own session
+
+    /// What keyboard capture does on ⇧⌘S, ⇧⌘R and ⌘C: hand the chord to its session.
+    private func press(_ shortcut: InputManager.LocalShortcut, in session: ConsoleSession) {
+        session.inputManager.onLocalShortcut?(shortcut)
+    }
+
+    @Test func aCapturedScreenshotChordReachesOnlyItsOwnSession() {
+        let a = makeSession()
+        let b = makeSession()
+
+        press(.saveScreenshot, in: a)
+
+        // No stream, so the attempt reports there is nothing to capture — in `a` alone.
+        #expect(a.captureManager.notice?.title == "No video to capture")
+        #expect(b.captureManager.notice == nil)
+    }
+
+    @Test func aCapturedRecordingChordReachesOnlyItsOwnSession() {
+        let a = makeSession()
+        let b = makeSession()
+
+        press(.toggleRecording, in: b)
+
+        #expect(b.captureManager.notice?.title == "Not connected")
+        #expect(a.captureManager.notice == nil)
+    }
+
+    @Test func aCapturedCopyModeChordReachesOnlyItsOwnSession() {
+        let a = makeSession()
+        let b = makeSession()
+        var toggles: [String] = []
+        let subscriptions = [
+            a.copyModeRequests.sink { _ in toggles.append("a") },
+            b.copyModeRequests.sink { _ in toggles.append("b") },
+        ]
+
+        press(.toggleCopyMode, in: a)
+        press(.toggleCopyMode, in: a)
+        b.perform(.toggleCopyMode)
+
+        #expect(toggles == ["a", "a", "b"])
+        _ = subscriptions
     }
 
     // MARK: - Catalog changes reach only the session they concern

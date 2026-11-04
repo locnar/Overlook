@@ -9,7 +9,8 @@ import AppKit
 /// remember to close the others.
 ///
 /// It lives outside `ContentView` because the View menu needs it too, and menu commands are
-/// built in the `App` scope where a view's `@State` is out of reach.
+/// built in the `App` scope where a view's `@State` is out of reach. Each console session has its
+/// own; the menu gets the key window's.
 @MainActor
 final class PanelPresentation: ObservableObject {
     enum Panel: String, CaseIterable, Identifiable {
@@ -53,8 +54,8 @@ final class PanelPresentation: ObservableObject {
 
     /// Whether a device is connected, so the menu can disable what a panel needs a session for.
     /// Driven from the session's `SessionConnection` (see `ConsoleSession`) rather than mirrored
-    /// from a view: menu items stay clickable with no window open, and a view-scoped mirror stops
-    /// updating the moment that window closes.
+    /// from a view, so it is right from the moment the session connects — the menu-bar agent can
+    /// connect a session before its window has appeared.
     @Published var isSessionActive = false
 
     // MARK: - Input capture paused behind a panel
@@ -296,18 +297,19 @@ extension View {
 /// receiving, and this codebase already spends ⇧⌘S and ⇧⌘R on capture; three more for panels
 /// that are one click away is a poor trade. (Same reasoning as the capture-region commands.)
 struct PanelCommands: Commands {
-    @ObservedObject var panels: PanelPresentation
+    /// The key window's panels; nil, and every entry greyed out, while no console window is key.
+    @FocusedObject private var panels: PanelPresentation?
 
     var body: some Commands {
         CommandGroup(before: .toolbar) {
             ForEach(PanelPresentation.Panel.allCases) { panel in
                 Toggle(panel.menuTitle, isOn: Binding(
-                    get: { panels.isOpen(panel) },
-                    set: { _ in panels.toggle(panel) }
+                    get: { panels?.isOpen(panel) ?? false },
+                    set: { _ in panels?.toggle(panel) }
                 ))
                 // Enablement gates opening, never closing: a panel already on screen when the
                 // session dropped would otherwise be checked and greyed out at the same time.
-                .disabled(panels.isEnabled(panel) == false && panels.isOpen(panel) == false)
+                .disabled(panels.map { $0.isEnabled(panel) == false && $0.isOpen(panel) == false } ?? true)
             }
 
             Divider()

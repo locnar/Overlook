@@ -15,8 +15,13 @@ final class ConsoleSession: ObservableObject {
     let ocrManager: OCRManager
     let captureManager: CaptureManager
     /// Owned by the session rather than by `ContentView`: the View menu is built in the `App`
-    /// scope, where a view's `@State` is out of reach, and the menu stays live with no window open.
+    /// scope, where a view's `@State` is out of reach. The key window hands its session's to the
+    /// menu (`focusedSceneObject`).
     let panels: PanelPresentation
+
+    /// Asks this session's window to toggle OCR copy mode. OCR mode is that window's view state;
+    /// the chord that toggles it, and the menu-bar item, reach it through here.
+    let copyModeRequests = PassthroughSubject<Void, Never>()
 
     private let link: ConsoleSessionLink
     private var cancellables = Set<AnyCancellable>()
@@ -38,14 +43,33 @@ final class ConsoleSession: ObservableObject {
         // before its window has appeared.
         inputManager.setup(with: webRTCManager)
 
-        // Straight off the connection, not mirrored from `ContentView`: the menu-bar agent
-        // connects and disconnects with no window open, and a view-scoped mirror would leave the
-        // View menu's Settings item enabled over a dead session (or greyed out over a live one).
+        // Straight off the connection, not mirrored from `ContentView`: the menu-bar agent can
+        // connect a session before its window has appeared, and a view-scoped mirror would leave
+        // the View menu's Settings item enabled over a dead session (or greyed out over a live one).
         connection.$connectedDevice
             .map { $0 != nil }
             .removeDuplicates()
             .assign(to: \.isSessionActive, on: panels)
             .store(in: &cancellables)
+
+        // The chords keyboard capture keeps for the app act on this session. They used to be
+        // posted app-wide, which every window would have answered.
+        inputManager.onLocalShortcut = { [weak self] shortcut in
+            self?.perform(shortcut)
+        }
+    }
+
+    /// Runs one of the app's own shortcuts on this session: from its keyboard capture, or from
+    /// the menu-bar agent for the active session.
+    func perform(_ shortcut: InputManager.LocalShortcut) {
+        switch shortcut {
+        case .saveScreenshot:
+            captureManager.saveScreenshot()
+        case .toggleRecording:
+            captureManager.toggleRecording()
+        case .toggleCopyMode:
+            copyModeRequests.send()
+        }
     }
 
     // MARK: - Connecting
@@ -211,5 +235,9 @@ extension View {
             .environmentObject(session.ocrManager)
             .environmentObject(session.captureManager)
             .environmentObject(session.panels)
+            // For the menus, which act on whichever window is key: the scene's focused objects
+            // are that window's, and nil while no console window is key.
+            .focusedSceneObject(session.panels)
+            .focusedSceneObject(session.captureManager)
     }
 }

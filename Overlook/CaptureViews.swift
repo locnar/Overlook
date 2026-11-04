@@ -335,57 +335,83 @@ struct CaptureNoticeView: View {
 
 /// The Capture menu. Its shortcuts work when the window has focus and keys are not being sent to
 /// the target; `InputManager` reproduces ⇧⌘S and ⇧⌘R while they are.
+///
+/// Every item acts on the key window's session, and the menu is greyed out while no console
+/// window is key.
 struct CaptureCommands: Commands {
-    @ObservedObject var captureManager: CaptureManager
+    @FocusedObject private var captureManager: CaptureManager?
+
+    private var hasSession: Bool { captureManager != nil }
 
     var body: some Commands {
         CommandMenu("Capture") {
             Button("Save Screenshot") {
-                captureManager.saveScreenshot()
+                captureManager?.saveScreenshot()
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(!hasSession)
 
-            Button(captureManager.isRecording ? "Stop Recording" : "Start Recording") {
-                captureManager.toggleRecording()
+            Button(captureManager?.isRecording == true ? "Stop Recording" : "Start Recording") {
+                captureManager?.toggleRecording()
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!hasSession)
 
             Divider()
 
             // No key equivalents on purpose: every chord intercepted here is one the target loses,
             // and drawing a region is a mouse action anyway.
             Button("Select Capture Region…") {
-                captureManager.beginRegionSelection()
+                captureManager?.beginRegionSelection()
             }
+            .disabled(!hasSession)
             Button("Clear Capture Region") {
-                captureManager.clearCaptureRegion()
+                captureManager?.clearCaptureRegion()
             }
-            .disabled(captureManager.captureRegion == nil)
-            Toggle("Show Capture Region Outline", isOn: $captureManager.showsRegionOutline)
+            .disabled(captureManager?.captureRegion == nil)
+            Toggle("Show Capture Region Outline", isOn: binding(\.showsRegionOutline, otherwise: true))
+                .disabled(!hasSession)
 
             Divider()
 
-            Picker("Record", selection: $captureManager.recordingMode) {
+            Picker("Record", selection: binding(\.recordingMode, otherwise: .videoAndAudio)) {
                 ForEach(RecordingMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
             }
+            .disabled(!hasSession)
 
-            Picker("Video Codec", selection: $captureManager.videoCodec) {
+            Picker("Video Codec", selection: binding(\.videoCodec, otherwise: .h264)) {
                 ForEach(RecordingVideoCodec.allCases) { codec in
                     Text(codec.title).tag(codec)
                 }
             }
+            .disabled(!hasSession)
 
             Divider()
 
             Button("Show Screenshots in Finder") {
-                captureManager.revealFolder(.screenshots)
+                captureManager?.revealFolder(.screenshots)
             }
+            .disabled(!hasSession)
             Button("Show Recordings in Finder") {
-                captureManager.revealFolder(.recordings)
+                captureManager?.revealFolder(.recordings)
             }
+            .disabled(!hasSession)
         }
+    }
+
+    /// A binding into the key window's capture manager. With none there is nothing to bind to, so
+    /// the item shows `otherwise` and is disabled.
+    private func binding<Value>(
+        _ keyPath: ReferenceWritableKeyPath<CaptureManager, Value>,
+        otherwise fallback: Value
+    ) -> Binding<Value> {
+        guard let captureManager else { return .constant(fallback) }
+        return Binding(
+            get: { captureManager[keyPath: keyPath] },
+            set: { captureManager[keyPath: keyPath] = $0 }
+        )
     }
 }
 

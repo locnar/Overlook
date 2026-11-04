@@ -25,13 +25,13 @@ struct OverlookApp: App {
             // window, and `PanelCommands` anchors to the group it contributes.
             ToolbarCommands()
 
-            PanelCommands(panels: appDelegate.session.panels)
+            PanelCommands()
 
             // One window: the panel state, `showMainWindow()` and `MenuBarAgent` all assume a
             // single console, and a second window would fight the first over which panel is open.
             CommandGroup(replacing: .newItem) { }
 
-            CaptureCommands(captureManager: appDelegate.session.captureManager)
+            CaptureCommands()
         }
     }
 }

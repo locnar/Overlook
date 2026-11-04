@@ -271,11 +271,11 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     @objc private func saveScreenshot() {
-        captureManager.saveScreenshot()
+        session.perform(.saveScreenshot)
     }
 
     @objc private func toggleRecording() {
-        captureManager.toggleRecording()
+        session.perform(.toggleRecording)
     }
 
     private func promptForPassword(deviceName: String) -> (password: String, save: Bool)? {
@@ -473,7 +473,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
     
     @objc private func toggleOCR() {
-        NotificationCenter.default.post(name: .overlookToggleCopyMode, object: nil)
+        session.perform(.toggleCopyMode)
         
         // Update menu item
         if let ocrItem = menu?.items.first(where: { $0.tag == 200 }) {
