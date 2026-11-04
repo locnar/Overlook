@@ -95,8 +95,8 @@ struct ConnectionLogTaggingTests {
         _ = await session.connect(to: Fixtures.device(name: "Rack 8", host: "192.0.2.88", port: 8443))
         #expect(session.log.deviceLabel == "192.0.2.88:8443")
 
-        // The stream's own disconnect line, as an operator disconnect logs it.
-        session.webRTCManager.disconnect()
+        // The operator disconnect line, which the session logs as it hangs up.
+        session.disconnect()
         await settle(1)
         let line = log.store.events.first { $0.message == "Operator disconnect" }
         #expect(line?.source == ConnectionLogSource(sessionID: session.log.sessionID, device: "192.0.2.88:8443"))

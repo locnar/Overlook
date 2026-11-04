@@ -1965,8 +1965,9 @@ class WebRTCManager: NSObject, ObservableObject {
     }
     
     func disconnect() {
-        // Nothing may auto-reconnect after an operator disconnect.
-        self.log.notice(.lifecycle, "Operator disconnect")
+        // Nothing may auto-reconnect after an operator disconnect. The session logs the
+        // disconnect itself: this runs again when a window closes over a session that quitting
+        // has already hung up, and the log should say the operator disconnected once.
         lastConnectedDevice = nil
         consecutiveStallReconnects = 0
         telemetry.update { $0.clearSession() }

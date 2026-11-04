@@ -167,6 +167,141 @@ struct WindowLifecycleTests {
         #expect(link.entries.last?.wasRecording == false)
     }
 
+    // MARK: - The operator disconnect is logged once
+
+    /// How many times `session` has logged "Operator disconnect". Each line reaches the ring in a
+    /// main-actor task of its own, so a marker is logged after everything else and waited for.
+    private func operatorDisconnects(in session: ConsoleSession) async -> Int {
+        let marker = "End of test \(UUID())"
+        session.log.notice(.lifecycle, marker)
+        var turns = 0
+        while !session.log.store.events.contains(where: { $0.message == marker }), turns < 1_000 {
+            await Task.yield()
+            turns += 1
+        }
+        return session.log.store.events.filter {
+            $0.message == "Operator disconnect" && $0.source?.sessionID == session.log.sessionID
+        }.count
+    }
+
+    @Test func disconnectingLogsOnceEvenWhenTheWindowThenCloses() async {
+        let link = RecordingSessionLink()
+        let session = makeSession(link)
+        _ = await session.connect(to: Fixtures.device())
+
+        // The window's Disconnect button and the menu bar's both come here; the second finds
+        // nothing left to disconnect.
+        session.disconnect()
+        session.disconnect()
+        session.windowWillClose()
+
+        #expect(await operatorDisconnects(in: session) == 1)
+    }
+
+    @Test func closingAConnectedWindowLogsOnce() async {
+        let link = RecordingSessionLink()
+        let session = makeSession(link)
+        _ = await session.connect(to: Fixtures.device())
+
+        session.windowWillClose()
+
+        #expect(await operatorDisconnects(in: session) == 1)
+    }
+
+    @Test func quittingAndThenClosingTheWindowLogsOnce() async {
+        let link = RecordingSessionLink()
+        let session = makeSession(link)
+        _ = await session.connect(to: Fixtures.device())
+        let registry = SessionRegistry(catalog: catalog) { _ in session }
+        registry.add(registry.sessionForNewWindow())
+
+        await registry.shutDownAll()
+        // AppKit closes the windows as the app exits, over a session quitting has hung up.
+        session.windowWillClose()
+
+        #expect(await operatorDisconnects(in: session) == 1)
+        // Only the log changed: both still tear down, quitting first.
+        #expect(Array(link.steps.suffix(3)) == [.shutDown, .hangUp, .stopInput])
+    }
+
+    @Test func closingTheWindowAndThenQuittingLogsOnce() async {
+        let link = RecordingSessionLink()
+        let session = makeSession(link)
+        _ = await session.connect(to: Fixtures.device())
+
+        session.windowWillClose()
+        await session.shutDownForTermination()
+
+        #expect(await operatorDisconnects(in: session) == 1)
+    }
+
+    @Test func aWindowClosedWhileConnectingLogsOnce() async {
+        let link = RecordingSessionLink()
+        let session = makeSession(link)
+        link.duringSignIn = { session in session.windowWillClose() }
+
+        // The close disconnects the connect under way, and the connect undoes itself as it lands.
+        _ = await session.connect(to: Fixtures.device())
+
+        #expect(link.steps.filter { $0 == .hangUp }.count == 2)
+        #expect(await operatorDisconnects(in: session) == 1)
+    }
+
+    @Test func aDeviceTheCatalogLetGoOfLogsOnceAsTheSessionEnds() async throws {
+        let forgetting = RecordingSessionLink(catalog: catalog)
+        let forgotten = makeSession(forgetting)
+        _ = await forgotten.connect(to: Fixtures.device(host: "192.0.2.90"))
+        let saved = try #require(forgotten.connection.connectedDevice)
+
+        // The catalog dropping the device is not the operator disconnecting.
+        catalog.forgetDevice(saved)
+        #expect(forgotten.connection.connectedDevice == nil)
+        #expect(await operatorDisconnects(in: forgotten) == 0)
+
+        await forgotten.shutDownForTermination()
+        forgotten.windowWillClose()
+        #expect(await operatorDisconnects(in: forgotten) == 1)
+
+        let removing = RecordingSessionLink()
+        let removed = makeSession(removing)
+        let manual = catalog.addManualDevice(host: "192.0.2.91", port: 443, type: .glinetComet)
+        _ = await removed.connect(to: manual)
+        // The recording link connects under a saved id; point the session at the listed entry,
+        // which is what a removal matches.
+        removed.connection.connectedDevice = manual
+
+        catalog.removeDevice(manual)
+        #expect(removed.connection.connectedDevice == nil)
+        removed.disconnect()
+        removed.windowWillClose()
+        await removed.shutDownForTermination()
+        #expect(await operatorDisconnects(in: removed) == 1)
+    }
+
+    @Test func eachConnectionLogsItsOwnDisconnect() async {
+        let link = RecordingSessionLink()
+        let session = makeSession(link)
+
+        _ = await session.connect(to: Fixtures.device())
+        session.disconnect()
+        _ = await session.connect(to: Fixtures.device())
+        session.disconnect()
+
+        #expect(await operatorDisconnects(in: session) == 2)
+    }
+
+    @Test func aSessionThatNeverConnectedLogsNoDisconnect() async {
+        let link = RecordingSessionLink()
+        link.signInError = KVMError.authenticationFailed
+        let session = makeSession(link)
+
+        _ = await session.connect(to: Fixtures.device())
+        await session.shutDownForTermination()
+        session.windowWillClose()
+
+        #expect(await operatorDisconnects(in: session) == 0)
+    }
+
     // MARK: - The title
 
     @Test func theWindowTitleNamesTheDevice() {

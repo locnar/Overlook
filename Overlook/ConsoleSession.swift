@@ -37,6 +37,11 @@ final class ConsoleSession: ObservableObject {
     @Published private(set) var connectingAddress: DeviceAddress?
     /// Set as the window closes. A connect still signing in then is undone when it lands.
     private(set) var isClosed = false
+    /// Whether a connect has started since the operator last disconnected, so the next teardown
+    /// is theirs to log. Quitting tears the connection down without letting go of the device, and
+    /// the window then closes over it and tears it down again; the operator disconnected once, so
+    /// only the first of these clears this and logs it.
+    private var hasConnectionToEnd = false
 
     private let link: ConsoleSessionLink
     private var cancellables = Set<AnyCancellable>()
@@ -141,18 +146,19 @@ final class ConsoleSession: ObservableObject {
         // included: the device it is talking to now is the one an operator would look for.
         log.deviceLabel = SessionLog.label(host: device.host, port: device.port)
         connectingAddress = device.address
+        hasConnectionToEnd = true
         let connected: KVMDevice
         do {
             connected = try await link.signIn(self, to: device, password: password, savePassword: savePassword)
             connectingAddress = nil
         } catch KVMError.authenticationFailed {
-            connectingAddress = nil
+            signInDidNotLand()
             return .needsPassword
         } catch KVMError.certificateChanged(let host, let port, let fingerprint) {
-            connectingAddress = nil
+            signInDidNotLand()
             return .certificateChanged(host: host, port: port, fingerprint: fingerprint)
         } catch {
-            connectingAddress = nil
+            signInDidNotLand()
             return .failed(error)
         }
 
@@ -178,9 +184,27 @@ final class ConsoleSession: ObservableObject {
         return .connected(connected, streamError: nil)
     }
 
+    /// A sign-in the device did not accept leaves the session as it was: still connected to
+    /// whatever it had before, or with nothing for a later teardown to log as a disconnect.
+    private func signInDidNotLand() {
+        connectingAddress = nil
+        if connection.connectedDevice == nil {
+            hasConnectionToEnd = false
+        }
+    }
+
+    /// Logs the operator's disconnect for the first teardown since the last connect started, and
+    /// nothing for any after it or for a session that never connected.
+    private func logOperatorDisconnect() {
+        guard hasConnectionToEnd else { return }
+        hasConnectionToEnd = false
+        log.notice(.lifecycle, "Operator disconnect")
+    }
+
     /// The operator's disconnect, from the window or the menu bar: hang up the stream, tell the
     /// device the console has gone, forget the device, and release whatever is still held on it.
     func disconnect() {
+        logOperatorDisconnect()
         link.hangUp(self)
         connection.disconnectFromDevice()
         link.stopInput(self)
@@ -268,6 +292,7 @@ final class ConsoleSession: ObservableObject {
     /// and the video session is hung up rather than left to time out on the device.
     func shutDownForTermination() async {
         await captureManager.finishRecordingForTermination()
+        logOperatorDisconnect()
         await link.shutDown(self)
     }
 }
