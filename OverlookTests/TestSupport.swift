@@ -110,3 +110,92 @@ enum Fixtures {
         DeviceTrustStore(defaults: scratch.defaults)
     }
 }
+
+/// Stands in for the parts of a connect that reach outside the app (`LiveSessionLink`). Each step
+/// is recorded with what the session looked like at that moment, and signing in points the
+/// session's connection at the device the way `SessionConnection.connectToDevice` does — saved
+/// in the catalog under its `saved-` id when one is given — with no network involved.
+@MainActor
+final class RecordingSessionLink: ConsoleSessionLink {
+    enum Step: Equatable {
+        case signIn(host: String, password: String?)
+        case startInput
+        case startStream(host: String)
+        case hangUp
+        case stopInput
+        case shutDown
+    }
+
+    struct Entry {
+        let step: Step
+        /// Whether the session was recording when the step ran.
+        let wasRecording: Bool
+        /// The device the session's connection held when the step ran.
+        let device: KVMDevice?
+    }
+
+    private(set) var entries: [Entry] = []
+    var steps: [Step] { entries.map(\.step) }
+
+    /// Saves a signed-in device here, as a real connect does, when set.
+    var catalog: KVMDeviceManager?
+    /// Thrown from `signIn` instead of signing in.
+    var signInError: Error?
+    /// Thrown from `startStream`.
+    var streamError: Error?
+    /// Runs inside `signIn`, before it returns or throws: while the connect is under way.
+    var duringSignIn: (@MainActor (ConsoleSession) async -> Void)?
+
+    init(catalog: KVMDeviceManager? = nil) {
+        self.catalog = catalog
+    }
+
+    private func record(_ step: Step, _ session: ConsoleSession) {
+        entries.append(Entry(
+            step: step,
+            wasRecording: session.captureManager.isRecording,
+            device: session.connection.connectedDevice
+        ))
+    }
+
+    func signIn(_ session: ConsoleSession, to device: KVMDevice, password: String?, savePassword: Bool) async throws -> KVMDevice {
+        record(.signIn(host: device.host, password: password), session)
+        await duringSignIn?(session)
+        if let signInError { throw signInError }
+
+        var saved = device
+        if let catalog {
+            saved = catalog.persistDevice(device)
+        } else {
+            saved.id = "saved-\(device.host)-\(device.port)"
+        }
+        session.connection.connectedDevice = saved
+        session.connection.glkvmClient = try GLKVMClient(device: saved)
+        return saved
+    }
+
+    func startInput(_ session: ConsoleSession) async {
+        record(.startInput, session)
+    }
+
+    func startStream(_ session: ConsoleSession, to device: KVMDevice) async throws {
+        record(.startStream(host: device.host), session)
+        if let streamError { throw streamError }
+    }
+
+    func hangUp(_ session: ConsoleSession) {
+        record(.hangUp, session)
+    }
+
+    func stopInput(_ session: ConsoleSession) {
+        record(.stopInput, session)
+    }
+
+    func shutDown(_ session: ConsoleSession) async {
+        record(.shutDown, session)
+    }
+}
+
+struct TestError: Error, Equatable {
+    let name: String
+}

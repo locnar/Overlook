@@ -16,8 +16,6 @@ class MenuBarAgent: NSObject, ObservableObject {
     private let showMainWindow: () -> Void
 
     private var connection: SessionConnection { session.connection }
-    private var webRTCManager: WebRTCManager { session.webRTCManager }
-    private var inputManager: InputManager { session.inputManager }
     private var captureManager: CaptureManager { session.captureManager }
     
     @Published var isConnected = false
@@ -41,8 +39,6 @@ class MenuBarAgent: NSObject, ObservableObject {
         createStatusItem()
         createMenu()
         setupKeyboardShortcuts()
-
-        inputManager.setup(with: webRTCManager)
         bindManagers()
     }
 
@@ -369,51 +365,35 @@ class MenuBarAgent: NSObject, ObservableObject {
         Task { await connectSession(to: device) }
     }
 
-    private func connectSession(to device: KVMDevice) async {
+    /// The steps are the session's (`ConsoleSession.connect`), shared with the window; what the
+    /// agent adds is modal alerts for the outcomes. A connect without a password that the device
+    /// refuses prompts once; one with a password reports the refusal instead.
+    private func connectSession(to device: KVMDevice, password: String? = nil, savePassword: Bool = false) async {
         showMainWindow()
 
-        do {
-            let connected = try await connection.connectToDevice(device)
-            await finishSessionConnect(connected)
-        } catch {
-            if let kvmError = error as? KVMError, kvmError == .authenticationFailed {
-                guard let entry = promptForPassword(deviceName: device.name) else { return }
-                do {
-                    let connected = try await connection.connectToDevice(
-                        device,
-                        password: entry.password,
-                        savePassword: entry.save
-                    )
-                    await finishSessionConnect(connected)
-                } catch {
-                    showError(title: "Failed to connect", message: String(describing: error))
-                }
+        let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { _ in
+            closePopover()
+        }
+
+        switch outcome {
+        case .connected(_, let streamError):
+            if let streamError {
+                // still consider ourselves connected at the API layer
+                showError(title: "WebRTC connect failed", message: String(describing: streamError))
+            }
+        case .needsPassword:
+            guard password == nil else {
+                showError(title: "Failed to connect", message: String(describing: KVMError.authenticationFailed))
                 return
             }
-
+            guard let entry = promptForPassword(deviceName: device.name) else { return }
+            await connectSession(to: device, password: entry.password, savePassword: entry.save)
+        case .certificateChanged(let host, let port, let fingerprint):
+            let error = KVMError.certificateChanged(host: host, port: port, fingerprint: fingerprint)
+            showError(title: "Failed to connect", message: String(describing: error))
+        case .failed(let error):
             showError(title: "Failed to connect", message: String(describing: error))
         }
-    }
-
-    private func finishSessionConnect(_ connectedDevice: KVMDevice) async {
-        if let client = connection.glkvmClient {
-            inputManager.setGLKVMClient(client)
-            inputManager.startFullInputCapture()
-            try? await client.setHidConnected(true)
-        }
-
-        closePopover()
-
-#if canImport(WebRTC)
-        do {
-            try await webRTCManager.connect(to: connectedDevice)
-        } catch WebRTCError.superseded {
-            // The operator's own later action replaced this attempt; nothing to report.
-        } catch {
-            // still consider ourselves connected at the API layer
-            showError(title: "WebRTC connect failed", message: String(describing: error))
-        }
-#endif
     }
 
     @objc private func disconnectAction() {
@@ -421,17 +401,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func disconnectSession() {
-        webRTCManager.disconnect()
-
-        let client = connection.glkvmClient
-        Task {
-            try? await client?.setHidConnected(false)
-        }
-
-        connection.disconnectFromDevice()
-        inputManager.setGLKVMClient(nil)
-        inputManager.stopFullInputCapture()
-
+        session.disconnect()
         closePopover()
     }
     
@@ -494,21 +464,7 @@ class MenuBarAgent: NSObject, ObservableObject {
         let savePassword = saveCheckbox.state == .on
 
         Task {
-            if password.isEmpty {
-                await connectSession(to: device)
-            } else {
-                showMainWindow()
-                do {
-                    let connected = try await connection.connectToDevice(
-                        device,
-                        password: password,
-                        savePassword: savePassword
-                    )
-                    await finishSessionConnect(connected)
-                } catch {
-                    showError(title: "Failed to connect", message: String(describing: error))
-                }
-            }
+            await connectSession(to: device, password: password.isEmpty ? nil : password, savePassword: savePassword)
         }
     }
     

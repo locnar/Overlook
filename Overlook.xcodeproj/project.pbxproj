@@ -57,6 +57,7 @@
 		01000107 /* InputMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000107 /* InputMappingTests.swift */; };
 		01000108 /* JSONValueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000108 /* JSONValueTests.swift */; };
 		01000109 /* ConsoleSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000109 /* ConsoleSessionTests.swift */; };
+		0100010A /* SessionConnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010A /* SessionConnectTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +126,7 @@
 		02000107 /* InputMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMappingTests.swift; sourceTree = "<group>"; };
 		02000108 /* JSONValueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValueTests.swift; sourceTree = "<group>"; };
 		02000109 /* ConsoleSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleSessionTests.swift; sourceTree = "<group>"; };
+		0200010A /* SessionConnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnectTests.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		03000002 /* OverlookTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OverlookTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -221,6 +223,7 @@
 				02000107 /* InputMappingTests.swift */,
 				02000108 /* JSONValueTests.swift */,
 				02000109 /* ConsoleSessionTests.swift */,
+				0200010A /* SessionConnectTests.swift */,
 			);
 			path = OverlookTests;
 			sourceTree = "<group>";
@@ -404,6 +407,7 @@
 				01000107 /* InputMappingTests.swift in Sources */,
 				01000108 /* JSONValueTests.swift in Sources */,
 				01000109 /* ConsoleSessionTests.swift in Sources */,
+				0100010A /* SessionConnectTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

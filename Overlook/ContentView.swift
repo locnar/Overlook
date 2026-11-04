@@ -9,8 +9,10 @@ struct ContentView: View {
     @EnvironmentObject var kvmDeviceManager: KVMDeviceManager
     @EnvironmentObject var connection: SessionConnection
     @EnvironmentObject var captureManager: CaptureManager
+    @EnvironmentObject private var session: ConsoleSession
     
-    @State private var selectedDevice: KVMDevice?
+    /// The device chosen in the Connections panel, held by address: see `ConnectionsPopoverView`.
+    @State private var selectedAddress: DeviceAddress?
     @State private var isConnected = false
     @State private var isOCRModeEnabled = false
     @State private var isShowingOCRResult = false
@@ -30,8 +32,6 @@ struct ContentView: View {
     @State private var connectionErrorMessage: String?
     @State private var certificatePrompt: CertificateChangePrompt?
 
-    @State private var suppressDeviceAutoConnect = false
-
     @State private var didAutoOpenConnections = false
 
     /// The width the panels sit in. Read through a preference key rather than by wrapping the
@@ -47,6 +47,11 @@ struct ContentView: View {
     private var showingSettings: Bool { panels.isOpen(.settings) }
     private var showingConnections: Bool { panels.isOpen(.connections) }
     private var showingLog: Bool { panels.isOpen(.log) }
+
+    /// The catalog's current entry for the chosen device.
+    private var selectedDevice: KVMDevice? {
+        selectedAddress.flatMap { kvmDeviceManager.device(at: $0) }
+    }
 
     private var availablePanelWidth: Double? {
         containerWidth > 0 ? Double(containerWidth) : nil
@@ -303,7 +308,8 @@ struct ContentView: View {
             if showingConnections {
                 VStack(spacing: 0) {
                     ConnectionsPopoverView(
-                        selectedDevice: $selectedDevice,
+                        selection: $selectedAddress,
+                        selectedDevice: selectedDevice,
                         isConnected: isConnected,
                         isScanning: kvmDeviceManager.isScanning,
                         devices: kvmDeviceManager.availableDevices,
@@ -322,7 +328,7 @@ struct ContentView: View {
                             guard let device = selectedDevice else { return }
                             guard device.id.hasPrefix("saved-") else { return }
                             kvmDeviceManager.forgetDevice(device)
-                            selectedDevice = nil
+                            selectedAddress = nil
                         },
                         onOpenLog: {
                             withAnimation(.easeInOut(duration: 0.2)) {
@@ -362,7 +368,6 @@ struct ContentView: View {
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
             applyAppAppearance()
-            inputManager.setup(with: webRTCManager)
             inputManager.setGLKVMClient(connection.glkvmClient)
 
             updateInputCaptureForUIOverlays()
@@ -412,12 +417,8 @@ struct ContentView: View {
         .onReceive(connection.$connectedDevice) { device in
             Task { @MainActor in
                 if let device {
-                    suppressDeviceAutoConnect = true
-                    selectedDevice = device
+                    selectedAddress = device.address
                     isConnected = true
-                    DispatchQueue.main.async {
-                        suppressDeviceAutoConnect = false
-                    }
                 } else {
                     isConnected = false
                 }
@@ -569,68 +570,36 @@ struct ContentView: View {
         }
     }
 
+    /// The steps are the session's (`ConsoleSession.connect`), shared with the menu-bar agent;
+    /// what this window adds is how each outcome is shown.
     private func connectToDevice(_ device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
-        Task {
-            do {
-                let connectedDevice = try await connection.connectToDevice(
-                    device,
+        Task { @MainActor in
+            let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { connected in
+                selectedAddress = connected.address
+                isConnected = true
+                panels.closeIfOpen(.connections)
+            }
+
+            switch outcome {
+            case .connected:
+                // A stream that failed to come up is in the log; the API connection stands.
+                break
+            case .needsPassword:
+                pendingPasswordDevice = device
+                showingPasswordPrompt = true
+            case .certificateChanged(let host, let port, let fingerprint):
+                isConnected = false
+                certificatePrompt = CertificateChangePrompt(
+                    device: device,
+                    host: host,
+                    port: port,
+                    fingerprint: fingerprint,
                     password: password,
                     savePassword: savePassword
                 )
-                await MainActor.run {
-                    suppressDeviceAutoConnect = true
-                    selectedDevice = connectedDevice
-                    isConnected = true
-                    panels.closeIfOpen(.connections)
-                }
-                DispatchQueue.main.async {
-                    suppressDeviceAutoConnect = false
-                }
-
-                if let client = connection.glkvmClient {
-                    await MainActor.run {
-                        inputManager.setGLKVMClient(client)
-                        inputManager.startFullInputCapture()
-                    }
-                    try? await client.setHidConnected(true)
-                }
-
- #if canImport(WebRTC)
-                do {
-                    try await webRTCManager.connect(to: connectedDevice)
-                } catch WebRTCError.superseded {
-                    // The operator's own later action replaced this attempt; nothing to report.
-                } catch {
-                    clog.error(.lifecycle, "WebRTC connect failed, API still connected: \(error.localizedDescription)")
-                }
- #endif
-            } catch {
-                if let kvmError = error as? KVMError, kvmError == .authenticationFailed {
-                    await MainActor.run {
-                        pendingPasswordDevice = device
-                        showingPasswordPrompt = true
-                    }
-                } else if let kvmError = error as? KVMError,
-                          case .certificateChanged(let host, let port, let fingerprint) = kvmError {
-                    await MainActor.run {
-                        isConnected = false
-                        certificatePrompt = CertificateChangePrompt(
-                            device: device,
-                            host: host,
-                            port: port,
-                            fingerprint: fingerprint,
-                            password: password,
-                            savePassword: savePassword
-                        )
-                    }
-                } else {
-                    clog.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
-                    await MainActor.run {
-                        isConnected = false
-                        connectionErrorMessage = describeConnectionError(error)
-                    }
-                }
-                return
+            case .failed(let error):
+                isConnected = false
+                connectionErrorMessage = describeConnectionError(error)
             }
         }
     }
@@ -658,11 +627,7 @@ struct ContentView: View {
         let port = Int(portString) ?? 443
         let device = kvmDeviceManager.addManualDevice(host: host, port: port, type: .glinetComet)
 
-        suppressDeviceAutoConnect = true
-        selectedDevice = device
-        DispatchQueue.main.async {
-            suppressDeviceAutoConnect = false
-        }
+        selectedAddress = device.address
 
         let password = submittedPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         connectToDevice(device, password: password.isEmpty ? nil : password, savePassword: manualSavePassword)
@@ -677,16 +642,7 @@ struct ContentView: View {
 
     private func toggleConnection() {
         if isConnected {
-            webRTCManager.disconnect()
-
-            let client = connection.glkvmClient
-            Task {
-                try? await client?.setHidConnected(false)
-            }
-
-            connection.disconnectFromDevice()
-            inputManager.setGLKVMClient(nil)
-            inputManager.stopFullInputCapture()
+            session.disconnect()
             isConnected = false
             panels.show(.connections)
         } else if let device = selectedDevice {
@@ -1079,7 +1035,13 @@ private struct WindowTitleSetter: NSViewRepresentable {
 }
 
 struct ConnectionsPopoverView: View {
-    @Binding var selectedDevice: KVMDevice?
+    /// The chosen device, by address rather than as the list entry itself. Connecting saves a
+    /// device under a new id (`manual-…` or `scanned-…` becomes `saved-…`) and re-sorts the list;
+    /// a selection held as the entry, which compares by id, then matched nothing — in every other
+    /// window showing the list as well as the one that connected.
+    @Binding var selection: DeviceAddress?
+    /// The catalog's current entry at `selection`.
+    let selectedDevice: KVMDevice?
 
     let isConnected: Bool
     let isScanning: Bool
@@ -1102,10 +1064,10 @@ struct ConnectionsPopoverView: View {
             Text("Connections")
                 .font(.headline)
 
-            Picker("Device", selection: $selectedDevice) {
-                Text("Select Device").tag(nil as KVMDevice?)
+            Picker("Device", selection: $selection) {
+                Text("Select Device").tag(nil as DeviceAddress?)
                 ForEach(devices) { device in
-                    Text(device.name).tag(device as KVMDevice?)
+                    Text(device.name).tag(device.address as DeviceAddress?)
                 }
             }
             .frame(maxWidth: .infinity)

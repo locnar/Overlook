@@ -721,6 +721,11 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         deviceRemovals.send(.forgotten(host: host, port: port))
     }
 
+    /// The listed entry at `address`, whatever its id is at the moment.
+    func device(at address: DeviceAddress) -> KVMDevice? {
+        availableDevices.first { $0.address == address }
+    }
+
     /// Replaces the listed entry with the same id, if there is one. A connect uses it to show a
     /// fresh token in the list before the device is saved.
     func updateDevice(_ device: KVMDevice) {
@@ -863,6 +868,21 @@ struct KVMDevice: Identifiable, Codable {
     var webRTCURL: String {
         return "\(webSocketScheme)://\(host):\(port)/janus/ws"
     }
+}
+
+/// Where a device is: its host and port, compared exactly as the catalog compares them.
+///
+/// A device's `id` changes when the entry it was connected from is saved (`manual-…` and
+/// `scanned-…` become `saved-…`), so anything that has to keep pointing at the same device across
+/// a connect — a selection in another window, the check for a device already open somewhere —
+/// holds this instead.
+struct DeviceAddress: Hashable {
+    let host: String
+    let port: Int
+}
+
+extension KVMDevice {
+    var address: DeviceAddress { DeviceAddress(host: host, port: port) }
 }
 
 extension KVMDevice: Hashable {

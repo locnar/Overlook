@@ -286,6 +286,40 @@ struct DeviceCatalogTests {
         #expect(catalog.availableDevices.first?.authToken == "fresh")
     }
 
+    // MARK: - Finding a device by address
+
+    @Test func aSelectionByAddressSurvivesTheDeviceBeingSaved() {
+        let catalog = makeCatalog()
+        let manual = catalog.addManualDevice(host: "192.0.2.95", port: 443, type: .glinetComet)
+        catalog.addManualDevice(host: "192.0.2.96", port: 443, type: .glinetComet)
+        let selection = manual.address
+
+        // Another window connects to it: saved under a new id, renamed, and the list re-sorted.
+        var connected = manual
+        connected.name = "Rack 3"
+        let saved = catalog.persistDevice(connected)
+
+        #expect(saved.id != manual.id)
+        #expect(catalog.availableDevices.map(\.host) == ["192.0.2.96", "192.0.2.95"])
+        // A selection held as the entry itself (which compares by id) now matches nothing...
+        #expect(catalog.availableDevices.contains(manual) == false)
+        // ...while one held by address still finds it, and is still one of the Picker's tags.
+        #expect(catalog.device(at: selection)?.id == saved.id)
+        #expect(catalog.device(at: selection)?.name == "Rack 3")
+        #expect(catalog.availableDevices.map(\.address).contains(selection))
+    }
+
+    @Test func anAddressIsTheHostAndThePort() {
+        let catalog = makeCatalog()
+        let https = catalog.addManualDevice(host: "192.0.2.97", port: 443, type: .glinetComet)
+        let alternate = catalog.addManualDevice(host: "192.0.2.97", port: 8443, type: .glinetComet)
+
+        #expect(catalog.device(at: https.address)?.id == https.id)
+        #expect(catalog.device(at: alternate.address)?.id == alternate.id)
+        #expect(catalog.device(at: DeviceAddress(host: "192.0.2.97", port: 80)) == nil)
+        #expect(Fixtures.device(id: "a", host: "192.0.2.98").address == Fixtures.device(id: "b", host: "192.0.2.98").address)
+    }
+
     // MARK: - Scanning
 
     @Test func cancellingWithNoScanRunningLeavesTheCatalogIdle() {

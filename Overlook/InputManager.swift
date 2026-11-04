@@ -160,6 +160,11 @@ class InputManager: ObservableObject {
     }
 
     func setGLKVMClient(_ client: GLKVMClient?) {
+        // The connect path hands the client over, and the window passes on every change of it
+        // too (it is the one that hears about a forgotten device). The second hand-over of the
+        // same client must not reset what the first set up — above all the mouse mode the device
+        // has since reported over the socket.
+        if let client, client === glkvmClient { return }
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
         unlockPointer()
