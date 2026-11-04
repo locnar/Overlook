@@ -18,6 +18,18 @@ class MenuBarAgent: NSObject, ObservableObject {
     /// been key). Nil while no console window is open.
     private var session: ConsoleSession? { registry.activeSession }
 
+    /// What the status menu lists about the sessions, kept current from the registry.
+    private let menuState: StatusMenuState
+
+    // The status menu's items that change with the sessions. The rest are fixed.
+    private var connectedHeaderItem: NSMenuItem?
+    /// The items under "Connected": one per connected session, or a placeholder.
+    private var connectedItems: [NSMenuItem] = []
+    private var screenshotItem: NSMenuItem?
+    private var recordItem: NSMenuItem?
+    private var disconnectItem: NSMenuItem?
+    private var devicesItem: NSMenuItem?
+
     /// What the popover shows while no console window is open: a connection that is never
     /// connected, so every device row offers Connect.
     private lazy var idleConnection = SessionConnection(catalog: kvmDeviceManager)
@@ -37,6 +49,7 @@ class MenuBarAgent: NSObject, ObservableObject {
         self.kvmDeviceManager = registry.catalog
         self.registry = registry
         self.showMainWindow = showMainWindow
+        self.menuState = StatusMenuState(registry: registry)
         super.init()
     }
     
@@ -59,11 +72,20 @@ class MenuBarAgent: NSObject, ObservableObject {
             }
             .store(in: &cancellables)
 
-        // The status line, the icon and the popover follow whichever session is active. `@Published`
-        // fires in `willSet`, so the new session is taken from the emitted value.
+        // The popover follows whichever session is active. `@Published` fires in `willSet`, so the
+        // new session is taken from the emitted value.
         registry.$activeSession
             .sink { [weak self] session in
                 self?.bind(to: session)
+            }
+            .store(in: &cancellables)
+
+        // The menu's session items, the action titles and the icon follow every session: one
+        // connecting or disconnecting, starting or stopping a recording, or becoming active.
+        // The model is published in `willSet` too, so it is applied as emitted.
+        menuState.$model
+            .sink { [weak self] model in
+                self?.apply(model)
             }
             .store(in: &cancellables)
     }
@@ -76,9 +98,6 @@ class MenuBarAgent: NSObject, ObservableObject {
 
         guard let session else {
             currentDevice = nil
-            isConnected = false
-            updateStatusIcon()
-            updateStatusMenuItem(device: nil)
             updateDeviceMenu()
             return
         }
@@ -86,15 +105,75 @@ class MenuBarAgent: NSObject, ObservableObject {
         session.connection.$connectedDevice
             .sink { [weak self] device in
                 guard let self else { return }
-                self.currentDevice = device
-                self.isConnected = (device != nil)
-                self.updateStatusIcon()
                 // `@Published` fires in `willSet`: the connection still holds the previous device
-                // here, so the status line takes the emitted value rather than reading it back.
-                self.updateStatusMenuItem(device: device)
+                // here, so the Devices checkmark takes the emitted value rather than reading it back.
+                self.currentDevice = device
                 self.updateDeviceMenu()
             }
             .store(in: &sessionCancellables)
+    }
+
+    /// Brings the status menu's session items, action titles and enabled states, and the icon, in
+    /// line with `model`. Items are updated in place, so an open menu changes under the pointer
+    /// rather than closing.
+    private func apply(_ model: StatusMenuModel) {
+        isConnected = model.isAnyConnected
+        updateStatusIcon()
+
+        screenshotItem?.isEnabled = model.canSaveScreenshot
+        recordItem?.title = model.recordingTitle
+        recordItem?.isEnabled = model.canToggleRecording
+        disconnectItem?.title = model.disconnectTitle
+        disconnectItem?.isEnabled = model.canDisconnect
+
+        guard let menu, let connectedHeaderItem else { return }
+        for item in connectedItems {
+            menu.removeItem(item)
+        }
+        connectedItems = makeConnectedItems(model)
+        var index = menu.index(of: connectedHeaderItem) + 1
+        for item in connectedItems {
+            menu.insertItem(item, at: index)
+            index += 1
+        }
+    }
+
+    /// One item per connected session: its device, a checkmark on the active one, and a trailing
+    /// marker while it records. Choosing one brings its window forward, which makes it active.
+    private func makeConnectedItems(_ model: StatusMenuModel) -> [NSMenuItem] {
+        guard model.isAnyConnected else {
+            let none = NSMenuItem(title: StatusMenuModel.noneConnectedTitle, action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            return [none]
+        }
+        return model.connected.map { entry in
+            let item = NSMenuItem(title: entry.title, action: #selector(bringSessionForward(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.id
+            item.state = entry.isActive ? .on : .off
+            if entry.isRecording {
+                let title = NSMutableAttributedString(
+                    string: entry.deviceName + "  ",
+                    attributes: [.font: NSFont.menuFont(ofSize: 0)]
+                )
+                title.append(NSAttributedString(
+                    string: StatusMenuModel.recordingMarker,
+                    attributes: [
+                        .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                        .foregroundColor: NSColor.systemRed,
+                    ]
+                ))
+                item.attributedTitle = title
+            }
+            return item
+        }
+    }
+
+    @objc private func bringSessionForward(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? ObjectIdentifier,
+              let session = registry.sessions.first(where: { ObjectIdentifier($0) == id })
+        else { return }
+        session.bringWindowForward()
     }
     
     private func createStatusItem() {
@@ -110,84 +189,88 @@ class MenuBarAgent: NSObject, ObservableObject {
         updateStatusIcon()
     }
     
+    /// Show Overlook; the connected sessions; the actions on the active one; then connecting and
+    /// managing devices, OCR, Preferences and Quit. The session part is filled in by `apply`.
     private func createMenu() {
-        menu = NSMenu()
+        let menu = NSMenu()
+        // Enabled states come from the model (`apply`), not from validation as the menu opens.
+        menu.autoenablesItems = false
+        self.menu = menu
 
-        let showItem = NSMenuItem(title: "Show Overlook", action: #selector(showMainWindowAction), keyEquivalent: "")
+        let showItem = NSMenuItem(title: StatusMenuModel.showTitle, action: #selector(showMainWindowAction), keyEquivalent: "")
         showItem.target = self
-        menu?.addItem(showItem)
-        menu?.addItem(NSMenuItem.separator())
-        
-        // Device section
-        let deviceItem = NSMenuItem(title: "Devices", action: nil, keyEquivalent: "")
-        deviceItem.submenu = createDeviceMenu()
-        menu?.addItem(deviceItem)
-        
-        menu?.addItem(NSMenuItem.separator())
-        
-        // Connection status
-        let statusItem = NSMenuItem(title: "Status: Disconnected", action: nil, keyEquivalent: "")
-        statusItem.tag = 100
-        menu?.addItem(statusItem)
+        menu.addItem(showItem)
+        menu.addItem(NSMenuItem.separator())
 
-        let disconnectItem = NSMenuItem(title: "Disconnect", action: #selector(disconnectAction), keyEquivalent: "")
-        disconnectItem.target = self
-        disconnectItem.tag = 101
-        disconnectItem.isEnabled = false
-        menu?.addItem(disconnectItem)
-        
-        menu?.addItem(NSMenuItem.separator())
-        
-        // Quick actions
-        let connectItem = NSMenuItem(title: "Quick Connect", action: #selector(showQuickConnect), keyEquivalent: "k")
-        connectItem.target = self
-        menu?.addItem(connectItem)
-        
-        let scanItem = NSMenuItem(title: "Scan for Devices", action: #selector(scanForDevices), keyEquivalent: "d")
-        scanItem.keyEquivalentModifierMask = [.command, .shift]
-        scanItem.target = self
-        menu?.addItem(scanItem)
-        
-        menu?.addItem(NSMenuItem.separator())
-        
-        // OCR toggle
-        let ocrItem = NSMenuItem(title: "Enable OCR", action: #selector(toggleOCR), keyEquivalent: "o")
-        ocrItem.target = self
-        ocrItem.tag = 200
-        menu?.addItem(ocrItem)
-        
-        // Capture. The key equivalents shown here are the Capture menu's; in this status menu
-        // they are labels only (a status item menu has no key window to receive them). Enabled
-        // state and the Start/Stop title come from `validateMenuItem` as the menu opens.
-        let screenshotItem = NSMenuItem(title: "Save Screenshot", action: #selector(saveScreenshot), keyEquivalent: "s")
+        // Connected sessions
+        let header = NSMenuItem.sectionHeader(title: StatusMenuModel.connectedHeader)
+        connectedHeaderItem = header
+        menu.addItem(header)
+        menu.addItem(NSMenuItem.separator())
+
+        // Actions on the active session. The key equivalents shown here are the Capture menu's;
+        // in this status menu they are labels only (a status item menu has no key window to
+        // receive them).
+        let screenshotItem = NSMenuItem(title: StatusMenuModel.screenshotTitle, action: #selector(saveScreenshot), keyEquivalent: "s")
         screenshotItem.keyEquivalentModifierMask = [.command, .shift]
         screenshotItem.target = self
-        screenshotItem.tag = 400
-        menu?.addItem(screenshotItem)
+        self.screenshotItem = screenshotItem
+        menu.addItem(screenshotItem)
 
         let recordItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "r")
         recordItem.keyEquivalentModifierMask = [.command, .shift]
         recordItem.target = self
-        recordItem.tag = 401
-        menu?.addItem(recordItem)
+        self.recordItem = recordItem
+        menu.addItem(recordItem)
 
-        menu?.addItem(NSMenuItem.separator())
-        
+        let disconnectItem = NSMenuItem(title: "Disconnect", action: #selector(disconnectAction), keyEquivalent: "")
+        disconnectItem.target = self
+        self.disconnectItem = disconnectItem
+        menu.addItem(disconnectItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Devices: connecting (routed like every connect from here, `connectFromMenu`), adding,
+        // forgetting and removing.
+        let devicesItem = NSMenuItem(title: "Devices", action: nil, keyEquivalent: "")
+        devicesItem.submenu = createDeviceMenu()
+        self.devicesItem = devicesItem
+        menu.addItem(devicesItem)
+
+        let connectItem = NSMenuItem(title: "Quick Connect", action: #selector(showQuickConnect), keyEquivalent: "k")
+        connectItem.target = self
+        menu.addItem(connectItem)
+
+        let scanItem = NSMenuItem(title: "Scan for Devices", action: #selector(scanForDevices), keyEquivalent: "d")
+        scanItem.keyEquivalentModifierMask = [.command, .shift]
+        scanItem.target = self
+        menu.addItem(scanItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // OCR toggle
+        let ocrItem = NSMenuItem(title: "Enable OCR", action: #selector(toggleOCR), keyEquivalent: "o")
+        ocrItem.target = self
+        ocrItem.tag = 200
+        menu.addItem(ocrItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Preferences
         let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
         prefsItem.target = self
-        menu?.addItem(prefsItem)
-        
-        menu?.addItem(NSMenuItem.separator())
-        
+        menu.addItem(prefsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Quit
         let quitItem = NSMenuItem(title: "Quit Overlook", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
-        menu?.addItem(quitItem)
+        menu.addItem(quitItem)
 
-        updateStatusMenuItem()
+        apply(menuState.model)
     }
-    
+
     private func createDeviceMenu() -> NSMenu {
         let deviceMenu = NSMenu()
         
@@ -199,8 +282,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
     
     private func updateDeviceMenu() {
-        guard let deviceMenuItem = menu?.items.first(where: { $0.title == "Devices" }),
-              let deviceMenu = deviceMenuItem.submenu else { return }
+        guard let deviceMenu = devicesItem?.submenu else { return }
         
         deviceMenu.removeAllItems()
         
@@ -214,6 +296,8 @@ class MenuBarAgent: NSObject, ObservableObject {
                 deviceItem.target = self
                 deviceItem.representedObject = device
                 
+                // Checked when the active window shows it; choosing a device open in another
+                // window brings that window forward instead.
                 if currentDevice?.host == device.host, currentDevice?.port == device.port {
                     deviceItem.state = .on
                 }
@@ -276,23 +360,6 @@ class MenuBarAgent: NSObject, ObservableObject {
         } else {
             // Show popover
             togglePopover(nil)
-        }
-    }
-
-    private func updateStatusMenuItem() {
-        updateStatusMenuItem(device: session?.connection.connectedDevice)
-    }
-
-    private func updateStatusMenuItem(device: KVMDevice?) {
-        if let statusItem = menu?.items.first(where: { $0.tag == 100 }) {
-            if let device {
-                statusItem.title = "Connected to \(device.name)"
-            } else {
-                statusItem.title = "Status: Disconnected"
-            }
-        }
-        if let disconnectItem = menu?.items.first(where: { $0.tag == 101 }) {
-            disconnectItem.isEnabled = (device != nil)
         }
     }
 
@@ -660,25 +727,6 @@ class MenuBarAgent: NSObject, ObservableObject {
         }
     }
     
-    func updateConnectionStatus(_ connected: Bool, device: KVMDevice?) {
-        isConnected = connected
-        currentDevice = device
-        
-        Task { @MainActor in
-            updateStatusIcon()
-            
-            if let statusItem = menu?.items.first(where: { $0.tag == 100 }) {
-                if connected, let device = device {
-                    statusItem.title = "Connected to \(device.name)"
-                } else {
-                    statusItem.title = "Status: Disconnected"
-                }
-            }
-            
-            updateDeviceMenu()
-        }
-    }
-    
     func updateAvailableDevices(_ devices: [KVMDevice]) {
         availableDevices = devices
         
@@ -697,26 +745,7 @@ class MenuBarAgent: NSObject, ObservableObject {
         popover = nil
         monitoringWindow = nil
         cancellables.removeAll()
-    }
-}
-
-// The status menu auto-enables its items, so without this every item with a target and action
-// shows enabled — the `isEnabled` flag on Disconnect never took effect. Validation runs as the menu
-// opens, which also makes it the right place to read live state for the connection-dependent items
-// (a Combine sink sees `@Published` values one step early, in `willSet`).
-extension MenuBarAgent: NSMenuItemValidation {
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        let connected = session?.connection.connectedDevice != nil
-        switch menuItem.tag {
-        case 101, 400:   // Disconnect, Save Screenshot
-            return connected
-        case 401:        // Start/Stop Recording
-            let recording = session?.captureManager.isRecording ?? false
-            menuItem.title = recording ? "Stop Recording" : "Start Recording"
-            return connected || recording
-        default:
-            return menuItem.isEnabled
-        }
+        sessionCancellables.removeAll()
     }
 }
 

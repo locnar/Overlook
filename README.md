@@ -241,6 +241,8 @@ Once connected:
 
 Each window is a console of its own. **File › New Window** (`⌘N`) opens another, disconnected, to connect to a second device. A device is open in one window at a time: connecting to one that is already open brings its window forward. Keyboard and mouse go only to the window in front, and switching windows releases anything held on the device you left. The Capture and View menus act on the window in front; the menu bar acts on the window you used last.
 
+The menu bar menu lists every connected window under **Connected**, with a checkmark on the one it acts on and **● rec** after any that is recording; choosing another brings its window forward and makes it the one acted on. **Save Screenshot**, **Start/Stop Recording** and **Disconnect** *device* below the list act on that window only.
+
 Closing a window disconnects it. If it is recording, Overlook asks first; stopping saves the recording so far.
 
 Audio plays from the active window only (the one in front, or the one you used last) unless **Settings › Audio › Play audio from** is set to **All windows**. The setting is the same for every window and takes effect at once; the other windows stay connected, muted, and still record their audio. The microphone always goes to the active window only.
@@ -453,6 +455,8 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - The device catalog shared by every session: discovery and saved devices.
 - `Overlook/MenuBarAgent.swift`
   - Menu bar UI + quick actions.
+- `Overlook/StatusMenuModel.swift`
+  - What the menu bar menu lists about the windows (connected sessions, the active one, recording) and its action labels, kept current from the registry.
 - `Overlook/MediaCaptureHub.swift`, `Overlook/SessionRecorder.swift`, `Overlook/CaptureManager.swift`, `Overlook/CaptureViews.swift`
   - Screenshots and recordings. `MediaCaptureHub` is where decoded frames (`WebRTCManager.renderFrame`) and playout PCM (`WebRTCAudioDevice`) are handed over, and holds `CaptureRegionGeometry` / `FrameCropper` (region → even-aligned pixel rect; per-frame NV12/BGRA plane copy into a pooled buffer); `SessionRecorder` muxes them with `AVAssetWriter`, cropping to the region it was started with; `CaptureManager` owns the UI state (including the session-only capture region), folders and file names; `CaptureViews` has the toolbar controls, the region selection overlay and outline, the Capture menu and the settings section. The drag itself lives in `VideoSurfaceView`, next to the OCR drag.
 

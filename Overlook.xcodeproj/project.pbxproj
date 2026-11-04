@@ -67,6 +67,8 @@
 		01000036 /* AudioPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003A /* AudioPreferences.swift */; };
 		0100010E /* AudioRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010E /* AudioRoutingTests.swift */; };
 		0100010F /* ConnectionLogTaggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010F /* ConnectionLogTaggingTests.swift */; };
+		01000038 /* StatusMenuModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003C /* StatusMenuModel.swift */; };
+		01000110 /* StatusMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000110 /* StatusMenuTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -147,6 +149,8 @@
 		0200003A /* AudioPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPreferences.swift; sourceTree = "<group>"; };
 		0200010E /* AudioRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRoutingTests.swift; sourceTree = "<group>"; };
 		0200010F /* ConnectionLogTaggingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionLogTaggingTests.swift; sourceTree = "<group>"; };
+		0200003C /* StatusMenuModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuModel.swift; sourceTree = "<group>"; };
+		02000110 /* StatusMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -218,6 +222,7 @@
 				02000039 /* ConsoleWindow.swift */,
 				02000038 /* SessionRegistry.swift */,
 				02000037 /* InputFocusGate.swift */,
+				0200003C /* StatusMenuModel.swift */,
 				0200003A /* AudioPreferences.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
@@ -249,6 +254,7 @@
 				0200010C /* SessionRegistryTests.swift */,
 				0200010B /* InputFocusTests.swift */,
 				0200010A /* SessionConnectTests.swift */,
+				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
 				0200010E /* AudioRoutingTests.swift */,
 			);
@@ -413,6 +419,7 @@
 				01000035 /* ConsoleWindow.swift in Sources */,
 				01000034 /* SessionRegistry.swift in Sources */,
 				01000033 /* InputFocusGate.swift in Sources */,
+				01000038 /* StatusMenuModel.swift in Sources */,
 				01000036 /* AudioPreferences.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
@@ -442,6 +449,7 @@
 				0100010C /* SessionRegistryTests.swift in Sources */,
 				0100010B /* InputFocusTests.swift in Sources */,
 				0100010A /* SessionConnectTests.swift in Sources */,
+				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,
 				0100010E /* AudioRoutingTests.swift in Sources */,
 			);
