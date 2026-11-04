@@ -19,6 +19,25 @@ class InputManager: ObservableObject {
     /// another window's.
     var onLocalShortcut: ((LocalShortcut) -> Void)?
 
+    /// What one input event became on its way to the target, before the transport.
+    enum SentInput: Equatable {
+        case key(UInt16, isDown: Bool)
+        case button(MouseButton, isDown: Bool)
+        case scroll
+    }
+
+    /// Sees every key, button and scroll event this manager decides to send. Only the tests set
+    /// it: with no device attached, it is the one place a send can be observed.
+    var sentInputObserver: ((SentInput) -> Void)?
+
+    /// Whether this session's window is key, and which presses it took; see `InputFocusGate`.
+    /// Every keyboard and mouse path checks it before anything goes to the target.
+    private(set) var focusGate = InputFocusGate()
+    /// The session's own window. Pointer lock is tied to it, never to whatever `NSApp.keyWindow`
+    /// happens to be.
+    private weak var window: NSWindow?
+    private var windowObservers: [NSObjectProtocol] = []
+
     private var webRTCManager: WebRTCManager?
     private var glkvmClient: GLKVMClient?
     private var glkvmWebSocketClient: GLKVMClient.WebSocketClient?
@@ -85,6 +104,9 @@ class InputManager: ObservableObject {
     /// would stay down on the target.
     private var remoteHeldKeys: Set<String> = []
     private var keyboardFocusObservers: [NSObjectProtocol] = []
+    /// Mouse buttons pressed on the target and not yet released, in either mouse mode. Released
+    /// when this window stops being key, for the same reason as `remoteHeldKeys`.
+    private var remoteHeldButtons: Set<MouseButton> = []
 
     /// Caps Lock as the target last reported it through its keyboard LEDs; nil until reported.
     private var remoteCapsLockLED: Bool?
@@ -233,7 +255,7 @@ class InputManager: ObservableObject {
     }
 
     func handleVideoMouseMove(pointInView: CGPoint, deltaInView: CGSize = .zero, viewSize: CGSize, videoSize: CGSize?) {
-        guard isMouseCaptureEnabled else { return }
+        guard isMouseCaptureEnabled, focusGate.admitsPointerMotion else { return }
         if isRelativeMouseMode {
             // Relative mode forwards movement only while the pointer is locked, and the locked path
             // reads deltas from the event monitor. Here we just keep the remote-pixels-per-point
@@ -358,6 +380,10 @@ class InputManager: ObservableObject {
 
     func handleVideoMouseButton(button: MouseButton, isDown: Bool, pointInView: CGPoint, viewSize: CGSize, videoSize: CGSize?) {
         guard isMouseCaptureEnabled else { return }
+        // A click on a window that is not key only brings it forward. A release goes out only for
+        // a press made here, while this window was key; one already released when the window
+        // lost key status is not sent again.
+        guard focusGate.admitButton(button, isDown: isDown) else { return }
 
         if isRelativeMouseMode {
             if !isPointerLocked {
@@ -388,7 +414,8 @@ class InputManager: ObservableObject {
     }
 
     func handleVideoMouseScroll(deltaX: CGFloat, deltaY: CGFloat) {
-        guard isMouseCaptureEnabled else { return }
+        // Scrolling reaches the window under the pointer whether or not it is key.
+        guard isMouseCaptureEnabled, focusGate.admitsPointerMotion else { return }
         if isRelativeMouseMode, !isPointerLocked { return }
         let scrollEvent = MouseScrollEvent(deltaX: deltaX, deltaY: deltaY, timestamp: CACurrentMediaTime())
         sendMouseScrollEvent(scrollEvent)
@@ -477,9 +504,8 @@ class InputManager: ObservableObject {
         isKeyboardCaptureEnabled = true
 
         keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
-            self?.handleKeyEvent(event)
-            guard let self, self.isKeyboardCaptureEnabled else { return event }
-            return nil
+            guard let self else { return event }
+            return self.routeMonitoredKeyEvent(event)
         }
 
         // A local monitor sees nothing while another app is active, so a key held when focus
@@ -538,6 +564,70 @@ class InputManager: ObservableObject {
         }
     }
     
+    /// What the key monitor does with an event: handle it and keep it from the window while
+    /// capture is on, or return it untouched. A local monitor sees every window's events, so one
+    /// for another window — another console's, or a sheet's — is returned untouched for that
+    /// window's own handling. Internal so the tests can drive it with synthesized events.
+    func routeMonitoredKeyEvent(_ event: NSEvent) -> NSEvent? {
+        guard focusGate.owns(eventWindowNumber: event.windowNumber) else { return event }
+        handleKeyEvent(event)
+        return isKeyboardCaptureEnabled ? nil : event
+    }
+
+    // MARK: - The session's window
+
+    /// Follows the session's window: which one it is, and when it becomes and stops being key.
+    /// `ConsoleSession` calls this once the window exists, and with nil when it closes.
+    func attach(to window: NSWindow?) {
+        for observer in windowObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        windowObservers.removeAll()
+        if focusGate.isWindowKey {
+            windowDidResignKey()
+        }
+        self.window = window
+        guard let window else { return }
+
+        let center = NotificationCenter.default
+        windowObservers = [
+            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let window = note.object as? NSWindow else { return }
+                    self?.windowDidBecomeKey(windowNumber: window.windowNumber)
+                }
+            },
+            // Also posted when Overlook stops being the active app, so this covers that too.
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.windowDidResignKey()
+                }
+            },
+        ]
+        if window.isKeyWindow {
+            windowDidBecomeKey(windowNumber: window.windowNumber)
+        }
+    }
+
+    /// The window came forward: from now on its events are this session's. Caps Lock may have
+    /// been toggled while another window or app had the keyboard, so it is brought back into line
+    /// as when Overlook itself comes forward. Modifiers are not pressed on the target here: one
+    /// held across the switch was pressed for the other window, and its release is not ours.
+    func windowDidBecomeKey(windowNumber: Int) {
+        focusGate.windowDidBecomeKey(windowNumber: windowNumber)
+        syncRemoteCapsLock()
+    }
+
+    /// The window stopped being key, to another console, a sheet, or another app. Its keys'
+    /// and buttons' releases will go elsewhere, so everything held on this target is released now
+    /// and a captured pointer is let go.
+    func windowDidResignKey() {
+        focusGate.windowDidResignKey()
+        releaseRemoteHeldKeys()
+        unlockPointer()
+        releaseRemoteHeldButtons()
+    }
+
     private func handleKeyEvent(_ event: NSEvent) {
         guard isKeyboardCaptureEnabled else { return }
 
@@ -546,6 +636,10 @@ class InputManager: ObservableObject {
             let keyCode = event.keyCode
             let isKeyDown = event.type == .keyDown
             let modifiers = event.modifierFlags
+
+            // A release (or repeat) of a key pressed while another window was key belongs to
+            // nobody: that window has already released it on its own target.
+            guard focusGate.admitKey(keyCode, isDown: isKeyDown, isRepeat: event.isARepeat) else { return }
 
             if !isKeyDown, suppressedKeyUps.contains(keyCode) {
                 suppressedKeyUps.remove(keyCode)
@@ -629,8 +723,10 @@ class InputManager: ObservableObject {
             switch keyName {
             case "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight":
                 isDown = Self.isModifierSideDown(keyName, flags: flags)
+                guard focusGate.admitKey(keyCode, isDown: isDown) else { return }
             case "MetaLeft", "MetaRight":
                 isDown = Self.isModifierSideDown(keyName, flags: flags)
+                guard focusGate.admitKey(keyCode, isDown: isDown) else { return }
                 if isDown {
                     pendingCommandKeyCode = keyCode
                     activeCommandKeyCode = nil
@@ -688,6 +784,14 @@ class InputManager: ObservableObject {
         "AltRight": (.option, 0x0040, 0x0020),
     ]
 
+    /// The Mac key codes of the modifiers `resyncRemoteKeys` can press again.
+    private static let modifierKeyCodes: [String: UInt16] = [
+        "MetaLeft": 55, "MetaRight": 54,
+        "ShiftLeft": 56, "ShiftRight": 60,
+        "AltLeft": 58, "AltRight": 61,
+        "ControlLeft": 59, "ControlRight": 62,
+    ]
+
     static func isModifierSideDown(_ keyName: String, flags: NSEvent.ModifierFlags) -> Bool {
         guard let side = modifierSideMasks[keyName] else { return false }
         guard flags.contains(side.family) else { return false }
@@ -721,11 +825,24 @@ class InputManager: ObservableObject {
         }
     }
 
+    /// Releases every mouse button still held on the target, when this window stops being key.
+    private func releaseRemoteHeldButtons() {
+        for button in remoteHeldButtons {
+            sendMouseButtonEvent(MouseButtonEvent(
+                button: button,
+                isDown: false,
+                position: CGPoint(x: -1, y: -1),
+                timestamp: CACurrentMediaTime()
+            ))
+        }
+    }
+
     /// Brings the target's Caps Lock into line with this Mac's, using the keyboard LED state
-    /// kvmd reports. Runs when capture starts, when Overlook comes forward, and when the first
-    /// LED report arrives on a new socket — the moments a toggle may have happened unseen.
+    /// kvmd reports. Runs when capture starts, when Overlook or this window comes forward, and when
+    /// the first LED report arrives on a new socket — the moments a toggle may have happened unseen.
+    /// Only while this window is key: the keyboard is another window's otherwise.
     private func syncRemoteCapsLock() {
-        guard isKeyboardCaptureEnabled, NSApp.isActive, remoteCapsLockLEDIsLive, capsLockVerifyTask == nil,
+        guard isKeyboardCaptureEnabled, NSApp.isActive, focusGate.isWindowKey, remoteCapsLockLEDIsLive, capsLockVerifyTask == nil,
               transportMode == .glkvmWebSocket, glkvmWebSocketClient != nil,
               let remote = remoteCapsLockLED else { return }
         let local = NSEvent.modifierFlags.contains(.capsLock)
@@ -750,7 +867,9 @@ class InputManager: ObservableObject {
     /// again. Caps Lock is handled separately, by `syncRemoteCapsLock` on the first LED report.
     private func resyncRemoteKeys(through ws: GLKVMClient.WebSocketClient) {
         var toPress: [String] = []
-        if isKeyboardCaptureEnabled, NSApp.isActive {
+        // Only the key window's session presses what is physically held: in any other window
+        // those keys belong to the console in front.
+        if isKeyboardCaptureEnabled, NSApp.isActive, focusGate.isWindowKey {
             let flags = NSEvent.modifierFlags
             for (left, right) in [("ShiftLeft", "ShiftRight"), ("ControlLeft", "ControlRight"), ("AltLeft", "AltRight")] {
                 guard let leftSide = Self.modifierSideMasks[left], flags.contains(leftSide.family) else { continue }
@@ -775,6 +894,9 @@ class InputManager: ObservableObject {
 
         let pressAgain = toPress
         remoteHeldKeys = Set(pressAgain)
+        remoteHeldButtons.removeAll()
+        // Pressed without a key-down of their own, so their key-ups have to be let through.
+        focusGate.notePressed(pressAgain.compactMap { Self.modifierKeyCodes[$0] })
         clog.info(.hid, pressAgain.isEmpty
             ? "Cleared held keys on the target"
             : "Cleared held keys on the target; pressing again: \(pressAgain.joined(separator: ", "))")
@@ -788,6 +910,7 @@ class InputManager: ObservableObject {
 
     private func resetRemoteKeyboardState() {
         remoteHeldKeys.removeAll()
+        remoteHeldButtons.removeAll()
         remoteCapsLockLED = nil
         remoteCapsLockLEDIsLive = true
         capsLockVerifyTask?.cancel()
@@ -877,6 +1000,7 @@ class InputManager: ObservableObject {
     }
     
     private func sendKeyEvent(_ event: KeyEvent) {
+        sentInputObserver?(.key(event.keyCode, isDown: event.isKeyDown))
         if transportMode == .glkvmWebSocket,
            let key = glkvmKeyForMacKeyCode(event.keyCode),
            let ws = glkvmWebSocketClient {
@@ -905,6 +1029,12 @@ class InputManager: ObservableObject {
     }
     
     private func sendMouseButtonEvent(_ event: MouseButtonEvent) {
+        sentInputObserver?(.button(event.button, isDown: event.isDown))
+        if event.isDown {
+            remoteHeldButtons.insert(event.button)
+        } else {
+            remoteHeldButtons.remove(event.button)
+        }
         if transportMode == .glkvmWebSocket,
            let button = glkvmMouseButtonName(event.button),
            let ws = glkvmWebSocketClient {
@@ -948,6 +1078,7 @@ class InputManager: ObservableObject {
     }
     
     private func sendMouseScrollEvent(_ event: MouseScrollEvent) {
+        sentInputObserver?(.scroll)
         if transportMode == .glkvmWebSocket, let ws = glkvmWebSocketClient {
             let dx = Self.clampInt(Int(event.deltaX.rounded()), min: -127, max: 127)
             let dy = Self.clampInt(Int(event.deltaY.rounded()), min: -127, max: 127)
@@ -1077,7 +1208,7 @@ class InputManager: ObservableObject {
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
 
-        for observer in pointerLockObservers + keyboardFocusObservers {
+        for observer in pointerLockObservers + keyboardFocusObservers + windowObservers {
             NotificationCenter.default.removeObserver(observer)
         }
         deviceEventTask?.cancel()
@@ -1167,11 +1298,12 @@ class InputManager: ObservableObject {
     // MARK: - Pointer lock (relative mouse mode)
 
     /// Captures the pointer: the hardware cursor is frozen in place and hidden while movement
-    /// deltas keep flowing to the remote. Requires relative mode, mouse capture, and a key window.
+    /// deltas keep flowing to the remote. Requires relative mode, mouse capture, and this session's
+    /// own window being key — not merely some window of the app.
     @discardableResult
     func lockPointer() -> Bool {
         guard !isPointerLocked, isMouseCaptureEnabled, isRelativeMouseMode else { return false }
-        guard NSApp.isActive, let window = NSApp.keyWindow else { return false }
+        guard NSApp.isActive, focusGate.isWindowKey, let window, window.isKeyWindow else { return false }
 
         relativeResidual = .zero
         pendingRelativeMouseMove = nil
@@ -1269,7 +1401,7 @@ class InputManager: ObservableObject {
             releasePointerLockIfChordHeld(event.modifierFlags)
             return event
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-            guard isPointerLocked, isMouseCaptureEnabled else { return event }
+            guard isPointerLocked, isMouseCaptureEnabled, focusGate.admitsPointerMotion else { return event }
             handleLockedPointerMove(event)
             return nil
         default:

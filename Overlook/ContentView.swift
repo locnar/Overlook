@@ -396,6 +396,8 @@ struct ContentView: View {
             }
         }
         .onChange(of: windowRef) { _, newValue in
+            // Keyboard and mouse go to the target only while this window is key.
+            inputManager.attach(to: newValue)
             isFullscreen = newValue?.styleMask.contains(.fullScreen) ?? false
             showFullscreenControls = false
         }

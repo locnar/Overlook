@@ -48,6 +48,7 @@
 		01000030 /* PanelPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000032 /* PanelPresentation.swift */; };
 		01000031 /* ConsoleSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000035 /* ConsoleSession.swift */; };
 		01000032 /* SessionConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000036 /* SessionConnection.swift */; };
+		01000033 /* InputFocusGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000037 /* InputFocusGate.swift */; };
 		01000101 /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000101 /* TestSupport.swift */; };
 		01000102 /* DeviceCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000102 /* DeviceCatalogTests.swift */; };
 		01000103 /* DeviceModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000103 /* DeviceModelTests.swift */; };
@@ -57,6 +58,7 @@
 		01000107 /* InputMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000107 /* InputMappingTests.swift */; };
 		01000108 /* JSONValueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000108 /* JSONValueTests.swift */; };
 		01000109 /* ConsoleSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000109 /* ConsoleSessionTests.swift */; };
+		0100010B /* InputFocusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010B /* InputFocusTests.swift */; };
 		0100010A /* SessionConnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010A /* SessionConnectTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -117,6 +119,7 @@
 		02000034 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = Local.xcconfig.example; sourceTree = "<group>"; };
 		02000035 /* ConsoleSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleSession.swift; sourceTree = "<group>"; };
 		02000036 /* SessionConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnection.swift; sourceTree = "<group>"; };
+		02000037 /* InputFocusGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputFocusGate.swift; sourceTree = "<group>"; };
 		02000101 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
 		02000102 /* DeviceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCatalogTests.swift; sourceTree = "<group>"; };
 		02000103 /* DeviceModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceModelTests.swift; sourceTree = "<group>"; };
@@ -126,6 +129,7 @@
 		02000107 /* InputMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMappingTests.swift; sourceTree = "<group>"; };
 		02000108 /* JSONValueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValueTests.swift; sourceTree = "<group>"; };
 		02000109 /* ConsoleSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleSessionTests.swift; sourceTree = "<group>"; };
+		0200010B /* InputFocusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputFocusTests.swift; sourceTree = "<group>"; };
 		0200010A /* SessionConnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnectTests.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		03000002 /* OverlookTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OverlookTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -197,6 +201,7 @@
 				02000008 /* OCRManager.swift */,
 				02000035 /* ConsoleSession.swift */,
 				02000036 /* SessionConnection.swift */,
+				02000037 /* InputFocusGate.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
 				02000023 /* KeychainTokenStore.swift */,
@@ -223,6 +228,7 @@
 				02000107 /* InputMappingTests.swift */,
 				02000108 /* JSONValueTests.swift */,
 				02000109 /* ConsoleSessionTests.swift */,
+				0200010B /* InputFocusTests.swift */,
 				0200010A /* SessionConnectTests.swift */,
 			);
 			path = OverlookTests;
@@ -383,6 +389,7 @@
 				01000008 /* OCRManager.swift in Sources */,
 				01000031 /* ConsoleSession.swift in Sources */,
 				01000032 /* SessionConnection.swift in Sources */,
+				01000033 /* InputFocusGate.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
 				01000021 /* KeychainTokenStore.swift in Sources */,
@@ -407,6 +414,7 @@
 				01000107 /* InputMappingTests.swift in Sources */,
 				01000108 /* JSONValueTests.swift in Sources */,
 				01000109 /* ConsoleSessionTests.swift in Sources */,
+				0100010B /* InputFocusTests.swift in Sources */,
 				0100010A /* SessionConnectTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
