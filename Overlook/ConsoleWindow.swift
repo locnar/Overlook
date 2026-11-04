@@ -36,6 +36,46 @@ struct ConsoleWindowRoot: View {
     }
 }
 
+/// The question a window that is recording asks before it closes, and the keys that answer it.
+///
+/// Return and Escape both cancel, so no stray key stops a recording; stopping takes a click. A
+/// button has one key equivalent, so Cancel's is Return, which also makes it the default button,
+/// and Escape is caught on the alert's window instead (`ConsoleWindowAttachment`) and clicks
+/// Cancel. That keeps the standard alert, its layout and its button flash, rather than a sheet of
+/// our own to keep in step with it. No AppKit here, so which key does what can be tested.
+enum StopRecordingQuestion {
+    enum Answer: Equatable {
+        case cancel
+        case stopRecordingAndClose
+    }
+
+    struct Button: Equatable {
+        let title: String
+        /// Set on the button as it is, replacing whatever NSAlert would give a button of that title.
+        let keyEquivalent: String
+        let answer: Answer
+    }
+
+    /// In the order they are added to the alert, which puts the first rightmost.
+    static let buttons = [
+        Button(title: "Cancel", keyEquivalent: "\r", answer: .cancel),
+        Button(title: "Stop recording and close", keyEquivalent: "", answer: .stopRecordingAndClose),
+    ]
+
+    static func messageText(deviceName: String) -> String {
+        "\(deviceName) is recording"
+    }
+
+    static func informativeText(deviceName: String) -> String {
+        "Closing this window stops the recording and disconnects from \(deviceName). The recording so far is saved."
+    }
+
+    /// The answer a key pressed on the alert gives beyond its buttons' own key equivalents.
+    static func answer(forKeyCode keyCode: UInt16) -> Answer? {
+        keyCode == 53 ? .cancel : nil   // Escape
+    }
+}
+
 /// Connects a console window to its session and to the registry: the session learns its window,
 /// the registry learns when the window appears, becomes key and closes, and a close goes through
 /// the session first — a window that is recording asks before it closes.
@@ -88,6 +128,8 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         /// While a confirmed close finishes the recording, further close requests wait for it.
         private var isFinishingRecording = false
+        /// While the stop-recording question is up: the monitor that gives its Escape to Cancel.
+        private var questionKeyMonitor: Any?
 
         init(session: ConsoleSession, registry: SessionRegistry) {
             self.session = session
@@ -154,18 +196,41 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
             guard window.attachedSheet == nil else { return }
 
             let alert = NSAlert()
-            alert.messageText = "\(deviceName) is recording"
-            alert.informativeText = "Closing this window stops the recording and disconnects from \(deviceName). The recording so far is saved."
-            let cancel = alert.addButton(withTitle: "Cancel")
-            let stop = alert.addButton(withTitle: "Stop recording and close")
-            stop.hasDestructiveAction = true
-            // Set rather than left to NSAlert: its "Cancel" title rule gives that button Escape in
-            // place of the Return a first button would get, leaving no default button at all.
-            // Cancel is the default here, so a stray Return keeps the recording going.
-            cancel.keyEquivalent = "\r"
+            alert.messageText = StopRecordingQuestion.messageText(deviceName: deviceName)
+            alert.informativeText = StopRecordingQuestion.informativeText(deviceName: deviceName)
+            var buttonsByAnswer: [StopRecordingQuestion.Answer: NSButton] = [:]
+            for question in StopRecordingQuestion.buttons {
+                let button = alert.addButton(withTitle: question.title)
+                // Set rather than left to NSAlert: its "Cancel" title rule gives that button Escape
+                // in place of the Return a first button would get, leaving no default button at all.
+                button.keyEquivalent = question.keyEquivalent
+                button.hasDestructiveAction = question.answer == .stopRecordingAndClose
+                buttonsByAnswer[question.answer] = button
+            }
+
+            // Escape, which no button can take alongside Return, clicks the button it answers with.
+            // Only for the alert's own window: the monitor sees every key the app receives.
+            let alertWindow = alert.window
+            questionKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.window === alertWindow,
+                      let answer = StopRecordingQuestion.answer(forKeyCode: event.keyCode),
+                      let button = buttonsByAnswer[answer]
+                else { return event }
+                button.performClick(nil)
+                return nil
+            }
 
             alert.beginSheetModal(for: window) { [weak self, weak window] response in
-                guard response == .alertSecondButtonReturn, let self, let window else { return }
+                guard let self else { return }
+                if let questionKeyMonitor = self.questionKeyMonitor {
+                    NSEvent.removeMonitor(questionKeyMonitor)
+                    self.questionKeyMonitor = nil
+                }
+                let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+                guard StopRecordingQuestion.buttons.indices.contains(index),
+                      StopRecordingQuestion.buttons[index].answer == .stopRecordingAndClose,
+                      let window
+                else { return }
                 self.isFinishingRecording = true
                 Task { @MainActor in
                     await self.session.stopRecordingAndDisconnect()

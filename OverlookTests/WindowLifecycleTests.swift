@@ -50,6 +50,21 @@ struct WindowLifecycleTests {
         #expect(ConsoleSession.closeDecision(device: device, isConnecting: false, isRecording: true) == .confirmStopRecording(deviceName: "Rack 3"))
     }
 
+    @Test func returnAndEscapeBothCancelTheQuestion() {
+        let buttons = StopRecordingQuestion.buttons
+        #expect(StopRecordingQuestion.messageText(deviceName: "Rack 3") == "Rack 3 is recording")
+        // Cancel comes first and holds Return, which makes it the default button.
+        #expect(buttons.first?.answer == .cancel)
+        #expect(buttons.filter { $0.keyEquivalent == "\r" }.map(\.answer) == [.cancel])
+        // Stopping has no key at all: it takes a click.
+        #expect(buttons.first { $0.answer == .stopRecordingAndClose }?.keyEquivalent == "")
+        // Escape, which no button holds, cancels as well; other keys are left to the buttons.
+        #expect(buttons.allSatisfy { $0.keyEquivalent != "\u{1b}" })
+        #expect(StopRecordingQuestion.answer(forKeyCode: 53) == .cancel)   // Escape
+        #expect(StopRecordingQuestion.answer(forKeyCode: 36) == nil)       // Return
+        #expect(StopRecordingQuestion.answer(forKeyCode: 49) == nil)       // Space
+    }
+
     @Test func aRecordingWindowAsksBeforeClosing() async throws {
         let folder = try makeRecordingsFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
