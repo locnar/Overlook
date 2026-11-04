@@ -14,10 +14,14 @@ final class SessionConnection: ObservableObject {
     @Published var glkvmClient: GLKVMClient?
 
     private let catalog: KVMDeviceManager
+    /// The session's log, handed to the HTTP client so a certificate pinned while signing in is
+    /// logged against this session's device. Nil for a connection no session owns.
+    private let log: SessionLog?
     private var cancellables = Set<AnyCancellable>()
 
-    init(catalog: KVMDeviceManager) {
+    init(catalog: KVMDeviceManager, log: SessionLog? = nil) {
         self.catalog = catalog
+        self.log = log
 
         // What is cleared matches what the catalog cleared when it held the connection itself:
         // removing an entry drops only the device, forgetting an address drops the client too.
@@ -67,7 +71,7 @@ final class SessionConnection: ObservableObject {
             finalDevice = device
         }
 
-        guard let client = try? GLKVMClient(device: finalDevice) else {
+        guard let client = try? GLKVMClient(device: finalDevice, log: log) else {
             throw KVMError.connectionFailed
         }
 

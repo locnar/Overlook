@@ -11,11 +11,15 @@ import AppKit
 /// after a drop, which is exactly when there is no session.
 struct ConnectionLogPanel: View {
     @EnvironmentObject private var logStore: ConnectionLogStore
+    /// This window's session, whose lines "This window" shows.
+    @Environment(\.connectionLogSessionID) private var sessionID
 
     @Binding var isPresented: Bool
 
     /// Persisted so the operator's chosen verbosity survives closing the panel.
     @AppStorage("OverlookLogPanelLevel") private var levelRaw: Int = ConnectionLogLevel.info.rawValue
+    /// Per window, so one window showing every device leaves the others on their own.
+    @SceneStorage("OverlookLogPanelShowsAllDevices") private var showsAllDevices = false
     @State private var category: ConnectionLogCategory?
     @State private var didCopy = false
 
@@ -23,6 +27,14 @@ struct ConnectionLogPanel: View {
 
     private var level: ConnectionLogLevel {
         ConnectionLogLevel(rawValue: levelRaw) ?? .info
+    }
+
+    private var filter: ConnectionLogFilter {
+        ConnectionLogFilter(
+            scope: ConnectionLogFilter.scope(showsAllDevices: showsAllDevices, sessionID: sessionID),
+            minimumLevel: level,
+            category: category
+        )
     }
 
     var body: some View {
@@ -48,8 +60,12 @@ struct ConnectionLogPanel: View {
         // The store stops counting problems while the panel is up — they are already on screen.
         // Doing it with a flag rather than clearing the count on each arrival keeps the panel
         // from writing to a published property it is itself observing, mid-update.
-        .onAppear { logStore.beginViewingProblems() }
-        .onDisappear { logStore.endViewingProblems() }
+        .onAppear {
+            if let sessionID { logStore.beginViewingProblems(for: sessionID) }
+        }
+        .onDisappear {
+            if let sessionID { logStore.endViewingProblems(for: sessionID) }
+        }
     }
 
     // MARK: - Chrome
@@ -75,6 +91,14 @@ struct ConnectionLogPanel: View {
 
     private var filters: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Picker("", selection: $showsAllDevices) {
+                Text("This window").tag(false)
+                Text("All devices").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("This window's connection and the app's own events, or every window's")
+
             Picker("", selection: Binding(
                 get: { level },
                 set: { levelRaw = $0.rawValue }
@@ -124,7 +148,7 @@ struct ConnectionLogPanel: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(visibleEvents) { event in
-                            ConnectionLogRow(event: event)
+                            ConnectionLogRow(event: event, showsDevice: filter.showsDeviceTags)
                         }
                     }
                     .padding(.horizontal)
@@ -162,11 +186,11 @@ struct ConnectionLogPanel: View {
             .help("Copy the visible lines, oldest first")
 
             Button("Clear") {
-                logStore.clear()
+                logStore.clear(filter.scope)
             }
             .buttonStyle(.link)
             .foregroundColor(.secondary)
-            .disabled(logStore.events.isEmpty)
+            .disabled(logStore.events(in: filter.scope).isEmpty)
             .help("Clears this list only; the file on disk is untouched")
         }
         .font(.caption)
@@ -176,14 +200,48 @@ struct ConnectionLogPanel: View {
     // MARK: - Filtering
 
     private var visibleEvents: [ConnectionLogEvent] {
-        logStore.events.filter { event in
-            event.level >= level && (category == nil || event.category == category)
-        }
+        filter.apply(to: logStore.events)
     }
 
     private var emptyMessage: String {
-        if logStore.events.isEmpty {
-            return "Nothing recorded yet.\nEvents appear here as the connection does things."
+        filter.emptyMessage(hasEventsInScope: !logStore.events(in: filter.scope).isEmpty)
+    }
+}
+
+/// What the log panel shows: whose lines ("This window" or "All devices"), from which level up,
+/// and of which category. No SwiftUI state here, so the choice of lines can be tested.
+struct ConnectionLogFilter: Equatable {
+    var scope: ConnectionLogScope
+    var minimumLevel: ConnectionLogLevel
+    var category: ConnectionLogCategory?
+
+    /// "All devices" when asked for, or when the view has no session to narrow to.
+    static func scope(showsAllDevices: Bool, sessionID: UUID?) -> ConnectionLogScope {
+        guard !showsAllDevices, let sessionID else { return .allDevices }
+        return .session(sessionID)
+    }
+
+    /// With every device's lines in one list, each line names its device.
+    var showsDeviceTags: Bool { scope == .allDevices }
+
+    func apply(to events: [ConnectionLogEvent]) -> [ConnectionLogEvent] {
+        events.filter { event in
+            scope.includes(event)
+                && event.level >= minimumLevel
+                && (category == nil || event.category == category)
+        }
+    }
+
+    /// What an empty list says, for either scope: nothing recorded at all, or nothing at this
+    /// level or in this category.
+    func emptyMessage(hasEventsInScope: Bool) -> String {
+        if !hasEventsInScope {
+            switch scope {
+            case .session:
+                return "Nothing recorded for this window yet.\nEvents appear here as its connection does things."
+            case .allDevices:
+                return "Nothing recorded yet.\nEvents appear here as connections do things."
+            }
         }
         if let category {
             return "No \(category.rawValue) events at this level."
@@ -217,10 +275,11 @@ private struct CategoryChip: View {
     }
 }
 
-/// One event: time, category, message. Severity is colour rather than a word, so the message
-/// keeps the width.
+/// One event: time, category, message, and with "All devices" the device it came from. Severity
+/// is colour rather than a word, so the message keeps the width.
 struct ConnectionLogRow: View {
     let event: ConnectionLogEvent
+    var showsDevice = false
 
     private static let formatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -228,8 +287,9 @@ struct ConnectionLogRow: View {
         return formatter
     }()
 
+    /// As the file has it, device tag included: `21:14:05  NOTE  [ice] [192.168.0.131] message`.
     static func plainText(_ event: ConnectionLogEvent) -> String {
-        "\(formatter.string(from: event.date))  \(event.level.fileTag)  [\(event.category.rawValue)] \(event.message)"
+        "\(formatter.string(from: event.date))  \(event.level.fileTag)  [\(event.category.rawValue)] \(event.taggedMessage)"
     }
 
     var body: some View {
@@ -242,6 +302,21 @@ struct ConnectionLogRow: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .frame(width: 58, alignment: .leading)
+
+            if showsDevice, let device = event.source?.device {
+                Text(device)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 4)
+                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+                    // Wide enough for an address and port; a long host name is shortened in the
+                    // middle rather than squeezing the message.
+                    .frame(maxWidth: 120, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(device)
+            }
 
             Text(event.message)
                 .font(.caption2)

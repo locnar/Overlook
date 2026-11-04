@@ -146,10 +146,15 @@ class InputManager: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    /// The session's handle on the connection log; every line from here names its device.
+    let log: SessionLog
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
-    init(defaults: UserDefaults = .standard) {
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`. `log` is
+    /// the session's (tests pass one on a log kept in memory); an input manager on its own logs to
+    /// the app's log under a session of its own.
+    init(defaults: UserDefaults = .standard, log: SessionLog? = nil) {
         self.defaults = defaults
+        self.log = log ?? SessionLog(destination: .shared)
         relativeSensitivity = (defaults.object(forKey: Self.relativeSensitivityDefaultsKey) as? Double) ?? 1.0
         useUnacceleratedRelativeInput = defaults.bool(forKey: Self.unacceleratedInputDefaultsKey)
     }
@@ -169,13 +174,13 @@ class InputManager: ObservableObject {
             lastLoggedHIDLink = link
             switch link {
             case .connected:
-                clog.info(.hid, "HID link connected")
+                self.log.info(.hid, "HID link connected")
             case .connecting:
-                clog.info(.hid, "HID link connecting")
+                self.log.info(.hid, "HID link connecting")
             case .reconnecting:
-                clog.warning(.hid, "HID link reconnecting")
+                self.log.warning(.hid, "HID link reconnecting")
             case .disconnected:
-                clog.notice(.hid, "HID link disconnected")
+                self.log.notice(.hid, "HID link disconnected")
             }
         }
         telemetry?.update { snapshot in
@@ -817,7 +822,7 @@ class InputManager: ObservableObject {
         clearPendingCommandKey()
         suppressedKeyUps.removeAll()
         guard !held.isEmpty, transportMode == .glkvmWebSocket, let ws = glkvmWebSocketClient else { return }
-        clog.info(.hid, "Releasing keys held on the target: \(held.sorted().joined(separator: ", "))")
+        self.log.info(.hid, "Releasing keys held on the target: \(held.sorted().joined(separator: ", "))")
         enqueueHIDCommand(label: "release held keys") {
             for key in held {
                 try await ws.sendHidKey(key: key, state: false)
@@ -848,7 +853,7 @@ class InputManager: ObservableObject {
         let local = NSEvent.modifierFlags.contains(.capsLock)
         guard local != remote else { return }
 
-        clog.info(.hid, "Caps Lock is \(local ? "on" : "off") here but \(remote ? "on" : "off") on the target; toggling it")
+        self.log.info(.hid, "Caps Lock is \(local ? "on" : "off") here but \(remote ? "on" : "off") on the target; toggling it")
         sendCapsLockTap()
         capsLockVerifyTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -856,7 +861,7 @@ class InputManager: ObservableObject {
             self.capsLockVerifyTask = nil
             if self.remoteCapsLockLED == remote {
                 self.remoteCapsLockLEDIsLive = false
-                clog.notice(.hid, "Target's Caps Lock LED did not follow; not syncing Caps Lock on this connection")
+                self.log.notice(.hid, "Target's Caps Lock LED did not follow; not syncing Caps Lock on this connection")
             }
         }
     }
@@ -897,7 +902,7 @@ class InputManager: ObservableObject {
         remoteHeldButtons.removeAll()
         // Pressed without a key-down of their own, so their key-ups have to be let through.
         focusGate.notePressed(pressAgain.compactMap { Self.modifierKeyCodes[$0] })
-        clog.info(.hid, pressAgain.isEmpty
+        self.log.info(.hid, pressAgain.isEmpty
             ? "Cleared held keys on the target"
             : "Cleared held keys on the target; pressing again: \(pressAgain.joined(separator: ", "))")
         enqueueHIDCommand(label: "resync keyboard") {
@@ -966,7 +971,7 @@ class InputManager: ObservableObject {
                 let keymap: String? = try? await client.getSystemConfig().keymap
                 try await client.hidPrint(text: trimmed, keymap: keymap)
             } catch {
-                clog.warning(.hid, "Paste to remote failed: \(error.localizedDescription)")
+                self.log.warning(.hid, "Paste to remote failed: \(error.localizedDescription)")
             }
         }
     }
@@ -1260,6 +1265,8 @@ class InputManager: ObservableObject {
         guard acceptsHIDCommands else { return nil }
         let predecessor = hidCommandTail
         hidQueueDepth += 1
+        // Taken now: the line is still worth logging if the manager is gone by the time it fails.
+        let log = self.log
         let task = Task { [weak self] in
             defer { self?.hidQueueDepth -= 1 }
             await predecessor?.value
@@ -1267,7 +1274,7 @@ class InputManager: ObservableObject {
             do {
                 try await operation()
             } catch {
-                clog.warning(.hid, "HID \(label) failed: \(error.localizedDescription)")
+                log.warning(.hid, "HID \(label) failed: \(error.localizedDescription)")
                 self?.scheduleHIDReconnect()
             }
         }
@@ -1277,7 +1284,7 @@ class InputManager: ObservableObject {
 
     private func scheduleHIDReconnect() {
         guard acceptsHIDCommands, hidReconnectTask == nil, glkvmClient != nil else { return }
-        clog.warning(.hid, "HID socket dropped; starting reconnect")
+        self.log.warning(.hid, "HID socket dropped; starting reconnect")
         publishHIDLink(.reconnecting)
         hidReconnectTask = Task { [weak self] in
             let delays: [UInt64] = [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000]

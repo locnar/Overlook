@@ -13,7 +13,7 @@ struct InputMappingTests {
     let input: InputManager
 
     init() {
-        input = InputManager(defaults: scratch.defaults)
+        input = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
     }
 
     // MARK: - Key codes
@@ -171,7 +171,7 @@ struct InputMappingTests {
         #expect(scratch.defaults.double(forKey: "overlook.relativeMouseSensitivity") == 1.5)
         #expect(scratch.defaults.bool(forKey: "overlook.relativeMouseUnacceleratedInput"))
 
-        let reloaded = InputManager(defaults: scratch.defaults)
+        let reloaded = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
         #expect(reloaded.relativeSensitivity == 1.5)
         #expect(reloaded.useUnacceleratedRelativeInput)
     }

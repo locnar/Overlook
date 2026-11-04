@@ -31,7 +31,7 @@ struct SessionRegistryTests {
         registry = SessionRegistry(catalog: catalog) { catalog in
             let link = RecordingSessionLink(catalog: catalog)
             links.all.append(link)
-            return ConsoleSession(catalog: catalog, defaults: scratch.defaults, link: link)
+            return ConsoleSession(catalog: catalog, defaults: scratch.defaults, link: link, connectionLog: .inMemory())
         }
     }
 
@@ -119,7 +119,7 @@ struct SessionRegistryTests {
 
     @Test func aSessionNotListedCannotBecomeActive() {
         let a = openWindow()
-        let stray = ConsoleSession(catalog: catalog, defaults: scratch.defaults, link: RecordingSessionLink())
+        let stray = ConsoleSession(catalog: catalog, defaults: scratch.defaults, link: RecordingSessionLink(), connectionLog: .inMemory())
 
         registry.sessionDidBecomeKey(stray)
 

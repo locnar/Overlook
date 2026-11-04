@@ -21,7 +21,7 @@ struct WindowLifecycleTests {
     }
 
     private func makeSession(_ link: RecordingSessionLink) -> ConsoleSession {
-        ConsoleSession(catalog: catalog, defaults: scratch.defaults, link: link)
+        ConsoleSession(catalog: catalog, defaults: scratch.defaults, link: link, connectionLog: .inMemory())
     }
 
     private func makeRecordingsFolder() throws -> URL {

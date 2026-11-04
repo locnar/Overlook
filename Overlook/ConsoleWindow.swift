@@ -25,7 +25,6 @@ struct ConsoleWindowRoot: View {
         ContentView()
             .consoleSession(session)
             .environmentObject(registry.catalog)
-            .environmentObject(ConnectionLog.shared.store)
             .background(ConsoleWindowAttachment(session: session, registry: registry))
             .onAppear {
                 // Any open window's action will do; the menu-bar agent needs one to open a window

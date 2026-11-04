@@ -19,6 +19,10 @@ final class ConsoleSession: ObservableObject {
     /// menu (`focusedSceneObject`).
     let panels: PanelPresentation
 
+    /// This session's handle on the connection log, which tags every line with the session and
+    /// its device. Each of its objects that logs is handed this one.
+    let log: SessionLog
+
     /// Asks this session's window to toggle OCR copy mode. OCR mode is that window's view state;
     /// the chord that toggles it, and the menu-bar item, reach it through here.
     let copyModeRequests = PassthroughSubject<Void, Never>()
@@ -38,21 +42,25 @@ final class ConsoleSession: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`. `link` is
-    /// for tests too: the app's reaches the device, the stream and the connection log. So is
-    /// `audioPreferences`: the app's sessions all share `AudioPreferences.shared`.
+    /// for tests too: the app's reaches the device, the stream and the connection log. So are
+    /// `audioPreferences` (the app's sessions all share `AudioPreferences.shared`) and
+    /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file).
     init(
         catalog: KVMDeviceManager,
         defaults: UserDefaults = .standard,
         link: ConsoleSessionLink? = nil,
-        audioPreferences: AudioPreferences? = nil
+        audioPreferences: AudioPreferences? = nil,
+        connectionLog: ConnectionLog? = nil
     ) {
         // Made here rather than as the default argument, which is evaluated outside the main actor.
         self.link = link ?? LiveSessionLink()
-        let connection = SessionConnection(catalog: catalog)
-        let webRTCManager = WebRTCManager(audioPreferences: audioPreferences)
+        let log = SessionLog(destination: connectionLog ?? .shared)
+        self.log = log
+        let connection = SessionConnection(catalog: catalog, log: log)
+        let webRTCManager = WebRTCManager(audioPreferences: audioPreferences, log: log)
         self.connection = connection
         self.webRTCManager = webRTCManager
-        inputManager = InputManager(defaults: defaults)
+        inputManager = InputManager(defaults: defaults, log: log)
         ocrManager = OCRManager()
         captureManager = CaptureManager(webRTCManager: webRTCManager, connection: connection, defaults: defaults)
         panels = PanelPresentation(defaults: defaults)
@@ -124,6 +132,9 @@ final class ConsoleSession: ObservableObject {
             return .openElsewhere(other)
         }
 
+        // From here on this session's lines name this device, the hang-up of a previous one
+        // included: the device it is talking to now is the one an operator would look for.
+        log.deviceLabel = SessionLog.label(host: device.host, port: device.port)
         connectingAddress = device.address
         let connected: KVMDevice
         do {
@@ -293,7 +304,7 @@ struct LiveSessionLink: ConsoleSessionLink {
             case .authenticationFailed?, .certificateChanged?:
                 break
             default:
-                clog.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
+                session.log.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
             }
             throw error
         }
@@ -313,7 +324,7 @@ struct LiveSessionLink: ConsoleSessionLink {
         } catch WebRTCError.superseded {
             // The operator's own later action replaced this attempt; nothing to report.
         } catch {
-            clog.error(.lifecycle, "WebRTC connect failed, API still connected: \(error.localizedDescription)")
+            session.log.error(.lifecycle, "WebRTC connect failed, API still connected: \(error.localizedDescription)")
             throw error
         }
 #endif
@@ -353,6 +364,9 @@ extension View {
             .environmentObject(session.captureManager)
             .environmentObject(session.panels)
             .environmentObject(session.webRTCManager.audioPreferences)
+            // The log every window shares, and which session's lines are this window's.
+            .environmentObject(session.log.store)
+            .environment(\.connectionLogSessionID, session.log.sessionID)
             // For the menus, which act on whichever window is key: the scene's focused objects
             // are that window's, and nil while no console window is key.
             .focusedSceneObject(session.panels)

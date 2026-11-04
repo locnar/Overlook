@@ -1140,7 +1140,6 @@ struct ConnectionsPopoverView: View {
     return ContentView()
         .consoleSession(ConsoleSession(catalog: kvmDeviceManager))
         .environmentObject(kvmDeviceManager)
-        .environmentObject(ConnectionLog.shared.store)
 }
 
 

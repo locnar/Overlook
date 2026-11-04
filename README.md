@@ -67,7 +67,7 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 
 ### 6) Diagnostic logs
 
-- **Log Panel**: View low level details to help troubleshoot connectivity issues.
+- **Log Panel**: View low level details to help troubleshoot connectivity issues. **This window** shows the window's own connection (and the app's own events); **All devices** shows every window's, each line tagged with its device. In `~/Library/Logs/Overlook/connection.log` a connection's lines name the device after the category: `[ice] [192.168.0.131] …`.
 
 ### 7) Numerous bug fixes / improvements
 

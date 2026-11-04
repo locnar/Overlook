@@ -127,7 +127,7 @@ struct InputFocusTests {
         var sent: [InputManager.SentInput] = []
 
         init(capturing: Bool = true) {
-            input = InputManager(defaults: scratch.defaults)
+            input = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
             input.sentInputObserver = { [unowned self] in self.sent.append($0) }
             if capturing {
                 input.startKeyboardCapture()

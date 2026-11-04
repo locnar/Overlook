@@ -20,7 +20,7 @@ struct ConsoleSessionTests {
     }
 
     private func makeSession() -> ConsoleSession {
-        ConsoleSession(catalog: catalog, defaults: scratch.defaults)
+        ConsoleSession(catalog: catalog, defaults: scratch.defaults, connectionLog: .inMemory())
     }
 
     // MARK: - The session's own objects

@@ -66,6 +66,7 @@
 		0100010A /* SessionConnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010A /* SessionConnectTests.swift */; };
 		01000036 /* AudioPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003A /* AudioPreferences.swift */; };
 		0100010E /* AudioRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010E /* AudioRoutingTests.swift */; };
+		0100010F /* ConnectionLogTaggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010F /* ConnectionLogTaggingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -145,6 +146,7 @@
 		03000002 /* OverlookTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OverlookTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0200003A /* AudioPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPreferences.swift; sourceTree = "<group>"; };
 		0200010E /* AudioRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRoutingTests.swift; sourceTree = "<group>"; };
+		0200010F /* ConnectionLogTaggingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionLogTaggingTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -247,6 +249,7 @@
 				0200010C /* SessionRegistryTests.swift */,
 				0200010B /* InputFocusTests.swift */,
 				0200010A /* SessionConnectTests.swift */,
+				0200010F /* ConnectionLogTaggingTests.swift */,
 				0200010E /* AudioRoutingTests.swift */,
 			);
 			path = OverlookTests;
@@ -439,6 +442,7 @@
 				0100010C /* SessionRegistryTests.swift in Sources */,
 				0100010B /* InputFocusTests.swift in Sources */,
 				0100010A /* SessionConnectTests.swift in Sources */,
+				0100010F /* ConnectionLogTaggingTests.swift in Sources */,
 				0100010E /* AudioRoutingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

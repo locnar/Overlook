@@ -58,112 +58,59 @@ enum ConnectionLogLevel: Int, Comparable, Sendable {
     }
 }
 
-/// One line in the log: when, how bad, which layer, and what happened.
+/// Which console session a line came from, and the device it was talking to, so lines from two
+/// windows can be told apart. App-level lines (scanning, launch) have none.
+struct ConnectionLogSource: Equatable, Sendable {
+    /// The session's `SessionLog.sessionID`: what the log panel's "This window" matches on.
+    let sessionID: UUID
+    /// The device as the file and the panel show it (`SessionLog.label(host:port:)`), or nil
+    /// for a line logged before the session first connected.
+    let device: String?
+}
+
+/// One line in the log: when, how bad, which layer, which session and device, and what happened.
 struct ConnectionLogEvent: Identifiable, Equatable, Sendable {
     let id: UInt64
     let date: Date
     let level: ConnectionLogLevel
     let category: ConnectionLogCategory
     let message: String
+    let source: ConnectionLogSource?
+
+    init(
+        id: UInt64,
+        date: Date,
+        level: ConnectionLogLevel,
+        category: ConnectionLogCategory,
+        message: String,
+        source: ConnectionLogSource? = nil
+    ) {
+        self.id = id
+        self.date = date
+        self.level = level
+        self.category = category
+        self.message = message
+        self.source = source
+    }
+
+    /// The device tag, as it appears after the category in the file and in copied text.
+    var deviceTag: String? {
+        source?.device.map { "[\($0)]" }
+    }
+
+    /// The message with the device tag in front when there is one: `[192.168.0.131] Connected`.
+    var taggedMessage: String {
+        deviceTag.map { "\($0) \(message)" } ?? message
+    }
 }
 
-/// The connection log: a rotating file under `~/Library/Logs/Overlook/`, a mirror into the
-/// unified log, and a bounded in-memory ring the Connections panel renders.
-///
-/// Callable from any thread — WebRTC delegate callbacks arrive on libwebrtc's own queues and
-/// must not be made to hop just to record a line. File writes are serialized onto a private
-/// queue; only the ring's publish hops to the main actor.
-///
-/// Why a file at all, when the unified log exists: `log show` keeps entries for a bounded
-/// window and drops `.debug`/`.info` unless the process is being streamed live. A disconnect
-/// noticed twenty minutes later needs a record that was already on disk when it happened.
-final class ConnectionLog: @unchecked Sendable {
-    static let shared = ConnectionLog()
+/// Anything lines can be logged to: the app's own log, which leaves them untagged, or one
+/// session's handle on it (`SessionLog`), which tags them with that session and its device.
+protocol ConnectionLogging: Sendable {
+    func log(_ level: ConnectionLogLevel, _ category: ConnectionLogCategory, _ message: String)
+}
 
-    /// Rotate past this size; three generations are kept.
-    private static let maxFileBytes: UInt64 = 4 * 1024 * 1024
-    private static let keptGenerations = 3
-    /// Lines below this go to the ring (so the panel's "All" can show them) but not to the file
-    /// or the unified log. Lowered to `.debug` by the `OverlookVerboseLogging` user default, for
-    /// a session spent chasing something specific. Read once, so a change needs a relaunch.
-    private let threshold: ConnectionLogLevel
-
-    private let queue = DispatchQueue(label: "com.overlook.connection-log", qos: .utility)
-    private let loggers: [ConnectionLogCategory: Logger]
-    private let directoryURL: URL
-    private let fileURL: URL
-    private var handle: FileHandle?
-    private var bytesWritten: UInt64 = 0
-    private let counter = OSAllocatedUnfairLock(initialState: UInt64(0))
-
-    /// The ring the UI observes. Separate object so a log line invalidates only the timeline.
-    let store = ConnectionLogStore()
-
-    private static let fileFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        formatter.timeZone = .current
-        return formatter
-    }()
-
-    private init() {
-        var loggers: [ConnectionLogCategory: Logger] = [:]
-        for category in ConnectionLogCategory.allCases {
-            loggers[category] = Logger(subsystem: "com.rcawston.Overlook", category: category.rawValue)
-        }
-        self.loggers = loggers
-
-        let base = FileManager.default
-            .urls(for: .libraryDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("Logs/Overlook", isDirectory: true)
-            ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Overlook", isDirectory: true)
-        self.directoryURL = base
-        self.fileURL = base.appendingPathComponent("connection.log", isDirectory: false)
-        self.threshold = UserDefaults.standard.bool(forKey: "OverlookVerboseLogging") ? .debug : .info
-
-        queue.async { [weak self] in
-            self?.openFile()
-            self?.writeSessionHeader()
-        }
-    }
-
-    // MARK: - Recording
-
-    func log(
-        _ level: ConnectionLogLevel,
-        _ category: ConnectionLogCategory,
-        _ message: String
-    ) {
-        let date = Date()
-        let id = counter.withLock { value -> UInt64 in
-            value &+= 1
-            return value
-        }
-        let event = ConnectionLogEvent(id: id, date: date, level: level, category: category, message: message)
-
-        // The ring takes every line regardless of threshold, so the panel's "All" filter has
-        // something the "Info" filter doesn't. It is capped, and this is the copy an operator
-        // reads seconds after a drop.
-        //
-        // Capture the store directly rather than going back through `shared`: a line logged
-        // while the singleton is still initializing would otherwise re-enter it.
-        let store = self.store
-        Task { @MainActor in
-            store.append(event)
-        }
-
-        guard level >= threshold else { return }
-
-        // The unified log takes the line on the calling thread: os_log is already lock-free and
-        // cheap, and routing it through the file queue would reorder it against the file.
-        loggers[category]?.log(level: level.osLogType, "\(message, privacy: .public)")
-
-        queue.async { [weak self] in
-            self?.appendToFile(event)
-        }
-    }
-
+extension ConnectionLogging {
     func debug(_ category: ConnectionLogCategory, _ message: String) {
         log(.debug, category, message)
     }
@@ -182,6 +129,131 @@ final class ConnectionLog: @unchecked Sendable {
 
     func error(_ category: ConnectionLogCategory, _ message: String) {
         log(.error, category, message)
+    }
+}
+
+/// The connection log: a rotating file under `~/Library/Logs/Overlook/`, a mirror into the
+/// unified log, and a bounded in-memory ring the Connections panel renders.
+///
+/// Callable from any thread — WebRTC delegate callbacks arrive on libwebrtc's own queues and
+/// must not be made to hop just to record a line. File writes are serialized onto a private
+/// queue; only the ring's publish hops to the main actor.
+///
+/// Why a file at all, when the unified log exists: `log show` keeps entries for a bounded
+/// window and drops `.debug`/`.info` unless the process is being streamed live. A disconnect
+/// noticed twenty minutes later needs a record that was already on disk when it happened.
+final class ConnectionLog: ConnectionLogging, @unchecked Sendable {
+    static let shared = ConnectionLog(
+        directory: FileManager.default
+            .urls(for: .libraryDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Logs/Overlook", isDirectory: true)
+            ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Overlook", isDirectory: true),
+        mirrorsToUnifiedLog: true,
+        threshold: UserDefaults.standard.bool(forKey: "OverlookVerboseLogging") ? .debug : .info
+    )
+
+    /// A log with only the in-memory ring: no file, nothing in the unified log. For tests, which
+    /// must not write to the operator's log.
+    static func inMemory() -> ConnectionLog {
+        ConnectionLog(directory: nil, mirrorsToUnifiedLog: false, threshold: .info)
+    }
+
+    /// Rotate past this size; three generations are kept.
+    private static let maxFileBytes: UInt64 = 4 * 1024 * 1024
+    private static let keptGenerations = 3
+    /// Lines below this go to the ring (so the panel's "All" can show them) but not to the file
+    /// or the unified log. Lowered to `.debug` by the `OverlookVerboseLogging` user default, for
+    /// a session spent chasing something specific. Read once, so a change needs a relaunch.
+    private let threshold: ConnectionLogLevel
+
+    private let queue = DispatchQueue(label: "com.overlook.connection-log", qos: .utility)
+    private let loggers: [ConnectionLogCategory: Logger]
+    /// Nil for a log kept in memory only.
+    private let directoryURL: URL?
+    private let fileURL: URL?
+    private var handle: FileHandle?
+    private var bytesWritten: UInt64 = 0
+    private let counter = OSAllocatedUnfairLock(initialState: UInt64(0))
+
+    /// The ring the UI observes. Separate object so a log line invalidates only the timeline.
+    let store = ConnectionLogStore()
+
+    private static let fileFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    private init(directory: URL?, mirrorsToUnifiedLog: Bool, threshold: ConnectionLogLevel) {
+        var loggers: [ConnectionLogCategory: Logger] = [:]
+        if mirrorsToUnifiedLog {
+            for category in ConnectionLogCategory.allCases {
+                loggers[category] = Logger(subsystem: "com.rcawston.Overlook", category: category.rawValue)
+            }
+        }
+        self.loggers = loggers
+
+        self.directoryURL = directory
+        self.fileURL = directory?.appendingPathComponent("connection.log", isDirectory: false)
+        self.threshold = threshold
+
+        guard directory != nil else { return }
+        queue.async { [weak self] in
+            self?.openFile()
+            self?.writeSessionHeader()
+        }
+    }
+
+    // MARK: - Recording
+
+    /// An app-level line, belonging to no session.
+    func log(
+        _ level: ConnectionLogLevel,
+        _ category: ConnectionLogCategory,
+        _ message: String
+    ) {
+        record(level, category, message, source: nil)
+    }
+
+    /// A line from `source`'s session, or an app-level one when it is nil. `SessionLog` comes here.
+    func record(
+        _ level: ConnectionLogLevel,
+        _ category: ConnectionLogCategory,
+        _ message: String,
+        source: ConnectionLogSource?
+    ) {
+        let date = Date()
+        let id = counter.withLock { value -> UInt64 in
+            value &+= 1
+            return value
+        }
+        let event = ConnectionLogEvent(id: id, date: date, level: level, category: category, message: message, source: source)
+
+        // The ring takes every line regardless of threshold, so the panel's "All" filter has
+        // something the "Info" filter doesn't. It is capped, and this is the copy an operator
+        // reads seconds after a drop.
+        //
+        // Capture the store directly rather than going back through `shared`: a line logged
+        // while the singleton is still initializing would otherwise re-enter it.
+        let store = self.store
+        Task { @MainActor in
+            store.append(event)
+        }
+
+        guard level >= threshold else { return }
+
+        // The unified log takes the line on the calling thread: os_log is already lock-free and
+        // cheap, and routing it through the file queue would reorder it against the file. It gets
+        // the device tag too, so `log stream` can tell two windows' lines apart as the file can.
+        let taggedMessage = event.taggedMessage
+        loggers[category]?.log(level: level.osLogType, "\(taggedMessage, privacy: .public)")
+
+        guard fileURL != nil else { return }
+        queue.async { [weak self] in
+            self?.appendToFile(event)
+        }
     }
 
     // MARK: - File
@@ -212,6 +284,7 @@ final class ConnectionLog: @unchecked Sendable {
     }
 
     private func openFile() {
+        guard let directoryURL, let fileURL else { return }
         let manager = FileManager.default
         try? manager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         if !manager.fileExists(atPath: fileURL.path) {
@@ -224,9 +297,15 @@ final class ConnectionLog: @unchecked Sendable {
     }
 
     private func appendToFile(_ event: ConnectionLogEvent) {
-        let line = "\(Self.fileFormatter.string(from: event.date))  \(event.level.fileTag)  "
-            + "[\(event.category.rawValue)] \(event.message)\n"
-        writeRaw(line)
+        writeRaw(Self.fileLine(for: event) + "\n")
+    }
+
+    /// One line of the file: time, level, category, the device for a session's line, message.
+    /// `2026-11-03 21:14:05.120  NOTE  [ice] [192.168.0.131] Video ICE state: connected`. A line
+    /// from no session reads as it always has.
+    static func fileLine(for event: ConnectionLogEvent) -> String {
+        "\(fileFormatter.string(from: event.date))  \(event.level.fileTag)  "
+            + "[\(event.category.rawValue)] \(event.taggedMessage)"
     }
 
     private func writeRaw(_ line: String) {
@@ -242,6 +321,7 @@ final class ConnectionLog: @unchecked Sendable {
 
     /// `connection.log` → `connection.1.log` → … → dropped. Called on the log queue only.
     private func rotate() {
+        guard let directoryURL, let fileURL else { return }
         let manager = FileManager.default
         try? handle?.close()
         handle = nil
@@ -265,18 +345,90 @@ final class ConnectionLog: @unchecked Sendable {
 
     // MARK: - Operator affordances
 
-    var logDirectoryURL: URL { directoryURL }
+    var logDirectoryURL: URL? { directoryURL }
 
     #if canImport(AppKit)
     /// Opens the log folder with `connection.log` selected.
     @MainActor
     func revealInFinder() {
+        guard let fileURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
     #endif
 }
 
-/// The bounded ring of recent events, for the Connections panel.
+/// One console session's handle on the connection log: the same calls as `clog`, with each line
+/// tagged with the session and the device it is talking to.
+///
+/// The session hands it to each of its objects explicitly (stream, keyboard and mouse, sign-in,
+/// certificate pinning) rather than putting it in a task-local, because most of their lines are
+/// logged from delegate callbacks, timers and URLSession queues that no task-local reaches.
+final class SessionLog: ConnectionLogging, @unchecked Sendable {
+    /// Matches this session's lines in the panel's "This window".
+    let sessionID = UUID()
+    /// Where the lines go: `ConnectionLog.shared` in the app, a log in memory in tests.
+    let destination: ConnectionLog
+    private let device = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    init(destination: ConnectionLog) {
+        self.destination = destination
+    }
+
+    /// The device this session's lines are tagged with. Set when a connect starts and kept after
+    /// a disconnect, so the hang-up and anything still arriving from the old connection are
+    /// tagged with the device they belong to. Lines can come from any thread, hence the lock.
+    var deviceLabel: String? {
+        get { device.withLock { $0 } }
+        set { device.withLock { $0 = newValue } }
+    }
+
+    func log(_ level: ConnectionLogLevel, _ category: ConnectionLogCategory, _ message: String) {
+        destination.record(level, category, message, source: ConnectionLogSource(sessionID: sessionID, device: deviceLabel))
+    }
+
+    /// The ring this session's window shows.
+    var store: ConnectionLogStore { destination.store }
+
+    /// A short name for a device: its host, with the port only when it is not the scheme's own
+    /// (443 for HTTPS, 80 for HTTP). `192.168.0.131`, `mdesktopkvm`, `kvm.local:8443`.
+    static func label(host: String, port: Int) -> String {
+        var shownHost = host
+        // A Tailscale name is unique within its tailnet by its first label, and the rest
+        // (`tail1234.ts.net`) is the same for every device on it, so it only takes up room.
+        if host.lowercased().hasSuffix(".ts.net"), let machine = host.split(separator: ".").first {
+            shownHost = String(machine)
+        }
+        if port == 443 || port == 80 {
+            return shownHost
+        }
+        // An IPv6 literal needs brackets before a port can follow it.
+        if shownHost.contains(":") {
+            shownHost = "[\(shownHost)]"
+        }
+        return "\(shownHost):\(port)"
+    }
+}
+
+/// Which of the log's lines a view shows.
+enum ConnectionLogScope: Hashable {
+    /// One window's: its session's lines, and the app's own, which belong to no window.
+    case session(UUID)
+    /// Every session's, and the app's.
+    case allDevices
+
+    func includes(_ event: ConnectionLogEvent) -> Bool {
+        switch self {
+        case .allDevices:
+            return true
+        case .session(let id):
+            guard let source = event.source else { return true }
+            return source.sessionID == id
+        }
+    }
+}
+
+/// The bounded ring of recent events, for the log panel and the Connections panel, shared by
+/// every window. Each window shows its own session's lines from it, or every device's.
 ///
 /// Capped because this is a debugging affordance, not an archive — the file is the archive.
 /// A session that reconnects every few seconds for an hour must not grow the view's array
@@ -287,12 +439,18 @@ final class ConnectionLogStore: ObservableObject {
 
     @Published private(set) var events: [ConnectionLogEvent] = []
 
-    /// Warnings and errors recorded since the operator last opened the log panel. Drives the dot
-    /// on the toolbar button, so a problem is visible without opening anything.
-    @Published private(set) var unseenProblemCount: Int = 0
+    /// The most recent warning or error from each session, and from the app (the nil key), for
+    /// the two-line summary in the Connections panel. Kept apart from the ring so a problem is
+    /// still summarized after newer lines have pushed it out. Changes only with `events`, which is
+    /// what views observe.
+    private var lastProblems: [UUID?: ConnectionLogEvent] = [:]
 
-    /// The most recent warning or error, for the two-line summary in the Connections panel.
-    @Published private(set) var lastProblem: ConnectionLogEvent?
+    /// The windows whose log panel is on screen, by session. Problems arriving there are already
+    /// being read, so they never raise that window's dot.
+    private var viewing: Set<UUID> = []
+    /// For each window, the newest line there was when its log panel last closed: problems after
+    /// it are the ones its dot counts.
+    private var seenThrough: [UUID: UInt64] = [:]
 
     /// `nonisolated` because the singleton that owns this store is built by `swift_once` on
     /// whichever thread logs first — routinely a URLSession delegate or one of libwebrtc's
@@ -300,20 +458,50 @@ final class ConnectionLogStore: ObservableObject {
     /// of their own instead of sharing the app's.
     nonisolated init() {}
 
-    /// True while the log panel is on screen. Problems arriving then are already being read, so
-    /// they never raise the dot — which also keeps the panel from writing to a published property
-    /// it is itself observing, mid-update.
-    private var isPanelOpen = false
-
-    /// Called when the log panel appears: the dot has done its job.
-    func beginViewingProblems() {
-        isPanelOpen = true
-        guard unseenProblemCount != 0 else { return }
-        unseenProblemCount = 0
+    /// The lines `scope` shows, newest first.
+    func events(in scope: ConnectionLogScope) -> [ConnectionLogEvent] {
+        scope == .allDevices ? events : events.filter(scope.includes)
     }
 
-    func endViewingProblems() {
-        isPanelOpen = false
+    /// The most recent warning or error `scope` covers.
+    func lastProblem(in scope: ConnectionLogScope) -> ConnectionLogEvent? {
+        let candidates: [ConnectionLogEvent]
+        switch scope {
+        case .allDevices:
+            candidates = Array(lastProblems.values)
+        case .session(let id):
+            candidates = [lastProblems[id], lastProblems[nil]].compactMap { $0 }
+        }
+        return candidates.max { $0.id < $1.id }
+    }
+
+    /// Warnings and errors in the window of `sessionID` (its session's and the app's) since that
+    /// window's log panel was last open. Drives the dot on its toolbar button, so a problem is
+    /// visible without opening anything.
+    func unseenProblemCount(for sessionID: UUID) -> Int {
+        guard !viewing.contains(sessionID) else { return 0 }
+        let scope = ConnectionLogScope.session(sessionID)
+        let seen = seenThrough[sessionID] ?? 0
+        return events.reduce(0) { count, event in
+            event.level >= .warning && event.id > seen && scope.includes(event) ? count + 1 : count
+        }
+    }
+
+    /// Called when a window's log panel appears: that window's dot has done its job. Problems
+    /// arriving while it is open are not counted, which also keeps the panel from writing to a
+    /// published property it is itself observing, mid-update.
+    func beginViewingProblems(for sessionID: UUID) {
+        if unseenProblemCount(for: sessionID) > 0 {
+            objectWillChange.send()
+        }
+        viewing.insert(sessionID)
+    }
+
+    func endViewingProblems(for sessionID: UUID) {
+        viewing.remove(sessionID)
+        // Nothing on screen changes: the count was zero while the panel was open, and every line
+        // up to now has been seen.
+        seenThrough[sessionID] = events.first?.id ?? seenThrough[sessionID]
     }
 
     /// Newest first, ordered by the log's monotonic id rather than arrival.
@@ -334,19 +522,25 @@ final class ConnectionLogStore: ObservableObject {
         }
 
         guard event.level >= .warning else { return }
-        if isPanelOpen == false {
-            unseenProblemCount += 1
-        }
         // Ordered insert can place an older line ahead of one already recorded; the summary
         // should still name the newest problem, not whichever arrived last.
-        if let current = lastProblem, current.id > event.id { return }
-        lastProblem = event
+        let key = event.source?.sessionID
+        if let current = lastProblems[key], current.id > event.id { return }
+        lastProblems[key] = event
     }
 
-    func clear() {
-        events.removeAll()
-        unseenProblemCount = 0
-        lastProblem = nil
+    /// Clears the lines `scope` shows, and the problems summarized from them. "This window"
+    /// leaves other windows' lines alone. The file is untouched either way.
+    func clear(_ scope: ConnectionLogScope) {
+        switch scope {
+        case .allDevices:
+            events.removeAll()
+            lastProblems.removeAll()
+        case .session(let id):
+            events.removeAll { scope.includes($0) }
+            lastProblems[id] = nil
+            lastProblems[nil] = nil
+        }
     }
 }
 

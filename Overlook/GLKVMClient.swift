@@ -245,7 +245,8 @@ final class GLKVMClient {
 
     private let session: URLSession
 
-    init(host: String, port: Int = 443, authToken: String? = nil) throws {
+    /// `log` is the session's, for the certificate pinning done while this client signs in.
+    init(host: String, port: Int = 443, authToken: String? = nil, log: SessionLog? = nil) throws {
         let scheme = Self.defaultHTTPScheme(for: port)
         guard let url = URL(string: "\(scheme)://\(host):\(port)") else {
             throw ClientError.invalidBaseURL
@@ -259,7 +260,7 @@ final class GLKVMClient {
         config.timeoutIntervalForResource = 30
 
         // Self-signed device certificates are pinned on first use; see DeviceTrustStore.
-        self.session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(), delegateQueue: nil)
+        self.session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
     }
 
     static func defaultHTTPScheme(for port: Int) -> String {
@@ -275,8 +276,8 @@ final class GLKVMClient {
         defaultHTTPScheme(for: port) == "https" ? "wss" : "ws"
     }
 
-    convenience init(device: KVMDevice) throws {
-        try self.init(host: device.host, port: device.port, authToken: device.authToken.isEmpty ? nil : device.authToken)
+    convenience init(device: KVMDevice, log: SessionLog? = nil) throws {
+        try self.init(host: device.host, port: device.port, authToken: device.authToken.isEmpty ? nil : device.authToken, log: log)
     }
 
     private func makeURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {

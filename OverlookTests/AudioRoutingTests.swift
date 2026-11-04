@@ -39,7 +39,8 @@ struct AudioRoutingTests {
                 catalog: catalog,
                 defaults: scratch.defaults,
                 link: link,
-                audioPreferences: preferences
+                audioPreferences: preferences,
+                connectionLog: .inMemory()
             )
         }
         router = SessionAudioRouter(registry: registry, preferences: preferences)

@@ -74,6 +74,8 @@ class WebRTCManager: NSObject, ObservableObject {
     let audioPreferences: AudioPreferences
     var audioEnabled: Bool { audioPreferences.audioEnabled }
     var micEnabled: Bool { audioPreferences.micEnabled }
+    /// The session's handle on the connection log; every line from here names the session's device.
+    let log: SessionLog
     /// Whether this window plays its audio and sends the microphone, as `SessionAudioRouter` last
     /// decided from which window is active.
     private(set) var audioRoute: AudioRoute = .unrouted
@@ -216,9 +218,12 @@ class WebRTCManager: NSObject, ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
 
-    /// `audioPreferences` is the app's shared object unless a test hands in its own.
-    init(audioPreferences: AudioPreferences? = nil) {
+    /// `audioPreferences` is the app's shared object unless a test hands in its own; `log` is the
+    /// session's handle on the connection log (a manager on its own logs untagged lines to the
+    /// app's log, under a session of its own).
+    init(audioPreferences: AudioPreferences? = nil, log: SessionLog? = nil) {
         self.audioPreferences = audioPreferences ?? .shared
+        self.log = log ?? SessionLog(destination: .shared)
         super.init()
         setupWebRTC()
         startAudioDeviceChangeMonitoring()
@@ -428,12 +433,12 @@ class WebRTCManager: NSObject, ObservableObject {
         // attempt still waiting on Janus, or the live session when switching devices.
         consecutiveStallReconnects = 0
         telemetry.update { $0.clearSession() }
-        clog.notice(.lifecycle, "Connect requested: \(device.name) (\(device.connectionString))")
+        self.log.notice(.lifecycle, "Connect requested: \(device.name) (\(device.connectionString))")
         beginSessionEnvironment()
         do {
             try await replaceConnection(with: device)
         } catch {
-            clog.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
+            self.log.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
             // The caller only surfaces the error (see ContentView); without this the activity
             // assertion, the sleep/wake observers and the path monitor would outlive the failed
             // attempt with nothing left to release them.
@@ -441,7 +446,7 @@ class WebRTCManager: NSObject, ObservableObject {
             throw error
         }
         telemetry.update { $0.sessionConnectedAt = Date() }
-        clog.notice(.lifecycle, "Connected to \(device.name)")
+        self.log.notice(.lifecycle, "Connected to \(device.name)")
     }
 
     // MARK: - Session environment
@@ -450,12 +455,12 @@ class WebRTCManager: NSObject, ObservableObject {
     /// cannot reach. A KVM on the LAN, on a Tailscale address, or on link-local is always
     /// reachable directly, so a public STUN server adds a round trip to every connect and a
     /// stall to every connect on a network that filters UDP/3478 outbound.
-    private static func iceServers(for device: KVMDevice) -> [RTCIceServer] {
+    private static func iceServers(for device: KVMDevice, log: SessionLog) -> [RTCIceServer] {
         if isDirectlyReachable(host: device.host) {
-            clog.info(.ice, "Local peer \(device.host): gathering host candidates only")
+            log.info(.ice, "Local peer \(device.host): gathering host candidates only")
             return []
         }
-        clog.info(.ice, "Remote peer \(device.host): adding public STUN")
+        log.info(.ice, "Remote peer \(device.host): adding public STUN")
         return [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
     }
 
@@ -501,7 +506,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 options: [.userInitiatedAllowingIdleSystemSleep],
                 reason: "Overlook remote console session"
             )
-            clog.info(.power, "App Nap suppressed for the session")
+            self.log.info(.power, "App Nap suppressed for the session")
         }
 
         let center = NSWorkspace.shared.notificationCenter
@@ -514,7 +519,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.didSleepDuringSession = true
-                    clog.notice(.power, "System going to sleep")
+                    self.log.notice(.power, "System going to sleep")
                 }
             }
         }
@@ -526,7 +531,7 @@ class WebRTCManager: NSObject, ObservableObject {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    clog.notice(.power, "System woke")
+                    self.log.notice(.power, "System woke")
                     guard self.didSleepDuringSession else { return }
                     self.didSleepDuringSession = false
                     guard self.lastConnectedDevice != nil else { return }
@@ -552,7 +557,7 @@ class WebRTCManager: NSObject, ObservableObject {
     private func endSessionEnvironment() {
         if let powerAssertion {
             ProcessInfo.processInfo.endActivity(powerAssertion)
-            clog.info(.power, "App Nap assertion released")
+            self.log.info(.power, "App Nap assertion released")
         }
         powerAssertion = nil
 
@@ -581,12 +586,12 @@ class WebRTCManager: NSObject, ObservableObject {
 
         guard let previous = lastPathSummary else {
             lastPathSummary = summary
-            clog.info(.network, "Network path: \(summary)")
+            self.log.info(.network, "Network path: \(summary)")
             return
         }
         guard previous != summary else { return }
         lastPathSummary = summary
-        clog.notice(.network, "Network path changed: \(previous) → \(summary)")
+        self.log.notice(.network, "Network path changed: \(previous) → \(summary)")
 
         guard lastConnectedDevice != nil, path.status == .satisfied else { return }
         guard isConnected || hasEverConnectedToStream else { return }
@@ -636,7 +641,7 @@ class WebRTCManager: NSObject, ObservableObject {
             // A reflexive candidate is only useful when the peer is off-link. For a KVM on the
             // LAN or over Tailscale the host candidate always wins, and reaching a public STUN
             // server can only add gathering latency — or block on a network that filters it.
-            configuration.iceServers = Self.iceServers(for: device)
+            configuration.iceServers = Self.iceServers(for: device, log: log)
             configuration.sdpSemantics = .unifiedPlan
             
             let constraints = RTCMediaConstraints(
@@ -721,14 +726,14 @@ class WebRTCManager: NSObject, ObservableObject {
         skipIfRecovered: Bool = false
     ) -> Bool {
         guard reconnectTask == nil else {
-            clog.debug(.lifecycle, "Reconnect suppressed (\(reason)): a loop is already running")
+            self.log.debug(.lifecycle, "Reconnect suppressed (\(reason)): a loop is already running")
             return false
         }
         guard let device = lastConnectedDevice else {
-            clog.debug(.lifecycle, "Reconnect suppressed (\(reason)): no device to reconnect to")
+            self.log.debug(.lifecycle, "Reconnect suppressed (\(reason)): no device to reconnect to")
             return false
         }
-        clog.warning(.lifecycle, "Reconnect starting: \(reason)")
+        self.log.warning(.lifecycle, "Reconnect starting: \(reason)")
         reconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
             // Whoever cancelled this loop has already replaced the handle; don't wipe theirs.
@@ -741,7 +746,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 if skipIfRecovered, index == 0, self.isConnected {
                     // Recovered on its own during the delay. Nothing dropped, so the session
                     // history must not gain a reconnect and the overlay must not gain a reason.
-                    clog.info(.lifecycle, "Reconnect stood down, connection recovered: \(reason)")
+                    self.log.info(.lifecycle, "Reconnect stood down, connection recovered: \(reason)")
                     return
                 }
                 if index == 0 {
@@ -757,21 +762,21 @@ class WebRTCManager: NSObject, ObservableObject {
                     if captureEnabled {
                         self.setFrameCaptureEnabled(true)
                     }
-                    clog.notice(.lifecycle, "Reconnect succeeded on attempt \(index + 1)")
+                    self.log.notice(.lifecycle, "Reconnect succeeded on attempt \(index + 1)")
                     // A session whose first connect failed starts its clock here.
                     self.telemetry.update { if $0.sessionConnectedAt == nil { $0.sessionConnectedAt = Date() } }
                     return
                 } catch {
                     guard !Task.isCancelled else { return }
                     if case WebRTCError.superseded = error { return }
-                    clog.error(
+                    self.log.error(
                         .lifecycle,
                         "Reconnect retry \(index + 1)/\(delays.count) failed: \(error.localizedDescription)"
                     )
                     self.showConnectionLost("\(reason) · retry \(index + 1) failed: \(error.localizedDescription)")
                 }
             }
-            clog.error(.lifecycle, "Reconnect gave up after \(delays.count) attempts: \(reason)")
+            self.log.error(.lifecycle, "Reconnect gave up after \(delays.count) attempts: \(reason)")
             // Every retry failed: the overlay stays, with its Reconnect button, for the operator.
         }
         return true
@@ -797,7 +802,7 @@ class WebRTCManager: NSObject, ObservableObject {
     /// stays up with its Reconnect button and the decision is the operator's.
     private func reconnectAfterStall() {
         guard consecutiveStallReconnects < Self.maxConsecutiveStallReconnects else {
-            clog.error(
+            self.log.error(
                 .stream,
                 "Stall reconnect budget spent (\(Self.maxConsecutiveStallReconnects)); waiting for the operator"
             )
@@ -852,11 +857,11 @@ class WebRTCManager: NSObject, ObservableObject {
         }
 
         let url = normalizedWebSocketURL(rawURL)
-        clog.info(.signaling, "Signaling connect: \(url.absoluteString)")
+        self.log.info(.signaling, "Signaling connect: \(url.absoluteString)")
 
         let config = URLSessionConfiguration.default
         // Same host:port as the HTTP API, so the certificate pinned there applies here too.
-        let session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(), delegateQueue: nil)
+        let session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
         signalingSession = session
 
         var request = URLRequest(url: url)
@@ -985,7 +990,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 // already gone, whatever the socket still claims.
                 if let last = self.lastJanusAckAt,
                    Date().timeIntervalSince(last) > Self.janusAckSilenceLimit {
-                    clog.error(
+                    self.log.error(
                         .signaling,
                         "No Janus ack for \(Int(Date().timeIntervalSince(last)))s; treating session as dead"
                     )
@@ -998,7 +1003,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 } catch {
                     // A keepalive cancelled by a teardown must not reconnect what was just hung up.
                     guard generation == self.connectionGeneration else { return }
-                    clog.error(.signaling, "Keepalive send failed: \(error.localizedDescription)")
+                    self.log.error(.signaling, "Keepalive send failed: \(error.localizedDescription)")
                     self.requestReconnect(reason: "Signaling keepalive failed")
                 }
             }
@@ -1115,7 +1120,7 @@ class WebRTCManager: NSObject, ObservableObject {
             } catch {
                 // A listener for a torn-down connection must not touch the state of its successor.
                 guard !Task.isCancelled, generation == connectionGeneration else { return }
-                clog.error(.signaling, "Signaling socket read failed: \(error.localizedDescription)")
+                self.log.error(.signaling, "Signaling socket read failed: \(error.localizedDescription)")
                 isConnecting = false
                 if isConnected || hasEverConnectedToStream || lastDisconnectReason == nil {
                     lastDisconnectReason = "Signaling connection lost"
@@ -1212,7 +1217,7 @@ class WebRTCManager: NSObject, ObservableObject {
             return
 
         case "webrtcup":
-            clog.notice(.signaling, "Janus webrtcup on \(janusHandleLabel(senderHandleId)) handle")
+            self.log.notice(.signaling, "Janus webrtcup on \(janusHandleLabel(senderHandleId)) handle")
             return
 
         case "media":
@@ -1225,12 +1230,12 @@ class WebRTCManager: NSObject, ObservableObject {
             if receiving == false {
                 // The server has stopped seeing media on this leg. Distinguishes a source-side
                 // stall from anything happening on our own link.
-                clog.warning(.stream, text)
+                self.log.warning(.stream, text)
                 if kind == "video" {
                     setLastDisconnectReason("Device stopped sending video")
                 }
             } else {
-                clog.notice(.stream, text)
+                self.log.notice(.stream, text)
                 // Janus repeats these; without the clear, a recovered stream leaves a stale
                 // reason behind for whatever overlay comes up next.
                 if kind == "video", lastDisconnectReason == "Device stopped sending video" {
@@ -1243,7 +1248,7 @@ class WebRTCManager: NSObject, ObservableObject {
             let lost = message["lost"] as? Int
             let uplink = message["uplink"] as? Bool
             let mid = message["mid"] as? String
-            clog.warning(
+            self.log.warning(
                 .stream,
                 "Janus slowlink lost=\(lost.map(String.init) ?? "?") "
                     + "uplink=\(uplink.map(String.init(describing:)) ?? "?") "
@@ -1253,7 +1258,7 @@ class WebRTCManager: NSObject, ObservableObject {
 
         case "hangup":
             let reason = message["reason"] as? String ?? "no reason given"
-            clog.error(.signaling, "Janus hangup on \(janusHandleLabel(senderHandleId)) handle: \(reason)")
+            self.log.error(.signaling, "Janus hangup on \(janusHandleLabel(senderHandleId)) handle: \(reason)")
             // Only the video leg drives the UI; an audio hangup is noted and otherwise ignored,
             // the same rule the ICE delegate follows.
             if senderHandleId == nil || senderHandleId == janusHandleId {
@@ -1262,13 +1267,13 @@ class WebRTCManager: NSObject, ObservableObject {
             return
 
         case "detached":
-            clog.notice(.signaling, "Janus detached \(janusHandleLabel(senderHandleId)) handle")
+            self.log.notice(.signaling, "Janus detached \(janusHandleLabel(senderHandleId)) handle")
             return
 
         case "timeout":
             // The session was reaped server-side: our keepalives stopped arriving in time.
             let sinceAck = lastJanusAckAt.map { Int(Date().timeIntervalSince($0)) }
-            clog.error(
+            self.log.error(
                 .signaling,
                 "Janus session timed out (last ack \(sinceAck.map { "\($0)s ago" } ?? "never"))"
             )
@@ -1279,14 +1284,14 @@ class WebRTCManager: NSObject, ObservableObject {
             let error = message["error"] as? [String: Any]
             let code = error?["code"] as? Int
             let reason = error?["reason"] as? String ?? "unknown"
-            clog.error(.signaling, "Janus error \(code.map(String.init) ?? "?"): \(reason)")
+            self.log.error(.signaling, "Janus error \(code.map(String.init) ?? "?"): \(reason)")
             return
 
         case "event":
             break
 
         default:
-            clog.debug(.signaling, "Janus \(janusType) (unhandled)")
+            self.log.debug(.signaling, "Janus \(janusType) (unhandled)")
             return
         }
 
@@ -1294,9 +1299,9 @@ class WebRTCManager: NSObject, ObservableObject {
            let data = plugindata["data"] as? [String: Any] {
             if let error = data["error"] as? String {
                 let code = data["error_code"] as? Int
-                clog.error(.signaling, "Streaming plugin error \(code.map(String.init) ?? "?"): \(error)")
+                self.log.error(.signaling, "Streaming plugin error \(code.map(String.init) ?? "?"): \(error)")
             } else if let status = data["status"] as? String {
-                clog.info(.signaling, "Streaming plugin status: \(status)")
+                self.log.info(.signaling, "Streaming plugin status: \(status)")
             }
         }
 
@@ -1356,7 +1361,7 @@ class WebRTCManager: NSObject, ObservableObject {
         do {
             try await peerConnection.setRemoteDescription(sessionDescription)
         } catch {
-            clog.error(.signaling, "Set remote description failed: \(error.localizedDescription)")
+            self.log.error(.signaling, "Set remote description failed: \(error.localizedDescription)")
         }
 
         // The audio handle asks for `video: false`, a parameter the device's own client never
@@ -1389,7 +1394,7 @@ class WebRTCManager: NSObject, ObservableObject {
             )
             try await peerConnection.setLocalDescription(sessionDescription)
         } catch {
-            clog.error(.signaling, "Create/send answer failed: \(error.localizedDescription)")
+            self.log.error(.signaling, "Create/send answer failed: \(error.localizedDescription)")
             return
         }
         
@@ -1413,7 +1418,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 ],
             ])
         } catch {
-            clog.error(.signaling, "Send Janus answer failed: \(error.localizedDescription)")
+            self.log.error(.signaling, "Send Janus answer failed: \(error.localizedDescription)")
         }
     }
     
@@ -1452,7 +1457,7 @@ class WebRTCManager: NSObject, ObservableObject {
 
                 if let age, age > self.streamStallThresholdSeconds {
                     if self.isStreamStalled == false {
-                        clog.warning(
+                        self.log.warning(
                             .stream,
                             "Video stalled: no frame for \(String(format: "%.1f", age))s "
                                 + "(threshold \(String(format: "%.1f", self.streamStallThresholdSeconds))s)"
@@ -1473,7 +1478,7 @@ class WebRTCManager: NSObject, ObservableObject {
                    let connectedAt = self.connectedIceTime,
                    now - connectedAt > self.initialFrameTimeoutSeconds {
                     if self.isStreamStalled == false {
-                        clog.warning(
+                        self.log.warning(
                             .stream,
                             "No first frame \(String(format: "%.1f", now - connectedAt))s after ICE connected"
                         )
@@ -1485,7 +1490,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 }
 
                 if self.isStreamStalled {
-                    clog.notice(.stream, "Video recovered")
+                    self.log.notice(.stream, "Video recovered")
                     self.setIsStreamStalled(false)
                     self.setLastDisconnectReason(nil)
                 }
@@ -1559,9 +1564,9 @@ class WebRTCManager: NSObject, ObservableObject {
         if let path = video.networkPath {
             let described = "\(path) → \(video.networkRemoteAddress ?? "?")"
             if let previous = lastLoggedCandidatePath, previous != described {
-                clog.notice(.ice, "Candidate pair changed: \(previous) ⇒ \(described)")
+                self.log.notice(.ice, "Candidate pair changed: \(previous) ⇒ \(described)")
             } else if lastLoggedCandidatePath == nil {
-                clog.info(.ice, "Candidate pair: \(described)")
+                self.log.info(.ice, "Candidate pair: \(described)")
             }
             lastLoggedCandidatePath = described
         }
@@ -1961,7 +1966,7 @@ class WebRTCManager: NSObject, ObservableObject {
     
     func disconnect() {
         // Nothing may auto-reconnect after an operator disconnect.
-        clog.notice(.lifecycle, "Operator disconnect")
+        self.log.notice(.lifecycle, "Operator disconnect")
         lastConnectedDevice = nil
         consecutiveStallReconnects = 0
         telemetry.update { $0.clearSession() }
@@ -2088,25 +2093,25 @@ class WebRTCManager: NSObject, ObservableObject {
 extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
         Task { @MainActor in
-            clog.debug(.signaling, "Signaling state: \(stateChanged.rawValue)")
+            self.log.debug(.signaling, "Signaling state: \(stateChanged.rawValue)")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         Task { @MainActor in
-            clog.info(.stream, "Media stream added")
+            self.log.info(.stream, "Media stream added")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {
         Task { @MainActor in
-            clog.notice(.stream, "Media stream removed")
+            self.log.notice(.stream, "Media stream removed")
         }
     }
     
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {
         Task { @MainActor in
-            clog.debug(.signaling, "Renegotiation needed")
+            self.log.debug(.signaling, "Renegotiation needed")
         }
     }
     
@@ -2115,7 +2120,7 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
             // Drive UI connection state from the video peer connection only.
             // Audio may connect/disconnect independently when split into a separate PeerConnection.
             guard peerConnection === self.peerConnection else {
-                clog.info(.ice, "Audio ICE state: \(Self.iceStateName(stateChanged))")
+                self.log.info(.ice, "Audio ICE state: \(Self.iceStateName(stateChanged))")
                 return
             }
 
@@ -2144,13 +2149,13 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
                     )
                 }
             }
-            clog.notice(.ice, "Video ICE state: \(Self.iceStateName(stateChanged))")
+            self.log.notice(.ice, "Video ICE state: \(Self.iceStateName(stateChanged))")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCIceGatheringState) {
         Task { @MainActor in
-            clog.debug(.ice, "ICE gathering: \(stateChanged.rawValue)")
+            self.log.debug(.ice, "ICE gathering: \(stateChanged.rawValue)")
 
             if stateChanged == .complete {
                 do {
@@ -2183,20 +2188,20 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
                     }
                 }
             } catch {
-                clog.warning(.ice, "Send ICE candidate failed: \(error.localizedDescription)")
+                self.log.warning(.ice, "Send ICE candidate failed: \(error.localizedDescription)")
             }
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {
         Task { @MainActor in
-            clog.debug(.ice, "ICE candidates removed")
+            self.log.debug(.ice, "ICE candidates removed")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
         Task { @MainActor in
-            clog.debug(.signaling, "Data channel opened")
+            self.log.debug(.signaling, "Data channel opened")
         }
     }
 
@@ -2222,7 +2227,7 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
 extension WebRTCManager: @preconcurrency RTCDataChannelDelegate {
     func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
         Task { @MainActor in
-            clog.debug(.signaling, "Data channel state: \(dataChannel.readyState.rawValue)")
+            self.log.debug(.signaling, "Data channel state: \(dataChannel.readyState.rawValue)")
         }
     }
     
@@ -2337,11 +2342,13 @@ final class WebRTCManager: NSObject, ObservableObject {
     var micEnabled: Bool { audioPreferences.micEnabled }
     private(set) var audioRoute: AudioRoute = .unrouted
     @Published private(set) var isMicrophoneAccessDenied = false
+    let log: SessionLog
 
     let telemetry = StreamTelemetryModel()
 
-    init(audioPreferences: AudioPreferences? = nil) {
+    init(audioPreferences: AudioPreferences? = nil, log: SessionLog? = nil) {
         self.audioPreferences = audioPreferences ?? .shared
+        self.log = log ?? SessionLog(destination: .shared)
         super.init()
     }
 

@@ -3,10 +3,14 @@ import Testing
 @testable import Overlook
 
 /// The in-memory ring behind the log panel. Each test builds its own store; the app's
-/// `ConnectionLog.shared.store` is left alone.
+/// `ConnectionLog.shared.store` is left alone. The lines here belong to no session, so they are
+/// every window's; `ConnectionLogTaggingTests` covers lines from sessions.
 @MainActor
 @Suite("Connection log store")
 struct ConnectionLogStoreTests {
+    /// A window's session, for the per-window problem dot.
+    private let window = UUID()
+
     private func event(
         _ id: UInt64,
         _ level: ConnectionLogLevel = .info,
@@ -53,46 +57,46 @@ struct ConnectionLogStoreTests {
         store.append(event(1, .debug))
         store.append(event(2, .info))
         store.append(event(3, .notice))
-        #expect(store.unseenProblemCount == 0)
-        #expect(store.lastProblem == nil)
+        #expect(store.unseenProblemCount(for: window) == 0)
+        #expect(store.lastProblem(in: .session(window)) == nil)
 
         store.append(event(4, .warning))
         store.append(event(5, .error))
-        #expect(store.unseenProblemCount == 2)
-        #expect(store.lastProblem?.id == 5)
+        #expect(store.unseenProblemCount(for: window) == 2)
+        #expect(store.lastProblem(in: .session(window))?.id == 5)
     }
 
     @Test func viewingTheLogClearsAndSuppressesTheCount() {
         let store = ConnectionLogStore()
         store.append(event(1, .warning))
-        store.beginViewingProblems()
-        #expect(store.unseenProblemCount == 0)
+        store.beginViewingProblems(for: window)
+        #expect(store.unseenProblemCount(for: window) == 0)
 
         store.append(event(2, .error))
-        #expect(store.unseenProblemCount == 0)
+        #expect(store.unseenProblemCount(for: window) == 0)
         // Still the summary's problem, even though it was seen as it arrived.
-        #expect(store.lastProblem?.id == 2)
+        #expect(store.lastProblem(in: .session(window))?.id == 2)
 
-        store.endViewingProblems()
+        store.endViewingProblems(for: window)
         store.append(event(3, .warning))
-        #expect(store.unseenProblemCount == 1)
+        #expect(store.unseenProblemCount(for: window) == 1)
     }
 
     @Test func lastProblemIsTheNewestEvenWhenAnOlderOneArrivesLate() {
         let store = ConnectionLogStore()
         store.append(event(10, .error, "newer"))
         store.append(event(7, .warning, "older"))
-        #expect(store.lastProblem?.message == "newer")
-        #expect(store.unseenProblemCount == 2)
+        #expect(store.lastProblem(in: .session(window))?.message == "newer")
+        #expect(store.unseenProblemCount(for: window) == 2)
     }
 
     @Test func clearEmptiesEverything() {
         let store = ConnectionLogStore()
         store.append(event(1, .error))
-        store.clear()
+        store.clear(.allDevices)
         #expect(store.events.isEmpty)
-        #expect(store.unseenProblemCount == 0)
-        #expect(store.lastProblem == nil)
+        #expect(store.unseenProblemCount(for: window) == 0)
+        #expect(store.lastProblem(in: .allDevices) == nil)
     }
 
     @Test func levelsOrderAndTagAsTheFileExpects() {
