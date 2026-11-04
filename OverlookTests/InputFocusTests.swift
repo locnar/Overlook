@@ -200,6 +200,54 @@ struct InputFocusTests {
         #expect(a.sent.isEmpty)
     }
 
+    /// Fork review #12: what is typed into a sheet over a console window (the connect and
+    /// password sheets, an alert) never reaches that window's target, with keyboard capture on.
+    /// The window and the sheet are real windows, never shown; key status changes are posted as
+    /// AppKit posts them when a sheet takes the keyboard and gives it back.
+    @Test func typingIntoASheetOverTheConsoleSendsNothingToTheTarget() throws {
+        let console = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        let sheet = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
+        console.isReleasedWhenClosed = false
+        sheet.isReleasedWhenClosed = false
+        try #require(console.windowNumber > 0 && sheet.windowNumber > 0)
+        try #require(console.windowNumber != sheet.windowNumber)
+
+        let a = Capture()
+        #expect(a.input.isKeyboardCaptureEnabled)
+        a.input.attach(to: console)
+        let center = NotificationCenter.default
+        center.post(name: NSWindow.didBecomeKeyNotification, object: console)
+        #expect(a.input.focusGate.isWindowKey)
+
+        // Typing in the console goes to the target.
+        _ = a.input.routeMonitoredKeyEvent(key(0, down: true, window: console.windowNumber))
+        _ = a.input.routeMonitoredKeyEvent(key(0, down: false, window: console.windowNumber))
+        #expect(a.sent == [.key(0, isDown: true), .key(0, isDown: false)])
+        a.sent.removeAll()
+
+        // The password sheet comes up and takes the keyboard. Every key typed into it, Return
+        // included, is handed back to AppKit for the sheet, and none is sent.
+        center.post(name: NSWindow.didResignKeyNotification, object: console)
+        #expect(a.input.focusGate.isWindowKey == false)
+        for keyCode: UInt16 in [35, 0, 1, 1, 36] {   // p, a, s, s, Return
+            let down = key(keyCode, down: true, window: sheet.windowNumber)
+            let up = key(keyCode, down: false, window: sheet.windowNumber)
+            #expect(a.input.routeMonitoredKeyEvent(down) === down)
+            #expect(a.input.routeMonitoredKeyEvent(up) === up)
+        }
+        // Nor does anything addressed to the console itself go out while the sheet is up.
+        let stray = key(2, down: true, window: console.windowNumber)
+        #expect(a.input.routeMonitoredKeyEvent(stray) === stray)
+        #expect(a.sent.isEmpty)
+
+        // The sheet goes; the console has the keyboard again.
+        center.post(name: NSWindow.didBecomeKeyNotification, object: console)
+        _ = a.input.routeMonitoredKeyEvent(key(3, down: true, window: console.windowNumber))
+        #expect(a.sent == [.key(3, isDown: true)])
+
+        a.input.attach(to: nil)
+    }
+
     @Test func switchingWindowsWithAKeyHeldSendsTheKeyUpNowhere() {
         let a = Capture()
         let b = Capture()
