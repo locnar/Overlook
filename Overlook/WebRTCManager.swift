@@ -61,6 +61,77 @@ private func audioHardwareAddress(_ selector: AudioObjectPropertySelector) -> Au
     )
 }
 
+/// Which of a connection's two peer connections (video, and audio when it is on) an ICE callback
+/// came from, and what to do with it.
+///
+/// WebRTC calls the delegate on its own thread and the manager handles each call in a main-actor
+/// task, so a teardown can let go of its peer connections before their closing callbacks are
+/// handled. Telling the peers apart by comparing with the manager's current ones then read the
+/// video peer's close as an audio one: every disconnect logged "Audio ICE state: closed" twice
+/// and the video close not at all. This remembers each peer's role from the connect that made it
+/// until its close has been handled.
+struct PeerConnectionRoles<Peer: AnyObject> {
+    enum Role: Equatable {
+        case video
+        case audio
+    }
+
+    /// What one ICE state change calls for.
+    enum Disposition: Equatable {
+        /// From the current connection: log it, and for video let it drive the connection state.
+        case live(Role)
+        /// The close of a peer a teardown let go of: log it once, and leave the connection state
+        /// alone, because by now it may belong to the next connection.
+        case closed(Role)
+        /// Anything else from a torn-down peer, or from a peer this never saw: it would only be
+        /// read as part of whatever connection is current, so it is not logged.
+        case ignore
+    }
+
+    private struct Entry {
+        /// Held so that a released peer's address cannot be handed to a new peer, and its late
+        /// callbacks read as the new one's, before this has finished with it.
+        let peer: Peer
+        let role: Role
+        /// The teardown that let go of it, or nil while it belongs to the current connection.
+        var retiredAt: Int?
+    }
+
+    private var entries: [ObjectIdentifier: Entry] = [:]
+    private var teardowns = 0
+
+    /// Peers this still holds: the current connection's and those whose close has not come in.
+    var count: Int { entries.count }
+
+    mutating func register(_ peer: Peer, as role: Role) {
+        entries[ObjectIdentifier(peer)] = Entry(peer: peer, role: role, retiredAt: nil)
+    }
+
+    /// The current connection's peers stop being current. A peer whose close has still not come
+    /// in by the teardown after next never will, so it is let go then rather than held for good.
+    mutating func retireAll() {
+        teardowns += 1
+        let now = teardowns
+        entries = entries.filter { _, entry in
+            guard let retiredAt = entry.retiredAt else { return true }
+            return retiredAt >= now - 1
+        }
+        for key in Array(entries.keys) where entries[key]?.retiredAt == nil {
+            entries[key]?.retiredAt = now
+        }
+    }
+
+    /// `isClosed` is whether the new state is `closed`, which only a teardown's `close()` causes.
+    mutating func disposition(for peer: Peer, isClosed: Bool) -> Disposition {
+        let key = ObjectIdentifier(peer)
+        guard let entry = entries[key] else { return .ignore }
+        guard entry.retiredAt != nil else { return .live(entry.role) }
+        guard isClosed else { return .ignore }
+        entries[key] = nil
+        return .closed(entry.role)
+    }
+}
+
 #if canImport(WebRTC)
 @MainActor
 class WebRTCManager: NSObject, ObservableObject {
@@ -117,6 +188,8 @@ class WebRTCManager: NSObject, ObservableObject {
 
     private var peerConnection: RTCPeerConnection?
     private var audioPeerConnection: RTCPeerConnection?
+    /// Which peer an ICE callback came from, still known after a teardown lets go of the peer.
+    private var peerRoles = PeerConnectionRoles<RTCPeerConnection>()
     private var videoTrack: RTCVideoTrack?
     private var localAudioTrack: RTCAudioTrack?
     private var localAudioSender: RTCRtpSender?
@@ -654,6 +727,9 @@ class WebRTCManager: NSObject, ObservableObject {
                 constraints: constraints,
                 delegate: self
             )
+            if let peerConnection {
+                peerRoles.register(peerConnection, as: .video)
+            }
 
             if audioEnabled || micEnabled {
                 let audioConstraints = RTCMediaConstraints(
@@ -665,6 +741,9 @@ class WebRTCManager: NSObject, ObservableObject {
                     constraints: audioConstraints,
                     delegate: self
                 )
+                if let audioPeerConnection {
+                    peerRoles.register(audioPeerConnection, as: .audio)
+                }
             }
 
             var micGranted = false
@@ -2019,6 +2098,9 @@ class WebRTCManager: NSObject, ObservableObject {
         dataChannel?.close()
         dataChannel = nil
         
+        // Their closing ICE callbacks are handled after the references below are cleared, and
+        // still have to be told apart.
+        peerRoles.retireAll()
         peerConnection?.close()
         peerConnection = nil
 
@@ -2118,11 +2200,20 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCIceConnectionState) {
         Task { @MainActor in
-            // Drive UI connection state from the video peer connection only.
-            // Audio may connect/disconnect independently when split into a separate PeerConnection.
-            guard peerConnection === self.peerConnection else {
-                self.log.info(.ice, "Audio ICE state: \(Self.iceStateName(stateChanged))")
+            let stateName = Self.iceStateName(stateChanged)
+            switch self.peerRoles.disposition(for: peerConnection, isClosed: stateChanged == .closed) {
+            case .ignore:
                 return
+            case .closed(.video):
+                self.log.notice(.ice, "Video ICE state: \(stateName)")
+                return
+            case .live(.audio), .closed(.audio):
+                // Only video drives the connection state: audio has a peer connection of its own
+                // and may connect and disconnect independently.
+                self.log.info(.ice, "Audio ICE state: \(stateName)")
+                return
+            case .live(.video):
+                break
             }
 
             isConnected = (stateChanged == .connected || stateChanged == .completed)
@@ -2150,7 +2241,7 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
                     )
                 }
             }
-            self.log.notice(.ice, "Video ICE state: \(Self.iceStateName(stateChanged))")
+            self.log.notice(.ice, "Video ICE state: \(stateName)")
         }
     }
     
