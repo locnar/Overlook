@@ -79,9 +79,9 @@ enum StopRecordingQuestion {
 /// the registry learns when the window appears, becomes key and closes, and a close goes through
 /// the session first — a window that is recording asks before it closes.
 ///
-/// Closing is intercepted as the window's delegate, in front of the one SwiftUI installed, to
-/// which everything else is forwarded (the same arrangement as `WindowAspectRatioSetter`'s, which
-/// may sit in front of or behind this one; each forwards what it does not handle).
+/// Closing is intercepted through the window's `WindowDelegateInterposer`, which stands in front of
+/// the delegate SwiftUI installed and forwards everything else to it; `WindowAspectRatioSetter`
+/// registers with the same one, in whichever order the two appear.
 private struct ConsoleWindowAttachment: NSViewRepresentable {
     let session: ConsoleSession
     let registry: SessionRegistry
@@ -105,6 +105,10 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
 
     func updateNSView(_ nsView: WindowWatchingView, context: Context) {}
 
+    static func dismantleNSView(_ nsView: WindowWatchingView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
     final class WindowWatchingView: NSView {
         var onWindow: ((NSWindow) -> Void)?
 
@@ -117,13 +121,10 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSWindowDelegate {
+    final class Coordinator: NSObject, WindowDelegateParticipant {
         private let session: ConsoleSession
         private let registry: SessionRegistry
         private weak var window: NSWindow?
-        /// Written once, on the main thread, before the window can ask anything of it; read from
-        /// the forwarding overrides, which AppKit declares outside any actor.
-        nonisolated(unsafe) private weak var forwardedDelegate: NSWindowDelegate?
         private var observers: [NSObjectProtocol] = []
         /// While a confirmed close finishes the recording, further close requests wait for it.
         private var isFinishingRecording = false
@@ -142,8 +143,7 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
             // Windows, never tabs; `allowsAutomaticWindowTabbing` covers the rest of the app.
             window.tabbingMode = .disallowed
 
-            forwardedDelegate = window.delegate
-            window.delegate = self
+            WindowDelegateInterposer.install(on: window).register(self)
 
             session.attach(to: window)
             registry.add(session)
@@ -174,17 +174,26 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
             observers.removeAll()
             session.windowWillClose()
             registry.remove(session)
+            // The interposer lets go of itself once the close has been delivered; unregistering
+            // here, in the middle of the close notification, could swap delegates during it.
+        }
+
+        /// The view has gone from the window. Mid-close the interposer may already be gone.
+        func detach() {
+            guard let window else { return }
+            WindowDelegateInterposer.installed(on: window)?.unregister(self)
         }
 
         // MARK: Closing
 
-        func windowShouldClose(_ sender: NSWindow) -> Bool {
+        func windowShouldClose(for sender: NSWindow) -> Bool {
             guard !isFinishingRecording else { return false }
             switch session.closeDecision {
             case .close, .disconnectAndClose:
                 // The disconnect itself happens as the window closes
                 // (`ConsoleSession.windowWillClose`), so a close that skips this still gets it.
-                return forwardedDelegate?.windowShouldClose?(sender) ?? true
+                // SwiftUI's own delegate is asked after this, by the interposer.
+                return true
             case .confirmStopRecording(let deviceName):
                 askToStopRecording(deviceName: deviceName, in: sender)
                 return false
@@ -238,19 +247,6 @@ private struct ConsoleWindowAttachment: NSViewRepresentable {
                     window.performClose(nil)
                 }
             }
-        }
-
-        // MARK: Forwarding
-
-        nonisolated override func responds(to aSelector: Selector!) -> Bool {
-            if super.responds(to: aSelector) {
-                return true
-            }
-            return forwardedDelegate?.responds(to: aSelector) ?? false
-        }
-
-        nonisolated override func forwardingTarget(for aSelector: Selector!) -> Any? {
-            forwardedDelegate
         }
     }
 }

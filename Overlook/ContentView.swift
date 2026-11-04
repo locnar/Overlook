@@ -788,13 +788,17 @@ private struct WindowAspectRatioSetter: NSViewRepresentable {
         NSView(frame: .zero)
     }
 
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let window = nsView.window else { return }
 
         if context.coordinator.didConfigureWindow == false {
             context.coordinator.didConfigureWindow = true
             let coordinator = context.coordinator
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 window.titlebarAppearsTransparent = false
                 window.styleMask.remove(.fullSizeContentView)
                 coordinator.attach(to: window)
@@ -842,13 +846,16 @@ private struct WindowAspectRatioSetter: NSViewRepresentable {
         }
     }
 
+    /// Keeps resizes to the video's aspect ratio and swaps the chrome in and out of fullscreen,
+    /// through the window's `WindowDelegateInterposer`, which `ConsoleWindowAttachment` registers
+    /// with too.
+    @MainActor
     final class Coordinator: NSObject {
         var lastAspect: NSSize?
         var didInitialResizeForAspect: Bool = false
         var didConfigureWindow: Bool = false
 
         weak var window: NSWindow?
-        weak var forwardedDelegate: NSWindowDelegate?
         var videoAspect: Double?
 
         private var storedWindowedTitlebarAppearsTransparent: Bool?
@@ -862,8 +869,7 @@ private struct WindowAspectRatioSetter: NSViewRepresentable {
             }
 
             self.window = window
-            forwardedDelegate = window.delegate
-            window.delegate = self
+            WindowDelegateInterposer.install(on: window).register(self)
 
             if storedWindowedTitlebarAppearsTransparent == nil {
                 storedWindowedTitlebarAppearsTransparent = window.titlebarAppearsTransparent
@@ -871,6 +877,12 @@ private struct WindowAspectRatioSetter: NSViewRepresentable {
                 storedWindowedTitleVisibility = window.titleVisibility
                 storedWindowedToolbarIsVisible = window.toolbar?.isVisible
             }
+        }
+
+        /// The view has gone from the window; the delegate calls stop with it.
+        func detach() {
+            guard let window else { return }
+            WindowDelegateInterposer.installed(on: window)?.unregister(self)
         }
 
         private func applyFullscreenChrome(window: NSWindow) {
@@ -926,19 +938,8 @@ private struct WindowAspectRatioSetter: NSViewRepresentable {
     }
 }
 
-extension WindowAspectRatioSetter.Coordinator: NSWindowDelegate {
-    override func responds(to aSelector: Selector!) -> Bool {
-        if super.responds(to: aSelector) {
-            return true
-        }
-        return forwardedDelegate?.responds(to: aSelector) ?? false
-    }
-
-    override func forwardingTarget(for aSelector: Selector!) -> Any? {
-        forwardedDelegate
-    }
-
-    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+extension WindowAspectRatioSetter.Coordinator: WindowDelegateParticipant {
+    func window(_ sender: NSWindow, willResizeTo frameSize: NSSize) -> NSSize {
         guard let aspect = videoAspect else { return frameSize }
 
         let currentFrame = sender.frame.size
@@ -964,36 +965,21 @@ extension WindowAspectRatioSetter.Coordinator: NSWindowDelegate {
             constrained = NSSize(width: desiredLayoutW + deltaW, height: frameSize.height)
         }
 
-        if let forwardedDelegate,
-           forwardedDelegate.responds(to: #selector(NSWindowDelegate.windowWillResize(_:to:))) {
-            return forwardedDelegate.windowWillResize?(sender, to: constrained) ?? constrained
-        }
-
+        // SwiftUI's own delegate is asked after this, with the constrained size, by the interposer.
         return constrained
     }
 
-    func windowDidEnterFullScreen(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else {
-            forwardedDelegate?.windowDidEnterFullScreen?(notification)
-            return
-        }
+    func windowDidEnterFullScreen(for window: NSWindow) {
         applyFullscreenChrome(window: window)
-        forwardedDelegate?.windowDidEnterFullScreen?(notification)
     }
 
-    func windowDidExitFullScreen(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else {
-            forwardedDelegate?.windowDidExitFullScreen?(notification)
-            return
-        }
+    func windowDidExitFullScreen(for window: NSWindow) {
         restoreWindowedChrome(window: window)
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             self.adjustFrameToVideoAspect(window: window)
         }
-
-        forwardedDelegate?.windowDidExitFullScreen?(notification)
     }
 }
 

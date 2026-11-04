@@ -447,6 +447,8 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - A console window's root view and its hookup to the session and registry, including the question before closing a window that is recording.
 - `Overlook/AudioPreferences.swift`
   - The audio settings every window shares, and which windows play their audio and which one sends the microphone (`AudioRoute`, `SessionAudioRouter`).
+- `Overlook/WindowDelegateInterposer.swift`
+  - The one stand-in in front of a console window's SwiftUI delegate, which the close handling and the aspect-ratio and fullscreen handling register with.
 - `Overlook/InputFocusGate.swift`
   - Which keyboard and mouse events a session may send: only its own window's, only while that window is key.
 - `Overlook/SessionConnection.swift`
