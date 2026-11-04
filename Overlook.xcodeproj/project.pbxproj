@@ -71,6 +71,7 @@
 		01000110 /* StatusMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000110 /* StatusMenuTests.swift */; };
 		01000037 /* WindowDelegateInterposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003B /* WindowDelegateInterposer.swift */; };
 		01000111 /* WindowDelegateInterposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000111 /* WindowDelegateInterposerTests.swift */; };
+		01000112 /* SessionLifetimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000112 /* SessionLifetimeTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -155,6 +156,7 @@
 		02000110 /* StatusMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuTests.swift; sourceTree = "<group>"; };
 		0200003B /* WindowDelegateInterposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowDelegateInterposer.swift; sourceTree = "<group>"; };
 		02000111 /* WindowDelegateInterposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowDelegateInterposerTests.swift; sourceTree = "<group>"; };
+		02000112 /* SessionLifetimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLifetimeTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -259,6 +261,7 @@
 				0200010C /* SessionRegistryTests.swift */,
 				0200010B /* InputFocusTests.swift */,
 				0200010A /* SessionConnectTests.swift */,
+				02000112 /* SessionLifetimeTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
 				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
@@ -456,6 +459,7 @@
 				0100010C /* SessionRegistryTests.swift in Sources */,
 				0100010B /* InputFocusTests.swift in Sources */,
 				0100010A /* SessionConnectTests.swift in Sources */,
+				01000112 /* SessionLifetimeTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
 				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,

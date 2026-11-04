@@ -71,10 +71,15 @@ final class ConsoleSession: ObservableObject {
         // Straight off the connection, not mirrored from `ContentView`: the menu-bar agent can
         // connect a session before its window has appeared, and a view-scoped mirror would leave
         // the View menu's Settings item enabled over a dead session (or greyed out over a live one).
+        // A weak sink rather than `assign(to:on:)`, which holds its target strongly for as long as
+        // the subscription lives.
+        let panels = self.panels
         connection.$connectedDevice
             .map { $0 != nil }
             .removeDuplicates()
-            .assign(to: \.isSessionActive, on: panels)
+            .sink { [weak panels] isActive in
+                panels?.isSessionActive = isActive
+            }
             .store(in: &cancellables)
 
         // The chords keyboard capture keeps for the app act on this session. They used to be
