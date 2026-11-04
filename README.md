@@ -170,6 +170,11 @@ Overlook uses the Swift Package:
 2. Select the `Overlook` scheme.
 3. Build + Run.
 
+Product → Test (`⌘U`) runs the unit tests in `OverlookTests`; from a shell,
+`xcodebuild -project Overlook.xcodeproj -scheme Overlook -destination 'platform=macOS' test`.
+The tests run inside the app and use scratch defaults suites and an in-memory keychain stand-in,
+so they leave your saved devices, settings and keychain alone.
+
 ### Release builds and code signing
 
 The embedded `WebRTC.framework` carries its publisher's code signature. The app is built with the

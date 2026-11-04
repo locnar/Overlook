@@ -3,6 +3,36 @@ import Network
 import Combine
 import CryptoKit
 
+/// Where the device catalog keeps per-device secrets: auth tokens and saved passwords. The app
+/// uses the login keychain; tests pass an in-memory store so they never touch it.
+protocol DeviceCredentialStore {
+    func token(host: String, port: Int) -> String?
+    @discardableResult
+    func setToken(_ token: String, host: String, port: Int) -> Bool
+    func deleteToken(host: String, port: Int)
+    func deletePassword(host: String, port: Int)
+}
+
+/// The keychain-backed stores the catalog has always used.
+struct KeychainDeviceCredentials: DeviceCredentialStore {
+    func token(host: String, port: Int) -> String? {
+        KeychainTokenStore.token(host: host, port: port)
+    }
+
+    @discardableResult
+    func setToken(_ token: String, host: String, port: Int) -> Bool {
+        KeychainTokenStore.setToken(token, host: host, port: port)
+    }
+
+    func deleteToken(host: String, port: Int) {
+        _ = KeychainTokenStore.deleteToken(host: host, port: port)
+    }
+
+    func deletePassword(host: String, port: Int) {
+        DevicePasswordStore.delete(host: host, port: port)
+    }
+}
+
 @MainActor
 final class KVMDeviceManager: NSObject, ObservableObject {
     @Published var availableDevices: [KVMDevice] = []
@@ -67,7 +97,20 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let capabilities: Set<KVMCapability>
     }
     
-    override init() {
+    private let defaults: UserDefaults
+    private let credentials: DeviceCredentialStore
+    private let trustStore: DeviceTrustStore
+
+    /// The parameters are for tests, which hand in a scratch defaults suite, an in-memory
+    /// credential store and a trust store of their own. The app takes the defaults.
+    init(
+        defaults: UserDefaults = .standard,
+        credentials: DeviceCredentialStore = KeychainDeviceCredentials(),
+        trustStore: DeviceTrustStore = .shared
+    ) {
+        self.defaults = defaults
+        self.credentials = credentials
+        self.trustStore = trustStore
         super.init()
         setupNetworkMonitoring()
         loadPersistedDevices()
@@ -660,9 +703,9 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         var current = readPersistedDevices()
         current.removeAll { $0.host == host && $0.port == port }
         writePersistedDevices(current)
-        KeychainTokenStore.deleteToken(host: host, port: port)
-        DevicePasswordStore.delete(host: host, port: port)
-        DeviceTrustStore.shared.reset(host: host, port: port)
+        credentials.deleteToken(host: host, port: port)
+        credentials.deletePassword(host: host, port: port)
+        trustStore.reset(host: host, port: port)
 
         availableDevices.removeAll { $0.host == host && $0.port == port }
         if connectedDevice?.host == host, connectedDevice?.port == port {
@@ -767,14 +810,14 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     /// True only when the device itself rejected the credentials or token: an HTTP 401/403, or an
     /// application-level `ok=false` on a 2xx response (how the GL.iNet login endpoint reports a
     /// wrong password). URL/network errors and 5xx responses are not auth rejections.
-    private static func isAuthRejection(_ error: Error) -> Bool {
+    static func isAuthRejection(_ error: Error) -> Bool {
         if case GLKVMClient.ClientError.httpError(let statusCode, _) = error {
             return statusCode == 401 || statusCode == 403 || (200...299).contains(statusCode)
         }
         return false
     }
 
-    private func persistDevice(_ device: KVMDevice) -> KVMDevice {
+    func persistDevice(_ device: KVMDevice) -> KVMDevice {
         let record = PersistedDevice(
             host: device.host,
             port: device.port,
@@ -791,7 +834,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             current.append(record)
         }
         writePersistedDevices(current)
-        KeychainTokenStore.setToken(device.authToken, host: device.host, port: device.port)
+        credentials.setToken(device.authToken, host: device.host, port: device.port)
 
         var saved = device
         saved.id = savedDeviceId(host: device.host, port: device.port)
@@ -813,13 +856,13 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         var needsRewrite = false
 
         let devices: [KVMDevice] = records.map { record in
-            var token = KeychainTokenStore.token(host: record.host, port: record.port) ?? ""
+            var token = credentials.token(host: record.host, port: record.port) ?? ""
             var stored = record
             if let legacy = record.authToken, !legacy.isEmpty {
                 if token.isEmpty {
                     token = legacy
                 }
-                if KeychainTokenStore.setToken(token, host: record.host, port: record.port) {
+                if credentials.setToken(token, host: record.host, port: record.port) {
                     stored = PersistedDevice(
                         host: record.host,
                         port: record.port,
@@ -854,13 +897,13 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
 
     private func readPersistedDevices() -> [PersistedDevice] {
-        guard let data = UserDefaults.standard.data(forKey: Self.savedDevicesKey) else { return [] }
+        guard let data = defaults.data(forKey: Self.savedDevicesKey) else { return [] }
         return (try? JSONDecoder().decode([PersistedDevice].self, from: data)) ?? []
     }
 
     private func writePersistedDevices(_ devices: [PersistedDevice]) {
         guard let data = try? JSONEncoder().encode(devices) else { return }
-        UserDefaults.standard.set(data, forKey: Self.savedDevicesKey)
+        defaults.set(data, forKey: Self.savedDevicesKey)
     }
     
     private func validateDeviceConnection(_ device: KVMDevice) async throws -> Bool {
@@ -921,7 +964,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     /// Drops the pinned certificate for a device so the next connection pins the one it presents.
     /// Only call this after the user has confirmed the change is expected.
     func trustNewCertificate(host: String, port: Int) {
-        DeviceTrustStore.shared.reset(host: host, port: port)
+        trustStore.reset(host: host, port: port)
     }
     
     deinit {

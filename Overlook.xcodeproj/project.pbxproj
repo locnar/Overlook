@@ -46,7 +46,25 @@
 		0100002E /* ConnectionLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000030 /* ConnectionLogView.swift */; };
 		0100002F /* ConnectionLogPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000031 /* ConnectionLogPanel.swift */; };
 		01000030 /* PanelPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000032 /* PanelPresentation.swift */; };
+		01000101 /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000101 /* TestSupport.swift */; };
+		01000102 /* DeviceCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000102 /* DeviceCatalogTests.swift */; };
+		01000103 /* DeviceModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000103 /* DeviceModelTests.swift */; };
+		01000104 /* PanelPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000104 /* PanelPresentationTests.swift */; };
+		01000105 /* ConnectionLogStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000105 /* ConnectionLogStoreTests.swift */; };
+		01000106 /* CaptureManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000106 /* CaptureManagerTests.swift */; };
+		01000107 /* InputMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000107 /* InputMappingTests.swift */; };
+		01000108 /* JSONValueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000108 /* JSONValueTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		17000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 10000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 06000001;
+			remoteInfo = Overlook;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		02000001 /* OverlookApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlookApp.swift; sourceTree = "<group>"; };
@@ -93,7 +111,16 @@
 		02000032 /* PanelPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelPresentation.swift; sourceTree = "<group>"; };
 		02000033 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		02000034 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = Local.xcconfig.example; sourceTree = "<group>"; };
+		02000101 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
+		02000102 /* DeviceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCatalogTests.swift; sourceTree = "<group>"; };
+		02000103 /* DeviceModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceModelTests.swift; sourceTree = "<group>"; };
+		02000104 /* PanelPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelPresentationTests.swift; sourceTree = "<group>"; };
+		02000105 /* ConnectionLogStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionLogStoreTests.swift; sourceTree = "<group>"; };
+		02000106 /* CaptureManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureManagerTests.swift; sourceTree = "<group>"; };
+		02000107 /* InputMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMappingTests.swift; sourceTree = "<group>"; };
+		02000108 /* JSONValueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValueTests.swift; sourceTree = "<group>"; };
 		03000001 /* Overlook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overlook.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		03000002 /* OverlookTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OverlookTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +132,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		04000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -112,6 +146,7 @@
 			isa = PBXGroup;
 			children = (
 				05000002 /* Overlook */,
+				05000005 /* OverlookTests */,
 				05000004 /* Config */,
 				05000003 /* Products */,
 			);
@@ -166,6 +201,21 @@
 			path = Overlook;
 			sourceTree = "<group>";
 		};
+		05000005 /* OverlookTests */ = {
+			isa = PBXGroup;
+			children = (
+				02000101 /* TestSupport.swift */,
+				02000102 /* DeviceCatalogTests.swift */,
+				02000103 /* DeviceModelTests.swift */,
+				02000104 /* PanelPresentationTests.swift */,
+				02000105 /* ConnectionLogStoreTests.swift */,
+				02000106 /* CaptureManagerTests.swift */,
+				02000107 /* InputMappingTests.swift */,
+				02000108 /* JSONValueTests.swift */,
+			);
+			path = OverlookTests;
+			sourceTree = "<group>";
+		};
 		05000004 /* Config */ = {
 			isa = PBXGroup;
 			children = (
@@ -179,6 +229,7 @@
 			isa = PBXGroup;
 			children = (
 				03000001 /* Overlook.app */,
+				03000002 /* OverlookTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -206,6 +257,24 @@
 			productReference = 03000001 /* Overlook.app */;
 			productType = "com.apple.product-type.application";
 		};
+		06000002 /* OverlookTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 07000002 /* Build configuration list for PBXNativeTarget "OverlookTests" */;
+			buildPhases = (
+				08000002 /* Sources */,
+				04000002 /* Frameworks */,
+				09000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				16000001 /* PBXTargetDependency */,
+			);
+			name = OverlookTests;
+			productName = OverlookTests;
+			productReference = 03000002 /* OverlookTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -219,6 +288,10 @@
 				TargetAttributes = {
 					06000001 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					06000002 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 06000001;
 					};
 				};
 			};
@@ -239,6 +312,7 @@
 			projectRoot = "";
 			targets = (
 				06000001 /* Overlook */,
+				06000002 /* OverlookTests */,
 			);
 		};
 /* End PBXProject section */
@@ -249,6 +323,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				01000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		09000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -299,7 +380,30 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		08000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				01000101 /* TestSupport.swift in Sources */,
+				01000102 /* DeviceCatalogTests.swift in Sources */,
+				01000103 /* DeviceModelTests.swift in Sources */,
+				01000104 /* PanelPresentationTests.swift in Sources */,
+				01000105 /* ConnectionLogStoreTests.swift in Sources */,
+				01000106 /* CaptureManagerTests.swift in Sources */,
+				01000107 /* InputMappingTests.swift in Sources */,
+				01000108 /* JSONValueTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		16000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 06000001 /* Overlook */;
+			targetProxy = 17000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		12000001 /* Debug */ = {
@@ -488,6 +592,44 @@
 			};
 			name = Release;
 		};
+		12000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 02000033 /* Signing.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -Wno-deprecated-declarations";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(inherited).OverlookTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "Overlook/Overlook-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Overlook.app/Contents/MacOS/Overlook";
+			};
+			name = Debug;
+		};
+		12000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 02000033 /* Signing.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -Wno-deprecated-declarations";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(inherited).OverlookTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "Overlook/Overlook-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Overlook.app/Contents/MacOS/Overlook";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -496,6 +638,15 @@
 			buildConfigurations = (
 				12000003 /* Debug */,
 				12000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		07000002 /* Build configuration list for PBXNativeTarget "OverlookTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				12000005 /* Debug */,
+				12000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -86,17 +86,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Longest the app waits for the HID release and socket close before quitting anyway.
     private static let terminationGraceNanoseconds: UInt64 = 3_000_000_000
 
+    /// True when this process is hosting the unit tests. The test bundle is loaded into the app,
+    /// so a test run launches it like any other; nothing in the tests needs the menu-bar agent, and
+    /// without this the run would add a status item and a system-wide key monitor (⇧⌘V opens a
+    /// modal Quick Connect) for its duration.
+    static let isHostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        menuBarAgent = MenuBarAgent(
-            kvmDeviceManager: kvmDeviceManager,
-            webRTCManager: webRTCManager,
-            inputManager: inputManager,
-            captureManager: captureManager,
-            showMainWindow: { [weak self] in
-                self?.showMainWindow()
-            }
-        )
-        menuBarAgent?.setup()
+        if !Self.isHostingUnitTests {
+            menuBarAgent = MenuBarAgent(
+                kvmDeviceManager: kvmDeviceManager,
+                webRTCManager: webRTCManager,
+                inputManager: inputManager,
+                captureManager: captureManager,
+                showMainWindow: { [weak self] in
+                    self?.showMainWindow()
+                }
+            )
+            menuBarAgent?.setup()
+        }
         
         // Configure app for KVM control
         NSApp.setActivationPolicy(.regular)

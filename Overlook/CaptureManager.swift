@@ -121,21 +121,21 @@ final class CaptureManager: ObservableObject {
     @Published private(set) var activeRecordingRegion: CGRect?
 
     @Published var recordingMode: RecordingMode {
-        didSet { UserDefaults.standard.set(recordingMode.rawValue, forKey: Self.recordingModeDefaultsKey) }
+        didSet { defaults.set(recordingMode.rawValue, forKey: Self.recordingModeDefaultsKey) }
     }
     @Published var videoCodec: RecordingVideoCodec {
-        didSet { UserDefaults.standard.set(videoCodec.rawValue, forKey: Self.videoCodecDefaultsKey) }
+        didSet { defaults.set(videoCodec.rawValue, forKey: Self.videoCodecDefaultsKey) }
     }
     @Published var screenshotsFolder: URL {
-        didSet { UserDefaults.standard.set(screenshotsFolder.path, forKey: Folder.screenshots.defaultsKey) }
+        didSet { defaults.set(screenshotsFolder.path, forKey: Folder.screenshots.defaultsKey) }
     }
     @Published var recordingsFolder: URL {
-        didSet { UserDefaults.standard.set(recordingsFolder.path, forKey: Folder.recordings.defaultsKey) }
+        didSet { defaults.set(recordingsFolder.path, forKey: Folder.recordings.defaultsKey) }
     }
     /// Whether the dashed outline of the set region is drawn over the video. Off hides the outline
     /// only; the region stays in effect.
     @Published var showsRegionOutline: Bool {
-        didSet { UserDefaults.standard.set(showsRegionOutline, forKey: Self.showsRegionOutlineDefaultsKey) }
+        didSet { defaults.set(showsRegionOutline, forKey: Self.showsRegionOutlineDefaultsKey) }
     }
 
     let clock = RecordingClock()
@@ -146,6 +146,7 @@ final class CaptureManager: ObservableObject {
 
     private let webRTCManager: WebRTCManager
     private let kvmDeviceManager: KVMDeviceManager
+    private let defaults: UserDefaults
     private var hub: MediaCaptureHub { webRTCManager.captureHub }
 
     private var recorder: SessionRecorder?
@@ -159,15 +160,16 @@ final class CaptureManager: ObservableObject {
         return formatter
     }()
 
-    init(webRTCManager: WebRTCManager, kvmDeviceManager: KVMDeviceManager) {
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
+    init(webRTCManager: WebRTCManager, kvmDeviceManager: KVMDeviceManager, defaults: UserDefaults = .standard) {
         self.webRTCManager = webRTCManager
         self.kvmDeviceManager = kvmDeviceManager
+        self.defaults = defaults
 
-        let defaults = UserDefaults.standard
         recordingMode = RecordingMode(rawValue: defaults.string(forKey: Self.recordingModeDefaultsKey) ?? "") ?? .videoAndAudio
         videoCodec = RecordingVideoCodec(rawValue: defaults.string(forKey: Self.videoCodecDefaultsKey) ?? "") ?? .h264
-        screenshotsFolder = Self.storedFolder(.screenshots)
-        recordingsFolder = Self.storedFolder(.recordings)
+        screenshotsFolder = Self.storedFolder(.screenshots, in: defaults)
+        recordingsFolder = Self.storedFolder(.recordings, in: defaults)
         showsRegionOutline = defaults.object(forKey: Self.showsRegionOutlineDefaultsKey) as? Bool ?? true
 
         NotificationCenter.default.publisher(for: .overlookSaveScreenshot)
@@ -437,8 +439,8 @@ final class CaptureManager: ObservableObject {
         }
     }
 
-    private static func storedFolder(_ folder: Folder) -> URL {
-        if let path = UserDefaults.standard.string(forKey: folder.defaultsKey), !path.isEmpty {
+    private static func storedFolder(_ folder: Folder, in defaults: UserDefaults) -> URL {
+        if let path = defaults.string(forKey: folder.defaultsKey), !path.isEmpty {
             return URL(fileURLWithPath: path, isDirectory: true)
         }
         return folder.defaultURL
@@ -466,7 +468,8 @@ final class CaptureManager: ObservableObject {
     // MARK: Names
 
     /// `Overlook <device> 2026-09-13 at 14.05.22.png`, made unique with " (2)" etc. if needed.
-    private func makeFileURL(in folder: URL, extension ext: String) -> URL {
+    /// `date` is a parameter so tests can pin the timestamp.
+    func makeFileURL(in folder: URL, extension ext: String, date: Date = Date()) -> URL {
         var stem = "Overlook"
         if let deviceName = kvmDeviceManager.connectedDevice?.name {
             let cleaned = deviceName
@@ -477,7 +480,7 @@ final class CaptureManager: ObservableObject {
                 stem += " \(cleaned)"
             }
         }
-        stem += " " + Self.fileTimestampFormatter.string(from: Date())
+        stem += " " + Self.fileTimestampFormatter.string(from: date)
 
         var candidate = folder.appendingPathComponent(stem).appendingPathExtension(ext)
         var counter = 2

@@ -79,15 +79,19 @@ final class PanelPresentation: ObservableObject {
     static let maxWidth: Double = 1000
     private static let widthKey = "OverlookPanelWidth"
 
-    init() {
-        let stored = UserDefaults.standard.double(forKey: Self.widthKey)
+    private let defaults: UserDefaults
+
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let stored = defaults.double(forKey: Self.widthKey)
         // `double(forKey:)` returns 0 for a key that was never written.
         width = stored > 0 ? Self.clampWidth(stored) : Self.defaultWidth
     }
 
     /// Written once at the end of a drag rather than on every frame of it.
     func persistWidth() {
-        UserDefaults.standard.set(width, forKey: Self.widthKey)
+        defaults.set(width, forKey: Self.widthKey)
     }
 
     func resetWidth(available: Double? = nil) {

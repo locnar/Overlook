@@ -296,8 +296,9 @@ final class ConnectionLogStore: ObservableObject {
 
     /// `nonisolated` because the singleton that owns this store is built by `swift_once` on
     /// whichever thread logs first — routinely a URLSession delegate or one of libwebrtc's
-    /// queues, not the main thread.
-    nonisolated fileprivate init() {}
+    /// queues, not the main thread. Internal rather than fileprivate so tests can build a store
+    /// of their own instead of sharing the app's.
+    nonisolated init() {}
 
     /// True while the log panel is on screen. Problems arriving then are already being read, so
     /// they never raise the dot — which also keeps the panel from writing to a published property

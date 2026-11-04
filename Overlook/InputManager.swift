@@ -103,22 +103,25 @@ class InputManager: ObservableObject {
     /// Multiplier applied to relative mouse movement. With accelerated input it sits on top of the
     /// view-to-remote scale; with unaccelerated input it is the only factor. Persisted on this Mac.
     @Published var relativeSensitivity: Double {
-        didSet { UserDefaults.standard.set(relativeSensitivity, forKey: Self.relativeSensitivityDefaultsKey) }
+        didSet { defaults.set(relativeSensitivity, forKey: Self.relativeSensitivityDefaultsKey) }
     }
 
     /// Send the mouse's raw movement counts (kCGEventUnacceleratedPointerMovementX/Y) instead of
     /// macOS-accelerated deltas, so the target applies its own pointer settings once. Falls back
     /// to accelerated deltas per event when the system does not provide counts.
     @Published var useUnacceleratedRelativeInput: Bool {
-        didSet { UserDefaults.standard.set(useUnacceleratedRelativeInput, forKey: Self.unacceleratedInputDefaultsKey) }
+        didSet { defaults.set(useUnacceleratedRelativeInput, forKey: Self.unacceleratedInputDefaultsKey) }
     }
 
     var isRelativeMouseMode: Bool {
         transportMode == .glkvmWebSocket && !isGLKVMAbsoluteMouseMode
     }
 
-    init() {
-        let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         relativeSensitivity = (defaults.object(forKey: Self.relativeSensitivityDefaultsKey) as? Double) ?? 1.0
         useUnacceleratedRelativeInput = defaults.bool(forKey: Self.unacceleratedInputDefaultsKey)
     }
@@ -677,7 +680,7 @@ class InputManager: ObservableObject {
         "AltRight": (.option, 0x0040, 0x0020),
     ]
 
-    private static func isModifierSideDown(_ keyName: String, flags: NSEvent.ModifierFlags) -> Bool {
+    static func isModifierSideDown(_ keyName: String, flags: NSEvent.ModifierFlags) -> Bool {
         guard let side = modifierSideMasks[keyName] else { return false }
         guard flags.contains(side.family) else { return false }
         let raw = flags.rawValue
@@ -1005,7 +1008,7 @@ class InputManager: ObservableObject {
         }
     }
     
-    private func keyCodeForCharacter(_ character: Character) -> UInt16 {
+    func keyCodeForCharacter(_ character: Character) -> UInt16 {
         // Basic mapping for common characters
         // In a real implementation, you'd want a more comprehensive mapping
         switch character {
@@ -1306,7 +1309,7 @@ class InputManager: ObservableObject {
 
     /// Remote pixels per view point for the letterboxed video, so a captured pointer travels the
     /// same on-screen distance the local cursor would have.
-    private func computeRelativeDeltaScale(viewSize: CGSize, videoSize: CGSize?) -> CGFloat {
+    func computeRelativeDeltaScale(viewSize: CGSize, videoSize: CGSize?) -> CGFloat {
         guard viewSize.width > 0, viewSize.height > 0,
               let videoSize, videoSize.width > 0, videoSize.height > 0 else { return 1.0 }
         let content = videoContentRect(viewSize: viewSize, videoSize: videoSize)
@@ -1431,7 +1434,7 @@ class InputManager: ObservableObject {
         point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1
     }
 
-    private func glkvmAbsolutePoint(fromNormalized point: CGPoint) -> (Int, Int) {
+    func glkvmAbsolutePoint(fromNormalized point: CGPoint) -> (Int, Int) {
         let clampedX = max(0, min(1, point.x))
         let clampedY = max(0, min(1, point.y))
         let maxAxis = 32767.0
@@ -1491,7 +1494,7 @@ class InputManager: ObservableObject {
         }
     }
 
-    private func glkvmKeyForMacKeyCode(_ keyCode: UInt16) -> String? {
+    func glkvmKeyForMacKeyCode(_ keyCode: UInt16) -> String? {
         switch keyCode {
         case 0: return "KeyA"
         case 11: return "KeyB"
