@@ -232,6 +232,29 @@ struct GLKVMAuthLoginResult: Decodable {
     }
 }
 
+/// The URLSession a `GLKVMClient` and its HID sockets share, invalidated when the last of them
+/// lets go of it.
+///
+/// A URLSession made with a delegate keeps itself and that delegate alive until it is invalidated,
+/// so a client that simply went away left both behind: one per connect. Invalidating when the
+/// owner disconnects would be too early, since the hang-up and the release of held keys are still
+/// going out over this session as the session disconnects or quits. Tying it to the last user
+/// covers every way a client is let go of: a request in flight holds its client, and an open
+/// socket's receive loop holds its `WebSocketClient` until the socket is closed.
+final class GLKVMURLSession: Sendable {
+    let session: URLSession
+
+    init(_ session: URLSession) {
+        self.session = session
+    }
+
+    deinit {
+        // Nothing can be using the session by now, so there should be nothing left to finish;
+        // finishing rather than cancelling still lets a socket's closing frame go out.
+        session.finishTasksAndInvalidate()
+    }
+}
+
 final class GLKVMClient {
     enum ClientError: Error {
         case invalidBaseURL
@@ -243,7 +266,10 @@ final class GLKVMClient {
     let baseURL: URL
     var authToken: String?
 
-    private let session: URLSession
+    /// Shared with every socket made from this client, which keeps it alive after the client.
+    /// Not private so tests can check it is released.
+    let urlSession: GLKVMURLSession
+    private var session: URLSession { urlSession.session }
 
     /// `log` is the session's, for the certificate pinning done while this client signs in.
     init(host: String, port: Int = 443, authToken: String? = nil, log: SessionLog? = nil) throws {
@@ -260,7 +286,9 @@ final class GLKVMClient {
         config.timeoutIntervalForResource = 30
 
         // Self-signed device certificates are pinned on first use; see DeviceTrustStore.
-        self.session = URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
+        self.urlSession = GLKVMURLSession(
+            URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
+        )
     }
 
     static func defaultHTTPScheme(for port: Int) -> String {
@@ -1024,7 +1052,7 @@ extension GLKVMClient {
             request.setValue("auth_token=\(authToken)", forHTTPHeaderField: "Cookie")
         }
 
-        return WebSocketClient(session: session, request: request)
+        return WebSocketClient(session: urlSession, request: request)
     }
 
     actor WebSocketClient {
@@ -1037,7 +1065,8 @@ extension GLKVMClient {
         nonisolated let events: AsyncStream<GLKVMWebSocketEvent>
         private let continuation: AsyncStream<GLKVMWebSocketEvent>.Continuation
 
-        private let session: URLSession
+        /// Held so the session outlives the client that made this socket.
+        private let session: GLKVMURLSession
         private let request: URLRequest
 
         private var task: URLSessionWebSocketTask?
@@ -1049,7 +1078,7 @@ extension GLKVMClient {
         private(set) var isConnected = false
         private(set) var isConnecting = false
 
-        init(session: URLSession, request: URLRequest) {
+        init(session: GLKVMURLSession, request: URLRequest) {
             self.session = session
             self.request = request
 
@@ -1062,7 +1091,7 @@ extension GLKVMClient {
 
         func connect() {
             guard task == nil else { return }
-            let ws = session.webSocketTask(with: request)
+            let ws = session.session.webSocketTask(with: request)
             task = ws
             isConnecting = true
             ws.resume()

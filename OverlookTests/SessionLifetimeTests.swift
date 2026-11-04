@@ -102,6 +102,109 @@ struct SessionLifetimeTests {
         return watched
     }
 
+    // MARK: - The device client and its URLSession
+
+    /// Weak references to a device client, the URLSession it signs in with, and that session's
+    /// certificate-pinning delegate. The session keeps itself and its delegate alive until it is
+    /// invalidated, so the delegate going away is what shows the session was invalidated.
+    @MainActor
+    struct WatchedClient {
+        weak var client: GLKVMClient?
+        weak var holder: GLKVMURLSession?
+        weak var urlSession: URLSession?
+        weak var delegate: URLSessionDelegate?
+
+        init(_ client: GLKVMClient) {
+            self.client = client
+            autoreleasepool {
+                holder = client.urlSession
+                urlSession = client.urlSession.session
+                delegate = client.urlSession.session.delegate
+            }
+        }
+
+        var stillAlive: [String] {
+            [
+                client == nil ? nil : "client",
+                holder == nil ? nil : "holder",
+                urlSession == nil ? nil : "urlSession",
+                delegate == nil ? nil : "delegate",
+            ].compactMap { $0 }
+        }
+    }
+
+    /// Invalidation lets go of the delegate on the session's own queue; waits up to two seconds.
+    private func waitForRelease(_ watched: WatchedClient) async {
+        for _ in 0..<200 where !watched.stillAlive.isEmpty {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    /// A connected window's session, made active, with its client watched.
+    private func connectedSession(host: String) async throws -> (ConsoleSession, WatchedClient) {
+        let session = registry.sessionForNewWindow()
+        registry.add(session)
+        registry.sessionDidBecomeKey(session)
+        _ = await session.connect(to: Fixtures.device(name: "Rack \(host)", host: host))
+        let client = try #require(session.connection.glkvmClient)
+        let watched = WatchedClient(client)
+        #expect(watched.delegate != nil)
+        return (session, watched)
+    }
+
+    @Test func aDisconnectedSessionsClientAndItsDelegateAreReleased() async throws {
+        let (session, watched) = try await connectedSession(host: "192.0.2.34")
+
+        session.disconnect()
+        await waitForRelease(watched)
+
+        #expect(watched.stillAlive == [])
+        // The window is still open: the client went with the disconnect, not with the session.
+        #expect(registry.sessions.contains { $0 === session })
+    }
+
+    @Test func aClosedWindowsClientAndItsDelegateAreReleased() async throws {
+        var watched: WatchedClient?
+        do {
+            let (session, client) = try await connectedSession(host: "192.0.2.35")
+            watched = client
+            session.windowWillClose()
+            registry.remove(session)
+        }
+        guard let watched else { return }
+        await waitForRelease(watched)
+        #expect(watched.stillAlive == [])
+    }
+
+    @Test func aClientIsReleasedWhenTheWindowClosesAfterQuitting() async throws {
+        let (session, watched) = try await connectedSession(host: "192.0.2.36")
+
+        await registry.shutDownAll()
+        session.windowWillClose()
+        await waitForRelease(watched)
+
+        #expect(watched.stillAlive == [])
+    }
+
+    @Test func aSocketKeepsItsClientsSessionUntilItIsGone() async throws {
+        var client: GLKVMClient? = try GLKVMClient(host: "192.0.2.37")
+        // Never connected, so nothing goes out on the network.
+        var socket: GLKVMClient.WebSocketClient? = try client?.makeWebSocketClient()
+        let watched = WatchedClient(try #require(client))
+
+        // The client is done, but the HID socket made from it may still be releasing keys.
+        client = nil
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(watched.client == nil)
+        #expect(watched.holder != nil)
+        #expect(watched.delegate != nil)
+
+        _ = socket
+        socket = nil
+        await waitForRelease(watched)
+        #expect(watched.stillAlive == [])
+    }
+
     @Test func aClosedWindowsSessionAndItsPanelsAreReleased() async {
         let watched = await openUseAndClose(host: "192.0.2.31")
         await waitForRelease(watched)
