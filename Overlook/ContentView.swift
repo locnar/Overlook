@@ -93,18 +93,13 @@ struct ContentView: View {
     /// `WindowTitleTelemetryHost`, which observes `StreamTelemetryModel` on its own, so a stats
     /// tick never re-evaluates this view's body.
     private var windowTitlePrefix: String {
-        let device = connection.connectedDevice
+        Self.windowTitlePrefix(device: connection.connectedDevice, isConnected: isConnected)
+    }
 
-        let deviceLabel: String
-        if let device {
-            if device.type == .glinetComet {
-                deviceLabel = "GLKVM"
-            } else {
-                deviceLabel = device.type.displayName
-            }
-        } else {
-            deviceLabel = "Overlook"
-        }
+    /// The device's name, not its type: with several windows open the title is what tells them
+    /// apart (in the Window menu and Mission Control too), and every one of them is a GLKVM.
+    static func windowTitlePrefix(device: KVMDevice?, isConnected: Bool) -> String {
+        let deviceLabel = device?.name ?? "Overlook"
 
         let connectionState: String
         if device == nil || isConnected == false {
@@ -327,6 +322,12 @@ struct ContentView: View {
                         onForgetSelectedDevice: {
                             guard let device = selectedDevice else { return }
                             guard device.id.hasPrefix("saved-") else { return }
+                            // Forgetting a device another window is connected to would pull it out
+                            // from under that session; show where it is open instead.
+                            if let other = session.registry?.session(showing: device.address, excluding: session) {
+                                other.bringWindowForward()
+                                return
+                            }
                             kvmDeviceManager.forgetDevice(device)
                             selectedAddress = nil
                         },
@@ -396,8 +397,6 @@ struct ContentView: View {
             }
         }
         .onChange(of: windowRef) { _, newValue in
-            // Keyboard and mouse go to the target only while this window is key.
-            inputManager.attach(to: newValue)
             isFullscreen = newValue?.styleMask.contains(.fullScreen) ?? false
             showFullscreenControls = false
         }
@@ -602,6 +601,11 @@ struct ContentView: View {
             case .failed(let error):
                 isConnected = false
                 connectionErrorMessage = describeConnectionError(error)
+            case .openElsewhere(let other):
+                // One window per device: this one stays disconnected.
+                other.bringWindowForward()
+            case .cancelled:
+                break
             }
         }
     }

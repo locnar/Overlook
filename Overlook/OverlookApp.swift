@@ -11,11 +11,10 @@ struct OverlookApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .consoleSession(appDelegate.session)
-                .environmentObject(appDelegate.kvmDeviceManager)
-                .environmentObject(ConnectionLog.shared.store)
+        // Every window is a console with a session of its own; File › New Window (⌘N) opens
+        // another one, disconnected.
+        WindowGroup(id: ConsoleWindowRoot.windowGroupID) {
+            ConsoleWindowRoot(registry: appDelegate.sessionRegistry)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact)
@@ -26,10 +25,6 @@ struct OverlookApp: App {
             ToolbarCommands()
 
             PanelCommands()
-
-            // One window: the panel state, `showMainWindow()` and `MenuBarAgent` all assume a
-            // single console, and a second window would fight the first over which panel is open.
-            CommandGroup(replacing: .newItem) { }
 
             CaptureCommands()
         }
@@ -42,12 +37,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The devices every console chooses from.
     let kvmDeviceManager: KVMDeviceManager
-    /// The one console window's session. See `sessions`.
-    let session: ConsoleSession
-
-    /// Every live session. One window means one session; code that has to reach all of them —
-    /// quitting, for one — goes through this rather than `session`.
-    private var sessions: [ConsoleSession] { [session] }
+    /// Every console window's session, and which one is active.
+    let sessionRegistry: SessionRegistry
 
     override init() {
         // How long the pointer rests on a control before its tooltip appears. AppKit reads this
@@ -56,9 +47,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // which is a long wait on a toolbar of bare icons.
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 500])
 
+        // Separate windows, never tabs. Set before the first window exists, so macOS neither
+        // offers a tab bar nor opens a new window as a tab (as it does under "Prefer tabs").
+        NSWindow.allowsAutomaticWindowTabbing = false
+
         let kvmDeviceManager = KVMDeviceManager()
         self.kvmDeviceManager = kvmDeviceManager
-        session = ConsoleSession(catalog: kvmDeviceManager)
+        sessionRegistry = SessionRegistry(catalog: kvmDeviceManager)
         super.init()
     }
 
@@ -76,8 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !Self.isHostingUnitTests {
             menuBarAgent = MenuBarAgent(
-                kvmDeviceManager: kvmDeviceManager,
-                session: session,
+                registry: sessionRegistry,
                 showMainWindow: { [weak self] in
                     self?.showMainWindow()
                 }
@@ -90,10 +84,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Brings the active session's window forward, or opens a console window when none is open.
     private func showMainWindow() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
+        if let active = sessionRegistry.activeSession {
+            active.bringWindowForward()
+            return
+        }
+        if sessionRegistry.openWindow() != nil {
+            return
+        }
         let windows = NSApp.windows
         let candidate = windows.first(where: { $0.canBecomeKey && $0.isVisible }) ?? windows.first(where: { $0.canBecomeKey })
         candidate?.makeKeyAndOrderFront(nil)
@@ -103,22 +105,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// session abandoned without a hangup lingers on the device until its keepalive times out.
     /// So the app defers termination, releases HID state, hangs up, and only then lets AppKit exit.
     /// A running recording is finalized first — an unfinished MP4 has no index and will not play.
-    /// (`ConsoleSession.shutDownForTermination` does those steps for one session.)
+    /// (`ConsoleSession.shutDownForTermination` does those steps for one session, and
+    /// `SessionRegistry.shutDownAll` runs them for every session.)
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateCancel }
         isTerminating = true
         menuBarAgent?.cleanup()
         kvmDeviceManager.cancelScan()
 
-        let sessions = self.sessions
+        let registry = sessionRegistry
         Task { @MainActor [self] in
-            // Side by side rather than one after another, so a session whose HID socket is slow
-            // to close does not use up the grace period the others need to hang up.
-            await withTaskGroup(of: Void.self) { group in
-                for session in sessions {
-                    group.addTask { await session.shutDownForTermination() }
-                }
-            }
+            await registry.shutDownAll()
             finishTermination(sender)
         }
         // Don't let a wedged HID socket hold the process open.

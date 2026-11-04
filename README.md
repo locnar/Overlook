@@ -237,6 +237,12 @@ Once connected:
 - Keyboard is captured and forwarded.
 - Standard UX flows like fullscreen work well for “monitor replacement” usage.
 
+### 4) More than one device
+
+Each window is a console of its own. **File › New Window** (`⌘N`) opens another, disconnected, to connect to a second device. A device is open in one window at a time: connecting to one that is already open brings its window forward. Keyboard and mouse go only to the window in front, and switching windows releases anything held on the device you left. The Capture and View menus act on the window in front; the menu bar acts on the window you used last.
+
+Closing a window disconnects it. If it is recording, Overlook asks first; stopping saves the recording so far.
+
 ---
 
 ## OCR Copy Mode (Remote → Local)
@@ -427,7 +433,13 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
 - `Overlook/GLKVMClient.swift`
   - Device HTTP APIs (streamer params, system config, EDID, HID print, etc.).
 - `Overlook/ConsoleSession.swift`
-  - Everything one console window drives: its connection, stream, input, OCR, capture and panels.
+  - Everything one console window drives: its connection, stream, input, OCR, capture and panels, and the one connect/disconnect path the window and the menu bar share.
+- `Overlook/SessionRegistry.swift`
+  - Every window's session, which one is active (the key window's, or the last one key), one window per device, and quitting.
+- `Overlook/ConsoleWindow.swift`
+  - A console window's root view and its hookup to the session and registry, including the question before closing a window that is recording.
+- `Overlook/InputFocusGate.swift`
+  - Which keyboard and mouse events a session may send: only its own window's, only while that window is key.
 - `Overlook/SessionConnection.swift`
   - A session's connection to one device: authentication, connect and disconnect.
 - `Overlook/KVMDeviceManager.swift`

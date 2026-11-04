@@ -4,9 +4,9 @@ import Combine
 /// Everything one console window drives: its connection, the stream, keyboard and mouse, OCR,
 /// screenshots and recordings, and which side panel is open.
 ///
-/// The app delegate owns the sessions and the device catalog they share (`KVMDeviceManager`).
-/// There is one window and so one session for now; the type exists so that a second window can
-/// have a second session without any of these objects knowing about the other.
+/// Each console window has one (`ConsoleWindowRoot` makes it), and `SessionRegistry` lists them
+/// for the app delegate. They share only the device catalog (`KVMDeviceManager`); none of these
+/// objects knows about another window's.
 @MainActor
 final class ConsoleSession: ObservableObject {
     let connection: SessionConnection
@@ -22,6 +22,17 @@ final class ConsoleSession: ObservableObject {
     /// Asks this session's window to toggle OCR copy mode. OCR mode is that window's view state;
     /// the chord that toggles it, and the menu-bar item, reach it through here.
     let copyModeRequests = PassthroughSubject<Void, Never>()
+
+    /// The registry listing this session, which a connect asks whether another window already
+    /// shows the device.
+    weak var registry: SessionRegistry?
+    /// The window showing this session, once it exists.
+    private(set) weak var window: NSWindow?
+    /// The device a connect is signing in to, from the moment it starts until the device has
+    /// accepted or refused it. After that `connection.connectedDevice` says where the session is.
+    @Published private(set) var connectingAddress: DeviceAddress?
+    /// Set as the window closes. A connect still signing in then is undone when it lands.
+    private(set) var isClosed = false
 
     private let link: ConsoleSessionLink
     private var cancellables = Set<AnyCancellable>()
@@ -85,6 +96,11 @@ final class ConsoleSession: ObservableObject {
         /// The device presented a certificate other than the pinned one.
         case certificateChanged(host: String, port: Int, fingerprint: String)
         case failed(Error)
+        /// Another window already shows this device, or is connecting to it. Nothing was done
+        /// here; the caller brings that window forward.
+        case openElsewhere(ConsoleSession)
+        /// The window closed while the connect was under way, and the connect was undone.
+        case cancelled
     }
 
     /// The one connect path, used by the window and the menu-bar agent alike: sign in, start
@@ -97,15 +113,31 @@ final class ConsoleSession: ObservableObject {
         savePassword: Bool = false,
         onSignedIn: (KVMDevice) -> Void = { _ in }
     ) async -> ConnectOutcome {
+        // One window per device, matched by address since the id changes once a device is saved.
+        if let other = registry?.session(showing: device.address, excluding: self) {
+            return .openElsewhere(other)
+        }
+
+        connectingAddress = device.address
         let connected: KVMDevice
         do {
             connected = try await link.signIn(self, to: device, password: password, savePassword: savePassword)
+            connectingAddress = nil
         } catch KVMError.authenticationFailed {
+            connectingAddress = nil
             return .needsPassword
         } catch KVMError.certificateChanged(let host, let port, let fingerprint) {
+            connectingAddress = nil
             return .certificateChanged(host: host, port: port, fingerprint: fingerprint)
         } catch {
+            connectingAddress = nil
             return .failed(error)
+        }
+
+        // Nobody is left to use a connection that lands after its window has gone.
+        guard !isClosed else {
+            disconnect()
+            return .cancelled
         }
 
         onSignedIn(connected)
@@ -113,6 +145,8 @@ final class ConsoleSession: ObservableObject {
         if connection.glkvmClient != nil {
             await link.startInput(self)
         }
+        // Closing the window while input started has already disconnected; no stream for it.
+        guard !isClosed else { return .cancelled }
 
         do {
             try await link.startStream(self, to: connected)
@@ -128,6 +162,83 @@ final class ConsoleSession: ObservableObject {
         link.hangUp(self)
         connection.disconnectFromDevice()
         link.stopInput(self)
+    }
+
+    /// Whether this session shows, or is signing in to, the device at `address`.
+    func isShowing(_ address: DeviceAddress) -> Bool {
+        connection.connectedDevice?.address == address || connectingAddress == address
+    }
+
+    /// Neither connected nor connecting, so a connect from the menu bar can use this window.
+    var isIdle: Bool {
+        connection.connectedDevice == nil && connectingAddress == nil
+    }
+
+    // MARK: - The window
+
+    /// Tells the session which window shows it. Keyboard and mouse follow that window's key
+    /// status from here on (`InputManager.attach(to:)`).
+    func attach(to window: NSWindow?) {
+        self.window = window
+        inputManager.attach(to: window)
+    }
+
+    /// Brings this session's window to the front, and the app with it.
+    func bringWindowForward() {
+        guard let window else { return }
+        NSApp.activate()
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// What closing the window involves, worked out when the operator asks to close it.
+    enum CloseDecision: Equatable {
+        /// Nothing connected: the window just closes.
+        case close
+        /// Connected, or connecting: the session disconnects as the window closes.
+        case disconnectAndClose
+        /// A recording is running. Closing would end it, so the operator is asked first.
+        case confirmStopRecording(deviceName: String)
+    }
+
+    static func closeDecision(device: KVMDevice?, isConnecting: Bool, isRecording: Bool) -> CloseDecision {
+        if isRecording {
+            return .confirmStopRecording(deviceName: device?.name ?? "Overlook")
+        }
+        if device != nil || isConnecting {
+            return .disconnectAndClose
+        }
+        return .close
+    }
+
+    var closeDecision: CloseDecision {
+        Self.closeDecision(
+            device: connection.connectedDevice,
+            isConnecting: connectingAddress != nil,
+            isRecording: captureManager.isRecording
+        )
+    }
+
+    /// The operator confirmed closing a window that is recording. The recording is finished first
+    /// — an MP4 that is never finalized has no index and will not play — and then the session
+    /// disconnects; the window closes after that.
+    func stopRecordingAndDisconnect() async {
+        await captureManager.finishRecordingForTermination()
+        disconnect()
+    }
+
+    /// The window is closing; it has already agreed to. A connected session disconnects, which is
+    /// the same release of held keys and buttons and the same hang-up as quitting, and input stops
+    /// following the window. Anything still recording at this point (a close that skipped the
+    /// question) is finished by the disconnect.
+    func windowWillClose() {
+        isClosed = true
+        if connection.connectedDevice != nil || connectingAddress != nil {
+            disconnect()
+        }
+        attach(to: nil)
     }
 
     /// The quit path for this session. A running recording is finalized first — an unfinished MP4

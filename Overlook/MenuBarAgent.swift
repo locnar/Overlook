@@ -11,26 +11,31 @@ class MenuBarAgent: NSObject, ObservableObject {
     private var globalKeyMonitor: Any?
 
     private let kvmDeviceManager: KVMDeviceManager
-    /// The console the status menu acts on — the only one, while there is one window.
-    private let session: ConsoleSession
+    private let registry: SessionRegistry
     private let showMainWindow: () -> Void
 
-    private var connection: SessionConnection { session.connection }
-    private var captureManager: CaptureManager { session.captureManager }
+    /// The console the status menu acts on: the active one (the key window's, or the last to have
+    /// been key). Nil while no console window is open.
+    private var session: ConsoleSession? { registry.activeSession }
+
+    /// What the popover shows while no console window is open: a connection that is never
+    /// connected, so every device row offers Connect.
+    private lazy var idleConnection = SessionConnection(catalog: kvmDeviceManager)
     
     @Published var isConnected = false
     @Published var currentDevice: KVMDevice?
     @Published var availableDevices: [KVMDevice] = []
     
     private var cancellables = Set<AnyCancellable>()
+    /// The subscriptions to the active session, replaced when another session becomes active.
+    private var sessionCancellables = Set<AnyCancellable>()
 
     init(
-        kvmDeviceManager: KVMDeviceManager,
-        session: ConsoleSession,
+        registry: SessionRegistry,
         showMainWindow: @escaping () -> Void
     ) {
-        self.kvmDeviceManager = kvmDeviceManager
-        self.session = session
+        self.kvmDeviceManager = registry.catalog
+        self.registry = registry
         self.showMainWindow = showMainWindow
         super.init()
     }
@@ -44,9 +49,6 @@ class MenuBarAgent: NSObject, ObservableObject {
 
     private func bindManagers() {
         availableDevices = kvmDeviceManager.availableDevices
-        currentDevice = connection.connectedDevice
-        isConnected = (connection.connectedDevice != nil)
-        updateStatusIcon()
         updateDeviceMenu()
 
         kvmDeviceManager.$availableDevices
@@ -57,7 +59,31 @@ class MenuBarAgent: NSObject, ObservableObject {
             }
             .store(in: &cancellables)
 
-        connection.$connectedDevice
+        // The status line, the icon and the popover follow whichever session is active. `@Published`
+        // fires in `willSet`, so the new session is taken from the emitted value.
+        registry.$activeSession
+            .sink { [weak self] session in
+                self?.bind(to: session)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func bind(to session: ConsoleSession?) {
+        sessionCancellables.removeAll()
+        if let popover {
+            popover.contentViewController = makePopoverContent(connection: session?.connection ?? idleConnection)
+        }
+
+        guard let session else {
+            currentDevice = nil
+            isConnected = false
+            updateStatusIcon()
+            updateStatusMenuItem(device: nil)
+            updateDeviceMenu()
+            return
+        }
+
+        session.connection.$connectedDevice
             .sink { [weak self] device in
                 guard let self else { return }
                 self.currentDevice = device
@@ -68,7 +94,7 @@ class MenuBarAgent: NSObject, ObservableObject {
                 self.updateStatusMenuItem(device: device)
                 self.updateDeviceMenu()
             }
-            .store(in: &cancellables)
+            .store(in: &sessionCancellables)
     }
     
     private func createStatusItem() {
@@ -254,7 +280,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func updateStatusMenuItem() {
-        updateStatusMenuItem(device: connection.connectedDevice)
+        updateStatusMenuItem(device: session?.connection.connectedDevice)
     }
 
     private func updateStatusMenuItem(device: KVMDevice?) {
@@ -271,11 +297,11 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     @objc private func saveScreenshot() {
-        session.perform(.saveScreenshot)
+        session?.perform(.saveScreenshot)
     }
 
     @objc private func toggleRecording() {
-        session.perform(.toggleRecording)
+        session?.perform(.toggleRecording)
     }
 
     private func promptForPassword(deviceName: String) -> (password: String, save: Bool)? {
@@ -330,29 +356,35 @@ class MenuBarAgent: NSObject, ObservableObject {
             popover = NSPopover()
             popover?.contentSize = NSSize(width: 300, height: 400)
             popover?.behavior = .transient
-            popover?.contentViewController = NSHostingController(
-                rootView: MenuBarView(
-                    kvmDeviceManager: kvmDeviceManager,
-                    connection: connection,
-                    onShowWindow: { [weak self] in self?.showMainWindow() },
-                    onScan: { [weak self] in self?.kvmDeviceManager.scanForDevices() },
-                    onConnect: { [weak self] device in
-                        guard let self else { return }
-                        Task { await self.connectSession(to: device) }
-                    },
-                    onDisconnect: { [weak self] in
-                        guard let self else { return }
-                        self.disconnectSession()
-                    },
-                    onForget: { [weak self] device in
-                        guard let self else { return }
-                        self.kvmDeviceManager.forgetDevice(device)
-                    }
-                )
-            )
+            popover?.contentViewController = makePopoverContent(connection: session?.connection ?? idleConnection)
         }
         
         popover?.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY)
+    }
+
+    /// The popover's device list, showing `connection` — the active session's — as connected.
+    private func makePopoverContent(connection: SessionConnection) -> NSViewController {
+        NSHostingController(
+            rootView: MenuBarView(
+                kvmDeviceManager: kvmDeviceManager,
+                connection: connection,
+                onShowWindow: { [weak self] in self?.showMainWindow() },
+                onScan: { [weak self] in self?.kvmDeviceManager.scanForDevices() },
+                onConnect: { [weak self] device in
+                    self?.connectFromMenu(to: device)
+                },
+                onDisconnect: { [weak self] in
+                    guard let self else { return }
+                    self.disconnectSession()
+                },
+                onForget: { [weak self] device in
+                    self?.forget(device)
+                },
+                onRemoveManual: { [weak self] device in
+                    self?.remove(device)
+                }
+            )
+        )
     }
     
     private func closePopover() {
@@ -361,15 +393,44 @@ class MenuBarAgent: NSObject, ObservableObject {
     
     @objc private func connectToDevice(_ sender: NSMenuItem) {
         guard let device = sender.representedObject as? KVMDevice else { return }
+        connectFromMenu(to: device)
+    }
 
-        Task { await connectSession(to: device) }
+    /// A device open in a window already brings that window forward. Otherwise the connect goes to
+    /// the active session if it is free, or to a new window if it is not (or none is open).
+    private func connectFromMenu(to device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
+        let target: ConsoleSession
+        switch registry.connectTarget(for: device.address) {
+        case .bringForward(let open):
+            open.bringWindowForward()
+            closePopover()
+            return
+        case .connect(let active):
+            target = active
+        case .newWindow:
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate()
+            guard let opened = registry.openWindow() else {
+                showError(title: "Failed to connect", message: "Overlook could not open a window for \(device.name).")
+                return
+            }
+            target = opened
+        }
+        Task { await connectSession(target, to: device, password: password, savePassword: savePassword) }
     }
 
     /// The steps are the session's (`ConsoleSession.connect`), shared with the window; what the
     /// agent adds is modal alerts for the outcomes. A connect without a password that the device
     /// refuses prompts once; one with a password reports the refusal instead.
-    private func connectSession(to device: KVMDevice, password: String? = nil, savePassword: Bool = false) async {
-        showMainWindow()
+    private func connectSession(
+        _ session: ConsoleSession,
+        to device: KVMDevice,
+        password: String? = nil,
+        savePassword: Bool = false
+    ) async {
+        // A window the agent has just asked for has not appeared yet; it comes forward on its own.
+        NSApp.activate()
+        session.bringWindowForward()
 
         let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { _ in
             closePopover()
@@ -387,12 +448,18 @@ class MenuBarAgent: NSObject, ObservableObject {
                 return
             }
             guard let entry = promptForPassword(deviceName: device.name) else { return }
-            await connectSession(to: device, password: entry.password, savePassword: entry.save)
+            await connectSession(session, to: device, password: entry.password, savePassword: entry.save)
         case .certificateChanged(let host, let port, let fingerprint):
             let error = KVMError.certificateChanged(host: host, port: port, fingerprint: fingerprint)
             showError(title: "Failed to connect", message: String(describing: error))
         case .failed(let error):
             showError(title: "Failed to connect", message: String(describing: error))
+        case .openElsewhere(let other):
+            // Another window got there between choosing the target and connecting.
+            other.bringWindowForward()
+            closePopover()
+        case .cancelled:
+            break
         }
     }
 
@@ -401,7 +468,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func disconnectSession() {
-        session.disconnect()
+        session?.disconnect()
         closePopover()
     }
     
@@ -463,9 +530,7 @@ class MenuBarAgent: NSObject, ObservableObject {
         let password = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let savePassword = saveCheckbox.state == .on
 
-        Task {
-            await connectSession(to: device, password: password.isEmpty ? nil : password, savePassword: savePassword)
-        }
+        connectFromMenu(to: device, password: password.isEmpty ? nil : password, savePassword: savePassword)
     }
     
     @objc private func scanForDevices() {
@@ -473,7 +538,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
     
     @objc private func toggleOCR() {
-        session.perform(.toggleCopyMode)
+        session?.perform(.toggleCopyMode)
         
         // Update menu item
         if let ocrItem = menu?.items.first(where: { $0.tag == 200 }) {
@@ -525,16 +590,26 @@ class MenuBarAgent: NSObject, ObservableObject {
 
     @objc private func forgetDevice(_ sender: NSMenuItem) {
         guard let device = sender.representedObject as? KVMDevice else { return }
-        if connection.connectedDevice?.host == device.host, connection.connectedDevice?.port == device.port {
+        forget(device)
+    }
+
+    @objc private func removeManualDevice(_ sender: NSMenuItem) {
+        guard let device = sender.representedObject as? KVMDevice else { return }
+        remove(device)
+    }
+
+    /// Refused while any window shows the device, not only the active one: the catalog would
+    /// pull it out from under that window's session.
+    private func forget(_ device: KVMDevice) {
+        if registry.session(showing: device.address) != nil {
             showError(title: "Cannot forget", message: "Disconnect before forgetting this device.")
             return
         }
         kvmDeviceManager.forgetDevice(device)
     }
 
-    @objc private func removeManualDevice(_ sender: NSMenuItem) {
-        guard let device = sender.representedObject as? KVMDevice else { return }
-        if connection.connectedDevice?.host == device.host, connection.connectedDevice?.port == device.port {
+    private func remove(_ device: KVMDevice) {
+        if registry.session(showing: device.address) != nil {
             showError(title: "Cannot remove", message: "Disconnect before removing this device.")
             return
         }
@@ -631,12 +706,12 @@ class MenuBarAgent: NSObject, ObservableObject {
 // (a Combine sink sees `@Published` values one step early, in `willSet`).
 extension MenuBarAgent: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        let connected = connection.connectedDevice != nil
+        let connected = session?.connection.connectedDevice != nil
         switch menuItem.tag {
         case 101, 400:   // Disconnect, Save Screenshot
             return connected
         case 401:        // Start/Stop Recording
-            let recording = captureManager.isRecording
+            let recording = session?.captureManager.isRecording ?? false
             menuItem.title = recording ? "Stop Recording" : "Start Recording"
             return connected || recording
         default:
@@ -655,6 +730,7 @@ struct MenuBarView: View {
     let onConnect: (KVMDevice) -> Void
     let onDisconnect: () -> Void
     let onForget: (KVMDevice) -> Void
+    let onRemoveManual: (KVMDevice) -> Void
     
     var body: some View {
         VStack(spacing: 0) {
@@ -697,7 +773,7 @@ struct MenuBarView: View {
                                     onForget(device)
                                 },
                                 onRemoveManual: {
-                                    kvmDeviceManager.removeDevice(device)
+                                    onRemoveManual(device)
                                 }
                             )
                         }
