@@ -272,7 +272,15 @@ final class GLKVMClient {
     private var session: URLSession { urlSession.session }
 
     /// `log` is the session's, for the certificate pinning done while this client signs in.
-    init(host: String, port: Int = 443, authToken: String? = nil, log: SessionLog? = nil) throws {
+    /// `sessionConfiguration` is the starting point for this client's URLSession. Tests pass one
+    /// whose protocol classes answer in place of a device, so no request reaches the network.
+    init(
+        host: String,
+        port: Int = 443,
+        authToken: String? = nil,
+        log: SessionLog? = nil,
+        sessionConfiguration: URLSessionConfiguration = .default
+    ) throws {
         let scheme = Self.defaultHTTPScheme(for: port)
         guard let url = URL(string: "\(scheme)://\(host):\(port)") else {
             throw ClientError.invalidBaseURL
@@ -281,7 +289,7 @@ final class GLKVMClient {
         self.baseURL = url
         self.authToken = authToken
 
-        let config = URLSessionConfiguration.default
+        let config = (sessionConfiguration.copy() as? URLSessionConfiguration) ?? .default
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
 

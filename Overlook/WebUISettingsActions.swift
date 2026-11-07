@@ -268,7 +268,9 @@ extension WebUISettingsActions {
         guard model.isProgrammaticStreamerDraftUpdate == false else { return }
         model.applyStreamerTask?.cancel()
         model.applyStreamerTask = Task {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            // Debounced like `scheduleApply`, for the same reason.
+            guard await Self.debounce(nanoseconds: 250_000_000) else { return }
+            model.applyStreamerTask = nil
             await applyStreamerParams()
         }
     }
@@ -451,9 +453,29 @@ extension WebUISettingsActions {
     func scheduleApply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) {
         model.applyTask?.cancel()
         model.applyTask = Task {
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard await Self.debounce(nanoseconds: 150_000_000) else { return }
+            // From here the write is under way. Let go of the handle so a change made while it is
+            // on its way only cancels its own wait: cancelling this task now would cancel the
+            // request half-sent.
+            model.applyTask = nil
             await apply(newConfig, switchesMouseMode: switchesMouseMode)
         }
+    }
+
+    /// Waits out a debounce window. Returns false when a newer change cancelled the wait, in which
+    /// case the caller writes nothing and the newer change writes instead.
+    ///
+    /// This used to be `try? await Task.sleep`, which swallowed the cancellation: a cancelled
+    /// sleep returns at once, so every superseded change went straight on to write, one write per
+    /// stepper click or slider tick. The second check covers a cancel that comes after the sleep
+    /// has finished but before this task runs again on the main actor.
+    static func debounce(nanoseconds: UInt64) async -> Bool {
+        do {
+            try await Task.sleep(nanoseconds: nanoseconds)
+        } catch {
+            return false
+        }
+        return !Task.isCancelled
     }
 
     func apply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) async {
