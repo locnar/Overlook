@@ -113,6 +113,10 @@ struct SessionLifetimeTests {
         weak var holder: GLKVMURLSession?
         weak var urlSession: URLSession?
         weak var delegate: URLSessionDelegate?
+        // The long-timeout session paste requests use, and its delegate.
+        weak var printHolder: GLKVMURLSession?
+        weak var printSession: URLSession?
+        weak var printDelegate: URLSessionDelegate?
 
         init(_ client: GLKVMClient) {
             self.client = client
@@ -120,6 +124,9 @@ struct SessionLifetimeTests {
                 holder = client.urlSession
                 urlSession = client.urlSession.session
                 delegate = client.urlSession.session.delegate
+                printHolder = client.printURLSession
+                printSession = client.printURLSession.session
+                printDelegate = client.printURLSession.session.delegate
             }
         }
 
@@ -129,6 +136,9 @@ struct SessionLifetimeTests {
                 holder == nil ? nil : "holder",
                 urlSession == nil ? nil : "urlSession",
                 delegate == nil ? nil : "delegate",
+                printHolder == nil ? nil : "printHolder",
+                printSession == nil ? nil : "printSession",
+                printDelegate == nil ? nil : "printDelegate",
             ].compactMap { $0 }
         }
     }
@@ -149,6 +159,7 @@ struct SessionLifetimeTests {
         let client = try #require(session.connection.glkvmClient)
         let watched = WatchedClient(client)
         #expect(watched.delegate != nil)
+        #expect(watched.printDelegate != nil)
         return (session, watched)
     }
 
@@ -198,6 +209,12 @@ struct SessionLifetimeTests {
         #expect(watched.client == nil)
         #expect(watched.holder != nil)
         #expect(watched.delegate != nil)
+        // No socket uses the paste session, so it goes with the client.
+        for _ in 0..<200 where watched.printDelegate != nil {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(watched.printHolder == nil)
+        #expect(watched.printDelegate == nil)
 
         _ = socket
         socket = nil

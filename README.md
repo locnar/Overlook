@@ -302,7 +302,8 @@ This is ideal for:
 
 ### Tips
 
-- If you paste a very large block of text, the remote side may take time to process.
+- The device types the text at its own pace (a few milliseconds per key), so a long paste takes a while to arrive. Overlook sends it in parts of up to 512 characters, one after another, and a second `⌘V` waits for the first to finish. Disconnecting stops a paste that is still being typed.
+- Characters the target's keymap has no key for (emoji, for example) are skipped by the device.
 - For best reliability, paste smaller chunks when interacting with BIOS/UEFI or slow boot environments.
 
 ---
@@ -432,8 +433,10 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - Optional audio/mic track.
 - `Overlook/InputManager.swift`
   - Keyboard/mouse capture.
-  - Local→remote paste (`⌘V`).
+  - Local→remote paste (`⌘V`), queued through `RemotePaste.swift`.
   - HID transport via WebSocket to the device.
+- `Overlook/RemotePaste.swift`
+  - Splits a paste into parts the device's `hid/print` types one request at a time, and runs pastes one after another.
 - `Overlook/OCRManager.swift` + `Overlook/OCRViews.swift`
   - Apple Vision OCR pipeline.
   - Text region overlay + “Recognized Text” sheet.

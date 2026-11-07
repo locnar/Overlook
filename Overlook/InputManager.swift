@@ -49,6 +49,10 @@ class InputManager: ObservableObject {
     // HID transport: every send is chained on `hidCommandTail` so key and mouse events reach the
     // device in the order they happened; a failed send schedules a socket reconnect.
     private var hidCommandTail: Task<Void, Never>?
+    /// ⌘V pastes, typed one at a time through the device's `hid/print`.
+    private let remotePaste = RemotePasteQueue()
+    /// True when no paste is queued or being typed.
+    var isPasteIdle: Bool { remotePaste.isIdle }
     private var hidReconnectTask: Task<Void, Never>?
     private var acceptsHIDCommands = true
     /// Commands queued on `hidCommandTail` and not yet sent; sampled into telemetry with each pong.
@@ -198,6 +202,9 @@ class InputManager: ObservableObject {
         // same client must not reset what the first set up — above all the mouse mode the device
         // has since reported over the socket.
         if let client, client === glkvmClient { return }
+        // A paste belongs to the device it was started on. It must not go on typing after a
+        // disconnect, or into a target this window no longer shows.
+        remotePaste.cancelAll()
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
         unlockPointer()
@@ -470,6 +477,7 @@ class InputManager: ObservableObject {
     /// every key and button still held on the remote, then closes the HID socket. Nothing is
     /// accepted for sending afterwards.
     func shutdown() async {
+        remotePaste.cancelAll()
         stopFullInputCapture()  // unlocks the pointer, which queues releases for held buttons
         stopMouseMoveSender()
         mouseModeRefreshTask?.cancel()
@@ -961,19 +969,19 @@ class InputManager: ObservableObject {
     }
 
     private func pasteClipboardToRemote() {
-        guard let client = glkvmClient else { return }
+        guard glkvmClient != nil else { return }
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        pasteToRemote(text)
+    }
 
-        Task {
-            do {
-                let keymap: String? = try? await client.getSystemConfig().keymap
-                try await client.hidPrint(text: trimmed, keymap: keymap)
-            } catch {
-                self.log.warning(.hid, "Paste to remote failed: \(error.localizedDescription)")
-            }
-        }
+    /// Types `text` into the target, after any paste still under way. Internal so tests can paste
+    /// without going through the pasteboard.
+    @discardableResult
+    func pasteToRemote(_ text: String) -> Task<Void, Never>? {
+        guard let client = glkvmClient else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return remotePaste.enqueue(trimmed, to: client, log: log)
     }
     
     func sendClick(at location: CGPoint, in geometry: GeometryProxy, videoSize: CGSize? = nil) {

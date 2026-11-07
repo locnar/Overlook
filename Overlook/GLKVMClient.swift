@@ -317,6 +317,14 @@ final class GLKVMClient {
     let urlSession: GLKVMURLSession
     private var session: URLSession { urlSession.session }
 
+    /// The URLSession for `hid/print` alone, with long timeouts. The device answers a print only
+    /// once it has typed the text, and it stops typing when the request's connection closes, so
+    /// the ordinary 15 s / 30 s limits cut a long paste off partway. Kept apart so every other
+    /// request still gives up at the ordinary limits. Held and invalidated the same way as
+    /// `urlSession`, and released with the client (no socket uses it). Not private so tests can
+    /// check that.
+    let printURLSession: GLKVMURLSession
+
     /// The session's log: certificate pinning while this client signs in, and settings writes.
     private let log: SessionLog?
     /// Settings writes take turns; see `updateSystemConfig`.
@@ -349,7 +357,21 @@ final class GLKVMClient {
         self.urlSession = GLKVMURLSession(
             URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
         )
+
+        // A print request sends nothing back until the text is typed, so the request timeout,
+        // which counts time without data, bounds how long one part of a paste may take to type.
+        // RemotePasteQueue keeps each part to seconds of typing, not minutes; these leave a wide
+        // margin.
+        let printConfig = (config.copy() as? URLSessionConfiguration) ?? config
+        printConfig.timeoutIntervalForRequest = Self.printRequestTimeout
+        printConfig.timeoutIntervalForResource = Self.printResourceTimeout
+        self.printURLSession = GLKVMURLSession(
+            URLSession(configuration: printConfig, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
+        )
     }
+
+    static let printRequestTimeout: TimeInterval = 120
+    static let printResourceTimeout: TimeInterval = 300
 
     static func defaultHTTPScheme(for port: Int) -> String {
         switch port {
@@ -392,7 +414,8 @@ final class GLKVMClient {
         query: [URLQueryItem] = [],
         body: Data? = nil,
         contentType: String? = nil,
-        responseType: Response.Type
+        responseType: Response.Type,
+        on sessionOverride: URLSession? = nil
     ) async throws -> Response {
         let url = try makeURL(path: path, queryItems: query)
 
@@ -408,7 +431,7 @@ final class GLKVMClient {
             request.setValue("auth_token=\(authToken)", forHTTPHeaderField: "Cookie")
         }
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await (sessionOverride ?? session).data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ClientError.decodingFailed
         }
@@ -789,14 +812,15 @@ extension GLKVMClient {
         return response.result
     }
 
-    func hidPrint(text: String, keymap: String? = nil, limit: Int? = nil, slow: Bool? = nil) async throws {
+    /// Types `text` on the target. kvmd cuts the text to `limit` code points, 1024 when no limit
+    /// is given; 0 means no limit, so that is the default here. The request returns once the text
+    /// has been typed, and goes over `printURLSession` so a long one is not timed out.
+    func hidPrint(text: String, keymap: String? = nil, limit: Int = 0, slow: Bool? = nil) async throws {
         var query: [URLQueryItem] = []
         if let keymap {
             query.append(URLQueryItem(name: "keymap", value: keymap))
         }
-        if let limit {
-            query.append(URLQueryItem(name: "limit", value: String(limit)))
-        }
+        query.append(URLQueryItem(name: "limit", value: String(limit)))
         if let slow {
             query.append(URLQueryItem(name: "slow", value: slow ? "true" : "false"))
         }
@@ -807,7 +831,8 @@ extension GLKVMClient {
             query: query,
             body: body,
             contentType: "text/plain; charset=utf-8",
-            responseType: GLKVMResponse<GLKVMEmptyResult>.self
+            responseType: GLKVMResponse<GLKVMEmptyResult>.self,
+            on: printURLSession.session
         )
     }
 
