@@ -74,6 +74,7 @@
 		01000112 /* SessionLifetimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000112 /* SessionLifetimeTests.swift */; };
 		01000113 /* PeerConnectionRolesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000113 /* PeerConnectionRolesTests.swift */; };
 		01000114 /* SettingsDebounceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000114 /* SettingsDebounceTests.swift */; };
+		01000115 /* SystemConfigWriteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000115 /* SystemConfigWriteTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -161,6 +162,7 @@
 		02000112 /* SessionLifetimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLifetimeTests.swift; sourceTree = "<group>"; };
 		02000113 /* PeerConnectionRolesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerConnectionRolesTests.swift; sourceTree = "<group>"; };
 		02000114 /* SettingsDebounceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsDebounceTests.swift; sourceTree = "<group>"; };
+		02000115 /* SystemConfigWriteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemConfigWriteTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -268,6 +270,7 @@
 				02000112 /* SessionLifetimeTests.swift */,
 				02000113 /* PeerConnectionRolesTests.swift */,
 				02000114 /* SettingsDebounceTests.swift */,
+				02000115 /* SystemConfigWriteTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
 				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
@@ -468,6 +471,7 @@
 				01000112 /* SessionLifetimeTests.swift in Sources */,
 				01000113 /* PeerConnectionRolesTests.swift in Sources */,
 				01000114 /* SettingsDebounceTests.swift in Sources */,
+				01000115 /* SystemConfigWriteTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
 				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,

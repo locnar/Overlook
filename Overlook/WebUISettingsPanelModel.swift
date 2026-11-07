@@ -81,6 +81,12 @@ final class WebUISettingsPanelModel: ObservableObject {
     var applyTask: Task<Void, Never>?
     var applyStreamerTask: Task<Void, Never>?
 
+    /// Config keys changed since the last write, with their new values; the next write sends
+    /// these and nothing else.
+    var pendingConfigChanges: GLKVMJSONObject = [:]
+    /// Config writes started and not yet finished. `isApplying` stays on until the last is done.
+    var configWritesInFlight = 0
+
     // Streamer drafts.
     @Published var isProgrammaticStreamerDraftUpdate: Bool = false
     @Published var streamerDesiredFps: Int = 30

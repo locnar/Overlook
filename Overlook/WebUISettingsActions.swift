@@ -442,15 +442,21 @@ extension WebUISettingsActions {
 extension WebUISettingsActions {
     // MARK: - Config plumbing
 
+    /// Changes the shown config and queues the keys that changed for the next write. Only those
+    /// keys are written, over the config as the device holds it (`updateSystemConfig`).
     func updateConfig(_ mutate: (inout GLKVMSystemConfig) -> Void) {
         guard var next = model.config else { return }
         let previous = next
         mutate(&next)
         model.config = next
-        scheduleApply(next, switchesMouseMode: next.isAbsoluteMouse != previous.isAbsoluteMouse)
+        let changes = next.changes(from: previous)
+        guard !changes.isEmpty else { return }
+        // Changes made within one debounce window go out together in one write.
+        model.pendingConfigChanges.merge(changes) { _, newer in newer }
+        scheduleApply()
     }
 
-    func scheduleApply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) {
+    func scheduleApply() {
         model.applyTask?.cancel()
         model.applyTask = Task {
             guard await Self.debounce(nanoseconds: 150_000_000) else { return }
@@ -458,7 +464,7 @@ extension WebUISettingsActions {
             // on its way only cancels its own wait: cancelling this task now would cancel the
             // request half-sent.
             model.applyTask = nil
-            await apply(newConfig, switchesMouseMode: switchesMouseMode)
+            await applyPendingConfigChanges()
         }
     }
 
@@ -478,27 +484,38 @@ extension WebUISettingsActions {
         return !Task.isCancelled
     }
 
-    func apply(_ newConfig: GLKVMSystemConfig, switchesMouseMode: Bool = false) async {
+    /// Writes the changes queued since the last write.
+    func applyPendingConfigChanges() async {
+        let changes = model.pendingConfigChanges
+        model.pendingConfigChanges = [:]
+        guard !changes.isEmpty else { return }
+        await apply(changes)
+    }
+
+    func apply(_ changes: GLKVMJSONObject) async {
         guard let client = connection.glkvmClient else { return }
-        await MainActor.run { model.isApplying = true }
+        model.configWritesInFlight += 1
+        model.isApplying = true
         do {
-            let updated = try await client.setSystemConfig(newConfig)
+            let updated = try await client.updateSystemConfig(changes)
             // The config only records the WebUI's preference; the device's HID gadget is switched
             // through hid/set_params, and it reports the result in a `hid` event. Without this the
             // toggle changed which reports Overlook sent, not which ones the device accepted.
-            if switchesMouseMode {
+            if changes[GLKVMSystemConfig.CodingKeys.isAbsoluteMouse.rawValue] != nil {
                 try await client.setHIDParams(["mouse_output": updated.isAbsoluteMouse ? "usb" : "usb_rel"])
             }
-            await MainActor.run {
+            model.configWritesInFlight -= 1
+            model.isApplying = model.configWritesInFlight > 0
+            // While another write is on its way, or a change waits for one, this write's result
+            // is not the latest; showing it would undo that change on screen until it lands.
+            if model.configWritesInFlight == 0, model.pendingConfigChanges.isEmpty {
                 model.config = updated
-                inputManager.setGLKVMAbsoluteMouseMode(updated.isAbsoluteMouse)
-                model.isApplying = false
             }
+            inputManager.setGLKVMAbsoluteMouseMode(updated.isAbsoluteMouse)
         } catch {
-            await MainActor.run {
-                model.isApplying = false
-                recordError("Failed to apply settings: \(error)")
-            }
+            model.configWritesInFlight -= 1
+            model.isApplying = model.configWritesInFlight > 0
+            recordError("Failed to apply settings: \(error)")
         }
     }
 

@@ -23,6 +23,12 @@ struct GLKVMSystemGetConfigResult: Decodable {
     let config: GLKVMSystemConfig
 }
 
+/// The same answer, with the config kept as the JSON the device holds: every key, not only the
+/// ones `GLKVMSystemConfig` models.
+struct GLKVMSystemGetConfigObjectResult: Decodable {
+    let config: GLKVMJSONObject
+}
+
 struct GLKVMSystemConfigShortcut: Codable, Hashable {
     let keys: [String]
     let label: String
@@ -89,6 +95,22 @@ struct GLKVMSystemConfig: Codable, Hashable {
         isAbsoluteMouse = (try? container.decode(Bool.self, forKey: .isAbsoluteMouse)) ?? true
         fingerbotStrength = (try? container.decode(Int.self, forKey: .fingerbotStrength)) ?? 0
         videoProcessing = (try? container.decode(String.self, forKey: .videoProcessing)) ?? ""
+    }
+}
+
+extension GLKVMSystemConfig {
+    /// The modeled keys, as the JSON they are written as.
+    func jsonObject() throws -> GLKVMJSONObject {
+        try JSONDecoder().decode(GLKVMJSONObject.self, from: JSONEncoder().encode(self))
+    }
+
+    /// The keys whose value differs from `previous`, with their new values. This is what a
+    /// settings change asks the device to write. A key the decoder filled with a default because
+    /// the device did not have it is not written unless it was changed, so a default never
+    /// replaces a value the device holds in a form this model does not read.
+    func changes(from previous: GLKVMSystemConfig) -> GLKVMJSONObject {
+        guard let next = try? jsonObject(), let before = try? previous.jsonObject() else { return [:] }
+        return next.filter { before[$0.key] != $0.value }
     }
 }
 
@@ -255,6 +277,30 @@ final class GLKVMURLSession: Sendable {
     }
 }
 
+/// Lets one caller through at a time, in the order they arrived. It is a lock for async work that
+/// awaits in the middle, such as a read followed by a write that depends on it.
+actor AsyncSerialGate {
+    private var isHeld = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func enter() async {
+        guard isHeld else {
+            isHeld = true
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Hands the gate to the next caller in line, or opens it when nobody is waiting.
+    func leave() {
+        if waiting.isEmpty {
+            isHeld = false
+        } else {
+            waiting.removeFirst().resume()
+        }
+    }
+}
+
 final class GLKVMClient {
     enum ClientError: Error {
         case invalidBaseURL
@@ -271,7 +317,12 @@ final class GLKVMClient {
     let urlSession: GLKVMURLSession
     private var session: URLSession { urlSession.session }
 
-    /// `log` is the session's, for the certificate pinning done while this client signs in.
+    /// The session's log: certificate pinning while this client signs in, and settings writes.
+    private let log: SessionLog?
+    /// Settings writes take turns; see `updateSystemConfig`.
+    private let configWriteGate = AsyncSerialGate()
+
+    /// `log` is the session's, for certificate pinning and for settings writes.
     /// `sessionConfiguration` is the starting point for this client's URLSession. Tests pass one
     /// whose protocol classes answer in place of a device, so no request reaches the network.
     init(
@@ -288,6 +339,7 @@ final class GLKVMClient {
 
         self.baseURL = url
         self.authToken = authToken
+        self.log = log
 
         let config = (sessionConfiguration.copy() as? URLSessionConfiguration) ?? .default
         config.timeoutIntervalForRequest = 15
@@ -459,14 +511,50 @@ final class GLKVMClient {
         return response.result.config
     }
 
-    func setSystemConfig(_ config: GLKVMSystemConfig) async throws -> GLKVMSystemConfig {
-        let encoder = JSONEncoder()
-        let body = try encoder.encode(config)
+    func getSystemConfigObject() async throws -> GLKVMJSONObject {
+        let response = try await request(
+            method: "GET",
+            path: "api/system/get_config",
+            responseType: GLKVMResponse<GLKVMSystemGetConfigObjectResult>.self
+        )
+
+        return response.result.config
+    }
+
+    /// Writes `changes` into the device's user config and returns the config as written.
+    ///
+    /// `set_config` replaces the whole config file with the request body. Sending only the keys
+    /// Overlook models therefore erased every other key: the ones the device's web UI keeps for
+    /// itself and the ones newer firmware adds. So each write reads the config as the device
+    /// holds it at that moment, puts the changed keys over it, and sends the whole object back.
+    /// Keys Overlook does not know keep their value and their JSON type.
+    ///
+    /// Writes from one client take turns. Two that overlapped would read the same config, and
+    /// the second would put back the value the first had just changed.
+    func updateSystemConfig(_ changes: GLKVMJSONObject) async throws -> GLKVMSystemConfig {
+        await configWriteGate.enter()
+        do {
+            let written = try await mergeIntoSystemConfig(changes)
+            await configWriteGate.leave()
+            return written
+        } catch {
+            await configWriteGate.leave()
+            throw error
+        }
+    }
+
+    private func mergeIntoSystemConfig(_ changes: GLKVMJSONObject) async throws -> GLKVMSystemConfig {
+        // Read fresh every time: a copy kept from earlier would undo changes made since, in the
+        // web UI or by firmware.
+        let current = try await getSystemConfigObject()
+        let merged = current.merging(changes) { _, changed in changed }
+        let kept = current.keys.filter { changes[$0] == nil }.sorted()
+        log?.debug(.device, "Settings write: \(changes.keys.sorted().joined(separator: ", ")); kept \(kept.count) other keys: \(kept.joined(separator: ", "))")
 
         let response = try await request(
             method: "POST",
             path: "api/system/set_config",
-            body: body,
+            body: try JSONEncoder().encode(merged),
             contentType: "application/json",
             responseType: GLKVMResponse<GLKVMSystemGetConfigResult>.self
         )

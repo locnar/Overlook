@@ -76,6 +76,9 @@ struct SettingsDebounceTests {
         #expect(device.cancelledRequests.isEmpty)
         #expect(model.errorHistory.isEmpty)
         #expect(!model.isApplying)
+        // Writes take turns, and each merges over a fresh read, so both changes are kept.
+        #expect(config.stored["scroll_rate"] == .int(7))
+        #expect(config.stored["theme_mode"] == .string("1"))
     }
 
     @Test func aBurstOfStreamerChangesSetsTheParamsOnce() async throws {
