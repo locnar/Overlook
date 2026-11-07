@@ -60,6 +60,8 @@ extension WebUISettingsActions {
         await MainActor.run {
             model.isLoading = true
         }
+        // Read on its own, so the jiggler toggle shows the device's state even if the rest fails.
+        async let jigglerRequest = try? client.getMouseJiggler()
         do {
             async let keymapsRequest = client.getHidKeymaps()
             async let streamer = client.getStreamerState()
@@ -94,6 +96,42 @@ extension WebUISettingsActions {
                 recordError("Failed to load settings: \(error)")
             }
         }
+        if let jiggler = await jigglerRequest {
+            inputManager.applyDeviceJigglerState(jiggler)
+        }
+    }
+
+    // MARK: - Mouse jiggler
+
+    /// Switches the device's mouse jiggler and shows what the device then reports.
+    func setMouseJiggler(_ on: Bool) async {
+        guard let client = connection.glkvmClient else { return }
+        model.isApplyingJiggler = true
+        do {
+            try await client.setMouseJiggler(on)
+            // The `hid` event on the HID socket reports the change too; reading it back here also
+            // works while that socket is down.
+            if let state = try await client.getMouseJiggler() {
+                inputManager.applyDeviceJigglerState(state)
+            }
+            // The web UI stores its jiggler switch in `mouse_jiggle`. It moves nothing, but left
+            // alone it would say the opposite of what the device is doing, so it is kept in step.
+            // Writes merge, so this touches no other key.
+            updateConfig { $0.mouseJiggle = on }
+        } catch {
+            recordError("Failed to switch the mouse jiggler: \(error)")
+        }
+        model.isApplyingJiggler = false
+    }
+
+    /// The jiggler toggle: on while the device reports the jiggler active.
+    var mouseJigglerBinding: Binding<Bool> {
+        Binding(
+            get: { inputManager.deviceJiggler?.isActive ?? false },
+            set: { on in
+                Task { await setMouseJiggler(on) }
+            }
+        )
     }
 
     // MARK: - Errors

@@ -130,6 +130,32 @@ struct GLKVMHidKeymapsState: Decodable, Hashable {
     let keymaps: Keymaps
 }
 
+/// The device's mouse jiggler, from the `jiggler` object of kvmd's HID state (`GET /api/hid`,
+/// and every `hid` event on the HID socket).
+struct GLKVMJigglerState: Equatable {
+    /// Whether this device has the jiggler at all (kvmd's `jiggler.enabled` option). When it is
+    /// false, kvmd ignores requests to switch it.
+    let isAvailable: Bool
+    /// Whether it is moving the mouse now: switched on, or inside a scheduled period.
+    let isActive: Bool
+    /// Seconds without input before it moves the mouse.
+    let interval: Int?
+
+    init(isAvailable: Bool, isActive: Bool, interval: Int? = nil) {
+        self.isAvailable = isAvailable
+        self.isActive = isActive
+        self.interval = interval
+    }
+
+    /// Nil when the state has no jiggler object, as a partial `hid` event may not.
+    init?(hidState: JSONValue?) {
+        guard let jiggler = hidState?["jiggler"],
+              let enabled = jiggler["enabled"]?.boolValue,
+              let active = jiggler["active"]?.boolValue else { return nil }
+        self.init(isAvailable: enabled, isActive: active, interval: jiggler["interval"]?.intValue)
+    }
+}
+
 struct GLKVMStreamerState: Decodable, Hashable {
     struct Features: Decodable, Hashable {
         let quality: Bool
@@ -782,6 +808,18 @@ extension GLKVMClient {
             responseType: GLKVMResponse<GLKVMJSONObject>.self
         )
         return response.result
+    }
+
+    /// The jiggler as the device reports it; nil for firmware whose HID state has none.
+    func getMouseJiggler() async throws -> GLKVMJigglerState? {
+        GLKVMJigglerState(hidState: .object(try await getHidState()))
+    }
+
+    /// Switches the device's mouse jiggler. `hid/set_params?jiggler=` is the only switch kvmd
+    /// has; the config's `mouse_jiggle` key is the web UI's record of its own toggle and moves
+    /// nothing.
+    func setMouseJiggler(_ on: Bool) async throws {
+        try await setHIDParams(["jiggler": on ? "true" : "false"])
     }
 
     func setHidConnected(_ connected: Bool) async throws {

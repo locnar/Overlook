@@ -130,6 +130,9 @@ class InputManager: ObservableObject {
 
     @Published var transportMode: TransportMode = .glkvmWebSocket
     @Published private(set) var isGLKVMAbsoluteMouseMode = true
+    /// The device's mouse jiggler as the device last reported it: in a `hid` event on the HID
+    /// socket, or read by the settings panel. Nil until the device has said.
+    @Published private(set) var deviceJiggler: GLKVMJigglerState?
     @Published private(set) var isPointerLocked = false
 
     /// Multiplier applied to relative mouse movement. With accelerated input it sits on top of the
@@ -216,6 +219,7 @@ class InputManager: ObservableObject {
         glkvmClient = client
         resetRemoteKeyboardState()
         deviceReportedAbsoluteMouse = nil
+        deviceJiggler = nil
         hidDropReconnectRounds = 0
         isGLKVMAbsoluteMouseMode = true
         pendingAbsoluteMouseMove = nil
@@ -253,6 +257,13 @@ class InputManager: ObservableObject {
     func applyConfiguredMouseMode(isAbsolute: Bool) {
         guard deviceReportedAbsoluteMouse == nil else { return }
         setGLKVMAbsoluteMouseMode(isAbsolute)
+    }
+
+    /// The jiggler state the device reported. `hid` events come with every LED or link change, so
+    /// an unchanged state is not published again.
+    func applyDeviceJigglerState(_ state: GLKVMJigglerState) {
+        guard deviceJiggler != state else { return }
+        deviceJiggler = state
     }
 
     func setGLKVMAbsoluteMouseMode(_ isAbsolute: Bool) {
@@ -1511,7 +1522,8 @@ class InputManager: ObservableObject {
     /// Events kvmd pushes over the HID socket. Besides the pong that answers our ping, the ones
     /// used here are the full/partial state of the `hid` and `streamer` subsystems, which arrive
     /// once on connect and then whenever something in them changes.
-    private func handleDeviceEvent(_ event: GLKVMWebSocketEvent) {
+    /// Internal so tests can hand it events without a socket.
+    func handleDeviceEvent(_ event: GLKVMWebSocketEvent) {
         switch event.eventType {
         case "pong":
             telemetry?.update { snapshot in
@@ -1548,6 +1560,9 @@ class InputManager: ObservableObject {
         }
         if let usbConnected = state["connected"]?.boolValue {
             telemetry?.update { $0.hidUSBConnected = usbConnected }
+        }
+        if let jiggler = GLKVMJigglerState(hidState: state) {
+            applyDeviceJigglerState(jiggler)
         }
         // `keyboard.leds` is the LED state the target's OS last set on the HID gadget.
         if let caps = state["keyboard"]?["leds"]?["caps"]?.boolValue {

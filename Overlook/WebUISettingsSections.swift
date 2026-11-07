@@ -382,11 +382,7 @@ struct RemoteSettingsSection: View {
                     }
                 }
 
-                Toggle("Mouse Jiggle", isOn: actions.bindingBool(
-                    get: { $0.mouseJiggle },
-                    set: { $0.mouseJiggle = $1 },
-                    defaultValue: false
-                ))
+                MouseJigglerToggle(model: model, actions: actions)
 
                 Picker("Mouse mode", selection: actions.bindingBool(
                     get: { $0.isAbsoluteMouse },
@@ -411,6 +407,30 @@ struct RemoteSettingsSection: View {
             }
             .padding(.top, 6)
         }
+    }
+}
+
+// MARK: - Mouse jiggler
+
+/// The device's mouse jiggler. It shows what the device reports rather than the config's
+/// `mouse_jiggle`, which only records the web UI's switch: kvmd starts and stops the jiggler on
+/// `hid/set_params` alone. Its own view, like `LocalRelativeMouseSettings`, so a change on
+/// `InputManager` re-evaluates this row and not the whole section.
+struct MouseJigglerToggle: View {
+    @EnvironmentObject var inputManager: InputManager
+    @ObservedObject var model: WebUISettingsPanelModel
+    let actions: WebUISettingsActions
+
+    var body: some View {
+        let jiggler = inputManager.deviceJiggler
+        Toggle("Mouse Jiggle", isOn: actions.mouseJigglerBinding)
+            // Off until the device has reported, and for a device without a jiggler.
+            .disabled(jiggler?.isAvailable != true || model.isApplyingJiggler)
+            .help(jiggler.map { state in
+                state.isAvailable
+                    ? "Moves the target's mouse slightly after \(state.interval.map { "\($0) s" } ?? "a while") without input, so it does not sleep or lock."
+                    : "This device has no mouse jiggler."
+            } ?? "Waiting for the device to report its mouse jiggler.")
     }
 }
 
