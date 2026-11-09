@@ -121,6 +121,29 @@ struct PeerConnectionRoles<Peer: AnyObject> {
         }
     }
 
+    /// The role of `peer` while it belongs to the current connection; nil once a teardown has let
+    /// go of it, or for a peer this never saw. Unlike `disposition`, asking changes nothing.
+    func currentRole(of peer: Peer) -> Role? {
+        guard let entry = entries[ObjectIdentifier(peer)], entry.retiredAt == nil else { return nil }
+        return entry.role
+    }
+
+    /// The Janus handle that what `peer` gathers (a local candidate, or the end of them) is
+    /// trickled to: `videoHandle` or `audioHandle` by the peer's own role, or nil for a peer that
+    /// is no longer current, whose candidates belong to a session that is gone.
+    ///
+    /// WebRTC reports candidates on its own thread and each is handled in a main-actor task, so
+    /// one gathered just before a teardown can be handled after the next connect has its handles.
+    /// Routing by "is it the current audio peer, else video" sent such a candidate, from either
+    /// leg, to the new video handle.
+    func trickleHandle(for peer: Peer, videoHandle: Int?, audioHandle: Int?) -> Int? {
+        switch currentRole(of: peer) {
+        case .video: return videoHandle
+        case .audio: return audioHandle
+        case nil: return nil
+        }
+    }
+
     /// `isClosed` is whether the new state is `closed`, which only a teardown's `close()` causes.
     mutating func disposition(for peer: Peer, isClosed: Bool) -> Disposition {
         let key = ObjectIdentifier(peer)
@@ -2320,38 +2343,39 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCIceGatheringState) {
         Task { @MainActor in
+            // A torn-down peer's gathering is not part of the current connection, and its end of
+            // candidates must not reach the current connection's handles.
+            guard self.peerRoles.currentRole(of: peerConnection) != nil else { return }
             self.log.debug(.ice, "ICE gathering: \(stateChanged.rawValue)")
 
-            if stateChanged == .complete {
-                do {
-                    if peerConnection === self.audioPeerConnection {
-                        if let handleId = self.janusAudioHandleId {
-                            try await sendJanusTrickleCompleted(handleId: handleId)
-                        }
-                    } else {
-                        if let handleId = self.janusHandleId {
-                            try await sendJanusTrickleCompleted(handleId: handleId)
-                        }
-                    }
-                } catch {
-                    // ignore
-                }
+            guard stateChanged == .complete,
+                  let handleId = self.peerRoles.trickleHandle(
+                      for: peerConnection,
+                      videoHandle: self.janusHandleId,
+                      audioHandle: self.janusAudioHandleId
+                  ) else { return }
+            do {
+                try await sendJanusTrickleCompleted(handleId: handleId)
+            } catch {
+                // ignore
             }
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         Task { @MainActor in
-            do {
-                if peerConnection === self.audioPeerConnection {
-                    if let handleId = self.janusAudioHandleId {
-                        try await sendJanusTrickleCandidate(candidate, handleId: handleId)
-                    }
-                } else {
-                    if let handleId = self.janusHandleId {
-                        try await sendJanusTrickleCandidate(candidate, handleId: handleId)
-                    }
+            guard let handleId = self.peerRoles.trickleHandle(
+                for: peerConnection,
+                videoHandle: self.janusHandleId,
+                audioHandle: self.janusAudioHandleId
+            ) else {
+                if self.peerRoles.currentRole(of: peerConnection) == nil {
+                    self.log.debug(.ice, "Dropped a local candidate from a torn-down peer connection")
                 }
+                return
+            }
+            do {
+                try await sendJanusTrickleCandidate(candidate, handleId: handleId)
             } catch {
                 self.log.warning(.ice, "Send ICE candidate failed: \(error.localizedDescription)")
             }

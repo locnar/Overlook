@@ -97,4 +97,61 @@ struct PeerConnectionRolesTests {
         // Only the peer from the teardown before this one is still held.
         #expect(roles.count == 1)
     }
+
+    // MARK: - Trickling local candidates
+
+    @Test func eachCurrentPeersCandidatesGoToItsOwnHandle() {
+        var roles = PeerConnectionRoles<FakePeer>()
+        let video = FakePeer()
+        let audio = FakePeer()
+        roles.register(video, as: .video)
+        roles.register(audio, as: .audio)
+
+        #expect(roles.currentRole(of: video) == .video)
+        #expect(roles.currentRole(of: audio) == .audio)
+        #expect(roles.trickleHandle(for: video, videoHandle: 101, audioHandle: 202) == 101)
+        #expect(roles.trickleHandle(for: audio, videoHandle: 101, audioHandle: 202) == 202)
+    }
+
+    @Test func aTornDownPeersLateCandidatesAreDropped() {
+        // The bug this guards: a candidate the old peers gathered just before a teardown was
+        // handled after the reconnect, and went (audio's too) to the new video handle.
+        var roles = PeerConnectionRoles<FakePeer>()
+        let oldVideo = FakePeer()
+        let oldAudio = FakePeer()
+        roles.register(oldVideo, as: .video)
+        roles.register(oldAudio, as: .audio)
+        roles.retireAll()
+        let newVideo = FakePeer()
+        let newAudio = FakePeer()
+        roles.register(newVideo, as: .video)
+        roles.register(newAudio, as: .audio)
+
+        #expect(roles.currentRole(of: oldVideo) == nil)
+        #expect(roles.trickleHandle(for: oldVideo, videoHandle: 301, audioHandle: 302) == nil)
+        #expect(roles.trickleHandle(for: oldAudio, videoHandle: 301, audioHandle: 302) == nil)
+        #expect(roles.trickleHandle(for: newVideo, videoHandle: 301, audioHandle: 302) == 301)
+        #expect(roles.trickleHandle(for: newAudio, videoHandle: 301, audioHandle: 302) == 302)
+
+        // Asking changes nothing: each old peer's close is still logged once, under its role.
+        #expect(roles.disposition(for: oldVideo, isClosed: true) == .closed(.video))
+        #expect(roles.disposition(for: oldAudio, isClosed: true) == .closed(.audio))
+    }
+
+    @Test func anAudioPeerWithNoHandleYetNeverFallsBackToVideo() {
+        var roles = PeerConnectionRoles<FakePeer>()
+        let audio = FakePeer()
+        roles.register(FakePeer(), as: .video)
+        roles.register(audio, as: .audio)
+
+        #expect(roles.trickleHandle(for: audio, videoHandle: 101, audioHandle: nil) == nil)
+    }
+
+    @Test func anUnknownPeersCandidatesAreDropped() {
+        var roles = PeerConnectionRoles<FakePeer>()
+        roles.register(FakePeer(), as: .video)
+
+        #expect(roles.currentRole(of: FakePeer()) == nil)
+        #expect(roles.trickleHandle(for: FakePeer(), videoHandle: 101, audioHandle: 202) == nil)
+    }
 }
