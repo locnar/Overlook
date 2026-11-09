@@ -149,6 +149,9 @@ final class ConsoleSession: ObservableObject {
         // From here on this session's lines name this device, the hang-up of a previous one
         // included: the device it is talking to now is the one an operator would look for.
         log.deviceLabel = SessionLog.label(host: device.host, port: device.port)
+        // One attempt, through this one address; nothing here tries another.
+        let via = device.address.labelWithTag
+        log.notice(.lifecycle, "Connecting via \(via)")
         connectingAddress = device.address
         connectingDevice = device
         hasConnectionToEnd = true
@@ -165,8 +168,10 @@ final class ConsoleSession: ObservableObject {
             return .certificateChanged(host: host, port: port, fingerprint: fingerprint)
         } catch {
             signInDidNotLand()
+            log.error(.lifecycle, "Connect via \(via) failed: \(error.localizedDescription)")
             return .failed(error)
         }
+        log.notice(.lifecycle, "Connected via \(connected.address.labelWithTag)")
 
         // Nobody is left to use a connection that lands after its window has gone.
         guard !isClosed else {
@@ -355,18 +360,9 @@ protocol ConsoleSessionLink {
 /// themselves, in the same order.
 struct LiveSessionLink: ConsoleSessionLink {
     func signIn(_ session: ConsoleSession, to device: KVMDevice, password: String?, savePassword: Bool) async throws -> KVMDevice {
-        do {
-            return try await session.connection.connectToDevice(device, password: password, savePassword: savePassword)
-        } catch {
-            // A password prompt or a certificate question is the operator's next step, not a failure.
-            switch error as? KVMError {
-            case .authenticationFailed?, .certificateChanged?:
-                break
-            default:
-                session.log.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
-            }
-            throw error
-        }
+        // A failure is logged by the session, with the address it tried; a password prompt or a
+        // certificate question is the operator's next step, not a failure.
+        try await session.connection.connectToDevice(device, password: password, savePassword: savePassword)
     }
 
     func startInput(_ session: ConsoleSession) async {

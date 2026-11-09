@@ -97,7 +97,8 @@ struct ConnectionLogTaggingTests {
 
         // The operator disconnect line, which the session logs as it hangs up.
         session.disconnect()
-        await settle(1)
+        // "Connecting via", "Connected via", then the disconnect.
+        await settle(3)
         let line = log.store.events.first { $0.message == "Operator disconnect" }
         #expect(line?.source == ConnectionLogSource(sessionID: session.log.sessionID, device: "192.0.2.88:8443"))
     }

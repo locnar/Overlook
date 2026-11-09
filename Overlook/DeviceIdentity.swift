@@ -170,3 +170,74 @@ enum DeviceNaming {
         return trimmed
     }
 }
+
+/// Choosing the address a connect goes through. One connect makes one attempt, through one
+/// address: a plain Connect uses the device's last-used address (its first when none is
+/// recorded), the Connect menu uses the one picked, and a failure says which address it was and
+/// leaves the choice of another to the operator. Nothing here tries a second address.
+enum ConnectVia {
+    static let menuTitle = "Connect via"
+    static let lastUsedSuffix = " — last used"
+
+    /// One row of the Connect menu.
+    struct Item: Equatable {
+        let address: DeviceAddress
+        let title: String
+        /// Shown with a checkmark.
+        let isLastUsed: Bool
+    }
+
+    /// The Connect menu for `device`: every address in the operator's order, each with its tag,
+    /// the last-used one checked and marked.
+    static func items(for device: KVMDevice) -> [Item] {
+        device.addresses.map { address in
+            let isLastUsed = address == device.lastUsedAddress
+            return Item(
+                address: address,
+                title: address.labelWithTag + (isLastUsed ? lastUsedSuffix : ""),
+                isLastUsed: isLastUsed
+            )
+        }
+    }
+
+    /// What a plain Connect connects to.
+    static func plainConnect(_ device: KVMDevice) -> KVMDevice {
+        device.via(device.preferredAddress)
+    }
+
+    /// An address picked from the Connect menu: recorded as the device's last-used address at
+    /// once, so the next plain Connect repeats the choice, and connected through as it is.
+    @MainActor
+    static func pick(_ address: DeviceAddress, of device: KVMDevice, in catalog: KVMDeviceManager) -> KVMDevice {
+        catalog.setLastUsedAddress(address, for: device)
+        let current = catalog.availableDevices.first { $0.id == device.id } ?? device
+        return current.via(address)
+    }
+
+    /// The Connections panel's status line while connected.
+    static func statusText(connectedThrough address: DeviceAddress) -> String {
+        "Connected via \(address.labelWithTag)"
+    }
+
+    /// The alert for a connect that failed: the address it tried, and, for a device with others,
+    /// where to pick one.
+    static func failureMessage(address: DeviceAddress, deviceHasOtherAddresses: Bool, error: Error) -> String {
+        let isUnreachable: Bool
+        switch error {
+        case KVMError.connectionFailed, KVMError.networkUnavailable, is URLError:
+            isUnreachable = true
+        default:
+            isUnreachable = false
+        }
+        var text = isUnreachable
+            ? "Couldn't reach \(address.labelWithTag)."
+            : "Couldn't connect to \(address.labelWithTag)."
+        if deviceHasOtherAddresses {
+            text += " To use another address, choose it from the Connect menu."
+        }
+        if case KVMError.connectionFailed = error {
+            return text
+        }
+        return text + "\n\n" + String(describing: error)
+    }
+}

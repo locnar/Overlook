@@ -317,6 +317,7 @@ struct ContentView: View {
                         isScanning: kvmDeviceManager.isScanning,
                         devices: kvmDeviceManager.availableDevices,
                         connectedDeviceName: connection.connectedDevice?.displayName,
+                        connectedVia: connection.connectedDevice?.address,
                         videoSize: webRTCManager.videoSize,
                         onScan: {
                             kvmDeviceManager.scanForDevices()
@@ -326,6 +327,10 @@ struct ContentView: View {
                         },
                         onToggleConnection: {
                             toggleConnection()
+                        },
+                        onConnectVia: { address in
+                            guard let device = selectedDevice else { return }
+                            connectToDevice(ConnectVia.pick(address, of: device, in: kvmDeviceManager))
                         },
                         onEditSelectedDevice: {
                             guard let device = selectedDevice else { return }
@@ -633,7 +638,11 @@ struct ContentView: View {
                 )
             case .failed(let error):
                 isConnected = false
-                connectionErrorMessage = describeConnectionError(error)
+                connectionErrorMessage = ConnectVia.failureMessage(
+                    address: device.address,
+                    deviceHasOtherAddresses: device.addresses.contains { $0 != device.address },
+                    error: error
+                )
             case .openElsewhere(let other):
                 // One window per device: this one stays disconnected.
                 other.bringWindowForward()
@@ -663,20 +672,14 @@ struct ContentView: View {
         connectToDevice(device, password: password.isEmpty ? nil : password, savePassword: manualSavePassword)
     }
 
-    private func describeConnectionError(_ error: Error) -> String {
-        // Every `Error` is `CustomStringConvertible` (the `as?` this replaced always succeeded), so
-        // this is what it always returned: the app's enum cases print as themselves, and an
-        // NSError prints its domain, code and reason.
-        String(describing: error)
-    }
-
     private func toggleConnection() {
         if isConnected {
             session.disconnect()
             isConnected = false
             panels.show(.connections)
         } else if let device = selectedDevice {
-            connectToDevice(device)
+            // The device's last-used address, or its first; one attempt, no fallback.
+            connectToDevice(ConnectVia.plainConnect(device))
         }
     }
     
@@ -1063,6 +1066,8 @@ struct ConnectionsPopoverView: View {
     let isScanning: Bool
     let devices: [KVMDevice]
     let connectedDeviceName: String?
+    /// The address the session is connected through.
+    let connectedVia: DeviceAddress?
 
     /// Guest resolution, forwarded to the stats section. Telemetry itself is not passed in:
     /// `HIDRoundTripLabel`, `SessionHistoryLabel` and `StreamStatsSection` observe it themselves, so this body
@@ -1072,6 +1077,8 @@ struct ConnectionsPopoverView: View {
     let onScan: () -> Void
     let onManualConnect: () -> Void
     let onToggleConnection: () -> Void
+    /// An address picked from the Connect menu.
+    let onConnectVia: (DeviceAddress) -> Void
     let onEditSelectedDevice: () -> Void
     let onForgetSelectedDevice: () -> Void
     let onOpenLog: () -> Void
@@ -1091,8 +1098,29 @@ struct ConnectionsPopoverView: View {
             // Actions on the selected device. Selecting a device does not connect to it; this
             // row makes that second step visible (it used to be an unlabeled header icon).
             HStack {
-                Button(isConnected ? "Disconnect" : "Connect") { onToggleConnection() }
-                    .disabled(!isConnected && selectedDevice == nil)
+                if isConnected {
+                    Button("Disconnect") { onToggleConnection() }
+                } else {
+                    // Connect goes through the last-used address; the arrow lists every address.
+                    Menu {
+                        Section(ConnectVia.menuTitle) {
+                            ForEach(selectedDevice.map(ConnectVia.items) ?? [], id: \.address) { item in
+                                Toggle(isOn: Binding(
+                                    get: { item.isLastUsed },
+                                    set: { _ in onConnectVia(item.address) }
+                                )) {
+                                    Text(item.title)
+                                }
+                            }
+                        }
+                    } label: {
+                        Text("Connect")
+                    } primaryAction: {
+                        onToggleConnection()
+                    }
+                    .fixedSize()
+                    .disabled(selectedDevice == nil)
+                }
 
                 // Editable while connected: changing the addresses does not disconnect.
                 Button("Edit…") { onEditSelectedDevice() }
@@ -1128,7 +1156,7 @@ struct ConnectionsPopoverView: View {
                     .font(.caption)
 
                 HStack {
-                    Text(isConnected ? "Connected" : "Disconnected")
+                    Text(isConnected ? (connectedVia.map { ConnectVia.statusText(connectedThrough: $0) } ?? "Connected") : "Disconnected")
                         .font(.caption)
                         .foregroundColor(isConnected ? .green : .red)
 
