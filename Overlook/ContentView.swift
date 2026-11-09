@@ -31,6 +31,8 @@ struct ContentView: View {
     @State private var pendingSavePassword = false
     @State private var connectionErrorMessage: String?
     @State private var certificatePrompt: CertificateChangePrompt?
+    /// The Edit… sheet's state while it is open.
+    @State private var editingDevice: DeviceEditModel?
 
     @State private var didAutoOpenConnections = false
 
@@ -48,9 +50,15 @@ struct ContentView: View {
     private var showingConnections: Bool { panels.isOpen(.connections) }
     private var showingLog: Bool { panels.isOpen(.log) }
 
-    /// The catalog's current entry for the chosen device.
+    /// The catalog's current entry for the chosen device. The connected device's entry when the
+    /// address chosen is no longer any device's: the Edit sheet can remove the address a session
+    /// is connected through, and the session carries on.
     private var selectedDevice: KVMDevice? {
-        selectedAddress.flatMap { kvmDeviceManager.device(at: $0) }
+        if let address = selectedAddress, let device = kvmDeviceManager.device(at: address) {
+            return device
+        }
+        guard let connected = connection.connectedDevice else { return nil }
+        return kvmDeviceManager.availableDevices.first { $0.id == connected.id }
     }
 
     private var availablePanelWidth: Double? {
@@ -319,6 +327,13 @@ struct ContentView: View {
                         onToggleConnection: {
                             toggleConnection()
                         },
+                        onEditSelectedDevice: {
+                            guard let device = selectedDevice else { return }
+                            let catalog = kvmDeviceManager
+                            editingDevice = DeviceEditModel(device: device) { address in
+                                catalog.owner(of: address, excludingID: device.id)
+                            }
+                        },
                         onForgetSelectedDevice: {
                             guard let device = selectedDevice else { return }
                             guard device.id.hasPrefix("saved-") else { return }
@@ -445,6 +460,24 @@ struct ContentView: View {
                 savePassword: $manualSavePassword,
                 onConnect: { password in
                     manualConnect(password: password)
+                }
+            )
+        }
+        .sheet(item: $editingDevice) { model in
+            DeviceEditSheet(
+                model: model,
+                onSave: { nickname, addresses in
+                    // The entry as it is now: a connect may have saved it while the sheet was open.
+                    let current = kvmDeviceManager.availableDevices.first { $0.id == model.device.id }
+                        ?? kvmDeviceManager.device(at: model.device.address)
+                        ?? model.device
+                    if let saved = kvmDeviceManager.saveEdits(of: current, nickname: nickname, addresses: addresses) {
+                        selectedAddress = saved.address
+                    }
+                    editingDevice = nil
+                },
+                onCancel: {
+                    editingDevice = nil
                 }
             )
         }
@@ -611,27 +644,18 @@ struct ContentView: View {
     }
 
     private func manualConnect(password submittedPassword: String) {
-        let trimmed = manualHostPort.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        var host = trimmed
-        var portString = manualPort.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let schemeRange = host.range(of: "://") {
-            host = String(host[schemeRange.upperBound...])
+        let address: DeviceAddress
+        switch AddressInput.parse(manualHostPort, port: manualPort) {
+        case .success(let parsed):
+            address = parsed
+        case .failure(let problem):
+            connectionErrorMessage = problem.message
+            return
         }
 
-        if let colonIndex = host.lastIndex(of: ":") {
-            let maybeHost = String(host[..<colonIndex])
-            let maybePort = String(host[host.index(after: colonIndex)...])
-            if !maybeHost.isEmpty, !maybePort.isEmpty {
-                host = maybeHost
-                portString = maybePort
-            }
-        }
-
-        let port = Int(portString) ?? 443
-        let device = kvmDeviceManager.addManualDevice(host: host, port: port, type: .glinetComet)
+        // An address of a saved device connects as that device; any other gets a manual entry.
+        let device = kvmDeviceManager.savedDevice(containing: address)?.via(address)
+            ?? kvmDeviceManager.addManualDevice(host: address.host, port: address.port, type: .glinetComet)
 
         selectedAddress = device.address
 
@@ -1048,6 +1072,7 @@ struct ConnectionsPopoverView: View {
     let onScan: () -> Void
     let onManualConnect: () -> Void
     let onToggleConnection: () -> Void
+    let onEditSelectedDevice: () -> Void
     let onForgetSelectedDevice: () -> Void
     let onOpenLog: () -> Void
 
@@ -1068,6 +1093,10 @@ struct ConnectionsPopoverView: View {
             HStack {
                 Button(isConnected ? "Disconnect" : "Connect") { onToggleConnection() }
                     .disabled(!isConnected && selectedDevice == nil)
+
+                // Editable while connected: changing the addresses does not disconnect.
+                Button("Edit…") { onEditSelectedDevice() }
+                    .disabled(selectedDevice == nil)
 
                 Button("Forget") { onForgetSelectedDevice() }
                     .disabled(isConnected || selectedDevice?.id.hasPrefix("saved-") != true)

@@ -83,6 +83,7 @@
 		01000118 /* JanusTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000118 /* JanusTransactionTests.swift */; };
 		01000119 /* StreamStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000119 /* StreamStatsTests.swift */; };
 		0100011A /* HIDSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011A /* HIDSocketTests.swift */; };
+		0100011E /* DeviceEditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011E /* DeviceEditTests.swift */; };
 		0100011D /* DisplayNameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011D /* DisplayNameTests.swift */; };
 		0100011C /* MultiAddressCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011C /* MultiAddressCatalogTests.swift */; };
 		0100011B /* DeviceIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011B /* DeviceIdentityTests.swift */; };
@@ -182,6 +183,7 @@
 		02000118 /* JanusTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusTransactionTests.swift; sourceTree = "<group>"; };
 		02000119 /* StreamStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamStatsTests.swift; sourceTree = "<group>"; };
 		0200011A /* HIDSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDSocketTests.swift; sourceTree = "<group>"; };
+		0200011E /* DeviceEditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEditTests.swift; sourceTree = "<group>"; };
 		0200011D /* DisplayNameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayNameTests.swift; sourceTree = "<group>"; };
 		0200011C /* MultiAddressCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiAddressCatalogTests.swift; sourceTree = "<group>"; };
 		0200011B /* DeviceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentityTests.swift; sourceTree = "<group>"; };
@@ -301,6 +303,7 @@
 				02000118 /* JanusTransactionTests.swift */,
 				02000119 /* StreamStatsTests.swift */,
 				0200011A /* HIDSocketTests.swift */,
+				0200011E /* DeviceEditTests.swift */,
 				0200011D /* DisplayNameTests.swift */,
 				0200011C /* MultiAddressCatalogTests.swift */,
 				0200011B /* DeviceIdentityTests.swift */,
@@ -513,6 +516,7 @@
 				01000118 /* JanusTransactionTests.swift in Sources */,
 				01000119 /* StreamStatsTests.swift in Sources */,
 				0100011A /* HIDSocketTests.swift in Sources */,
+				0100011E /* DeviceEditTests.swift in Sources */,
 				0100011D /* DisplayNameTests.swift in Sources */,
 				0100011C /* MultiAddressCatalogTests.swift in Sources */,
 				0100011B /* DeviceIdentityTests.swift in Sources */,

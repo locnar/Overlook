@@ -129,3 +129,220 @@ struct DevicePopUpButton: NSViewRepresentable {
         }
     }
 }
+
+// MARK: - Edit…
+
+/// What the Edit… sheet holds while it is open: the name as typed, the address list, the row
+/// selected in it, and the address being added. Save hands `result` to the catalog.
+@MainActor
+final class DeviceEditModel: ObservableObject {
+    /// The nickname as typed; empty shows the address.
+    @Published var name: String
+    @Published private(set) var addresses: [DeviceAddress]
+    @Published var selection: DeviceAddress?
+    /// Whether the row for typing a new address is open (`+`).
+    @Published private(set) var isAddingAddress = false
+    @Published var newHost = ""
+    @Published var newPort = ""
+    /// Why the last address typed was refused.
+    @Published private(set) var problem: String?
+
+    let device: KVMDevice
+    /// The saved device other than this one that has an address, if any.
+    private let owner: (DeviceAddress) -> KVMDevice?
+
+    static let namePrompt = "Leave empty to show the address"
+
+    init(device: KVMDevice, owner: @escaping (DeviceAddress) -> KVMDevice? = { _ in nil }) {
+        self.device = device
+        self.owner = owner
+        name = device.nickname ?? ""
+        addresses = device.addresses
+        selection = nil
+    }
+
+    /// `−` removes the selected address, never the last one.
+    var canRemove: Bool {
+        guard let selection else { return false }
+        return addresses.count > 1 && addresses.contains(selection)
+    }
+
+    var canSave: Bool { !addresses.isEmpty && !isAddingAddress }
+
+    /// What Save writes: the nickname (nil shows the address) and the addresses in order.
+    var result: (nickname: String?, addresses: [DeviceAddress]) {
+        (DeviceNaming.cleanNickname(name), addresses)
+    }
+
+    func beginAddingAddress() {
+        isAddingAddress = true
+        newHost = ""
+        newPort = ""
+        problem = nil
+    }
+
+    func cancelAddingAddress() {
+        isAddingAddress = false
+        newHost = ""
+        newPort = ""
+        problem = nil
+    }
+
+    /// Reads the typed address as Manual Connect does and adds it, selected. Refused with a
+    /// reason when it does not read, is already listed, or belongs to another saved device.
+    @discardableResult
+    func addAddress() -> Bool {
+        switch AddressInput.parse(newHost, port: newPort) {
+        case .failure(let reason):
+            problem = reason.message
+            return false
+        case .success(let address):
+            if addresses.contains(address) {
+                problem = "\(address.hostPort) is already listed."
+                return false
+            }
+            if let other = owner(address) {
+                problem = "\(address.hostPort) is already an address of \(other.displayName)."
+                return false
+            }
+            addresses.append(address)
+            selection = address
+            cancelAddingAddress()
+            return true
+        }
+    }
+
+    func removeSelected() {
+        guard canRemove, let selection else { return }
+        let index = addresses.firstIndex(of: selection) ?? 0
+        addresses.removeAll { $0 == selection }
+        self.selection = addresses.isEmpty ? nil : addresses[min(index, addresses.count - 1)]
+    }
+
+    /// What a key does in the sheet. While an address is being typed, Return adds it and Escape
+    /// closes the row; otherwise Return saves and Escape cancels the sheet.
+    enum KeyAction: Equatable {
+        case save
+        case cancel
+        case addAddress
+        case cancelAddingAddress
+    }
+
+    var returnAction: KeyAction { isAddingAddress ? .addAddress : .save }
+    var escapeAction: KeyAction { isAddingAddress ? .cancelAddingAddress : .cancel }
+}
+
+extension DeviceEditModel: Identifiable {}
+
+/// The Connections panel's Edit… sheet: the device's name and its addresses.
+struct DeviceEditSheet: View {
+    @ObservedObject var model: DeviceEditModel
+    let onSave: (_ nickname: String?, _ addresses: [DeviceAddress]) -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var newHostFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit Device")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Name")
+                    .font(.subheadline)
+                TextField("Name", text: $model.name, prompt: Text(DeviceEditModel.namePrompt))
+                    .textFieldStyle(.roundedBorder)
+                Text(DeviceEditModel.namePrompt)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Addresses")
+                    .font(.subheadline)
+
+                List(selection: $model.selection) {
+                    ForEach(model.addresses, id: \.self) { address in
+                        HStack {
+                            Text(address.hostPort)
+                                .font(.body.monospaced())
+                            Spacer()
+                            if let tag = address.tag {
+                                Text(tag.rawValue)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            }
+                        }
+                        .tag(address)
+                    }
+                }
+                .listStyle(.bordered(alternatesRowBackgrounds: true))
+                .frame(height: 110)
+
+                HStack(spacing: 4) {
+                    Button {
+                        model.beginAddingAddress()
+                        newHostFocused = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: 14, height: 14)
+                    }
+                    .help("Add an address")
+                    .accessibilityLabel("Add Address")
+                    .disabled(model.isAddingAddress)
+
+                    Button {
+                        model.removeSelected()
+                    } label: {
+                        Image(systemName: "minus")
+                            .frame(width: 14, height: 14)
+                    }
+                    .help("Remove the selected address")
+                    .accessibilityLabel("Remove Address")
+                    .disabled(!model.canRemove)
+
+                    Spacer()
+                }
+                .controlSize(.small)
+
+                if model.isAddingAddress {
+                    HStack {
+                        TextField("Host or IP", text: $model.newHost, prompt: Text("Host or IP"))
+                            .textFieldStyle(.roundedBorder)
+                            .focused($newHostFocused)
+                        TextField("Port", text: $model.newPort, prompt: Text("443"))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 64)
+                        Button("Cancel") { model.cancelAddingAddress() }
+                            .keyboardShortcut(.cancelAction)
+                        Button("Add") { model.addAddress() }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+
+                if let problem = model.problem {
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(model.isAddingAddress ? nil : .cancelAction)
+                Button("Save") {
+                    let result = model.result
+                    onSave(result.nickname, result.addresses)
+                }
+                .keyboardShortcut(model.isAddingAddress ? nil : .defaultAction)
+                .disabled(!model.canSave)
+            }
+        }
+        .padding()
+        .frame(width: 420)
+    }
+}
