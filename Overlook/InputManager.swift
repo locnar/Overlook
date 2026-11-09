@@ -486,7 +486,9 @@ class InputManager: ObservableObject {
 
     /// Quiesces input for process exit: stops capturing, lets queued HID commands drain, releases
     /// every key and button still held on the remote, then closes the HID socket. Nothing is
-    /// accepted for sending afterwards.
+    /// accepted for sending afterwards. A stuck socket cannot hold this up for long: the first
+    /// frame it does not take times out (see `WebSocketClient.Timing`) and closes it, and
+    /// everything queued behind fails at once.
     func shutdown() async {
         remotePaste.cancelAll()
         stopFullInputCapture()  // unlocks the pointer, which queues releases for held buttons

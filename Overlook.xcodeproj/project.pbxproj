@@ -80,6 +80,7 @@
 		01000117 /* MouseJigglerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000117 /* MouseJigglerTests.swift */; };
 		01000118 /* JanusTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000118 /* JanusTransactionTests.swift */; };
 		01000119 /* StreamStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000119 /* StreamStatsTests.swift */; };
+		0100011A /* HIDSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011A /* HIDSocketTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -173,6 +174,7 @@
 		02000117 /* MouseJigglerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseJigglerTests.swift; sourceTree = "<group>"; };
 		02000118 /* JanusTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusTransactionTests.swift; sourceTree = "<group>"; };
 		02000119 /* StreamStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamStatsTests.swift; sourceTree = "<group>"; };
+		0200011A /* HIDSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDSocketTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -286,6 +288,7 @@
 				02000117 /* MouseJigglerTests.swift */,
 				02000118 /* JanusTransactionTests.swift */,
 				02000119 /* StreamStatsTests.swift */,
+				0200011A /* HIDSocketTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
 				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
@@ -492,6 +495,7 @@
 				01000117 /* MouseJigglerTests.swift in Sources */,
 				01000118 /* JanusTransactionTests.swift in Sources */,
 				01000119 /* StreamStatsTests.swift in Sources */,
+				0100011A /* HIDSocketTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
 				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,

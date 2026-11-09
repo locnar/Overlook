@@ -351,7 +351,14 @@ final class GLKVMClient {
     /// check that.
     let printURLSession: GLKVMURLSession
 
-    /// The session's log: certificate pinning while this client signs in, and settings writes.
+    /// Deadlines for the HID sockets made from this client. Tests shorten them.
+    var hidSocketTiming = WebSocketClient.Timing.standard
+    /// Makes the socket under each HID client made from this one; nil for a URLSession WebSocket
+    /// task on `urlSession`. Tests set it to stand in for the device's socket.
+    var makeHIDSocket: (@Sendable (URLRequest) -> HIDSocket)?
+
+    /// The session's log: certificate pinning while this client signs in, settings writes, and
+    /// the HID sockets' timeouts.
     private let log: SessionLog?
     /// Settings writes take turns; see `updateSystemConfig`.
     private let configWriteGate = AsyncSerialGate()
@@ -1202,6 +1209,49 @@ extension GLKVMClient {
     }
 }
 
+/// The socket under a HID `WebSocketClient`: a `URLSessionWebSocketTask` in the app, and in tests a
+/// stand-in that can hold a frame or leave a ping unanswered.
+protocol HIDSocket: AnyObject, Sendable {
+    func resume()
+    /// Calls `completion` once: when the socket has taken the frame, or with the error that
+    /// stopped it.
+    func send(_ message: URLSessionWebSocketTask.Message, completion: @escaping @Sendable (Error?) -> Void)
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    /// Closes the socket with a close frame.
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+    /// Drops the socket without waiting to say goodbye, for one that has stopped working.
+    func abort()
+}
+
+/// A `URLSessionWebSocketTask` as a `HIDSocket`.
+final class URLSessionHIDSocket: HIDSocket, @unchecked Sendable {
+    private let task: URLSessionWebSocketTask
+
+    init(_ task: URLSessionWebSocketTask) {
+        self.task = task
+    }
+
+    func resume() {
+        task.resume()
+    }
+
+    func send(_ message: URLSessionWebSocketTask.Message, completion: @escaping @Sendable (Error?) -> Void) {
+        task.send(message) { error in completion(error) }
+    }
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        try await task.receive()
+    }
+
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        task.cancel(with: closeCode, reason: reason)
+    }
+
+    func abort() {
+        task.cancel()
+    }
+}
+
 extension GLKVMClient {
     func makeWebSocketClient(stream: Bool = true) throws -> WebSocketClient {
         let url = try websocketURL()
@@ -1211,14 +1261,61 @@ extension GLKVMClient {
             request.setValue("auth_token=\(authToken)", forHTTPHeaderField: "Cookie")
         }
 
-        return WebSocketClient(session: urlSession, request: request)
+        return WebSocketClient(
+            session: urlSession,
+            request: request,
+            timing: hidSocketTiming,
+            log: log,
+            makeSocket: makeHIDSocket
+        )
     }
 
     actor WebSocketClient {
-        enum WebSocketError: Error {
+        enum WebSocketError: LocalizedError {
             case notConnected
             case encodingFailed
             case decodingFailed
+            /// The socket did not take a frame within its deadline, and has been closed.
+            case sendTimedOut
+
+            /// What a failed HID command's log line says.
+            var errorDescription: String? {
+                switch self {
+                case .notConnected: return "the HID socket is not connected"
+                case .encodingFailed: return "the frame could not be encoded"
+                case .decodingFailed: return "the frame could not be decoded"
+                case .sendTimedOut: return "the HID socket did not take the frame in time"
+                }
+            }
+        }
+
+        /// How long the socket may take over each thing before it is taken to be dead.
+        struct Timing: Sendable {
+            /// Between pings. kvmd answers each one with a pong.
+            var pingInterval: Duration
+            /// For the socket to take one frame once it is open.
+            var sendTimeout: Duration
+            /// For the socket to take a frame sent before it is known to be open, which waits for
+            /// the handshake first.
+            var openTimeout: Duration
+            /// For a pong, counted from the oldest ping still waiting for one.
+            var pongDeadline: Duration
+
+            /// A frame is a few bytes, and an open socket takes it as soon as it is handed to the
+            /// network stack: it waits only when the connection has stopped draining. A second is
+            /// far past that and already too late for a keystroke, and every input queued behind
+            /// it waits too. The handshake (TCP, TLS, HTTP upgrade) takes 30–80 ms on the LAN and a
+            /// few hundred over a Tailscale relay; two seconds leaves room for that. Both keep
+            /// quitting inside its 3 s grace: a stuck frame gives way in time for the held-key
+            /// release and the video hang-up to go out. kvmd answers a ping at once; six seconds is
+            /// three missed intervals, past a Wi-Fi hiccup or a retransmission, and a socket that
+            /// silent is reconnected rather than left taking input it never delivers.
+            static let standard = Timing(
+                pingInterval: .seconds(2),
+                sendTimeout: .seconds(1),
+                openTimeout: .seconds(2),
+                pongDeadline: .seconds(6)
+            )
         }
 
         nonisolated let events: AsyncStream<GLKVMWebSocketEvent>
@@ -1227,19 +1324,42 @@ extension GLKVMClient {
         /// Held so the session outlives the client that made this socket.
         private let session: GLKVMURLSession
         private let request: URLRequest
+        private let timing: Timing
+        private let log: SessionLog?
+        /// Nil for a URLSession WebSocket task on `session`.
+        private let makeSocket: (@Sendable (URLRequest) -> HIDSocket)?
 
-        private var task: URLSessionWebSocketTask?
+        private var socket: HIDSocket?
         private var receiveTask: Task<Void, Never>?
         private var pingTask: Task<Void, Never>?
         /// When the last ping went out; cleared by the pong that answers it.
         private var pingSentAt: ContinuousClock.Instant?
+        /// When the oldest ping still without a pong went out; nil while every ping is answered.
+        private var unansweredPingSince: ContinuousClock.Instant?
         /// True once a frame has been sent successfully; cleared when the socket drops.
         private(set) var isConnected = false
         private(set) var isConnecting = false
+        /// True once the device has sent a frame or the socket has taken one: the handshake is done.
+        private var isOpen = false
 
-        init(session: GLKVMURLSession, request: URLRequest) {
+        // Frames go out one at a time, in the order they were sent: see `transmit`.
+        private var isSending = false
+        /// Sends waiting for the one before them, resumed with false if the socket closes first.
+        private var waitingToSend: [CheckedContinuation<Bool, Never>] = []
+        private var sendInFlight: PendingSend?
+
+        init(
+            session: GLKVMURLSession,
+            request: URLRequest,
+            timing: Timing = .standard,
+            log: SessionLog? = nil,
+            makeSocket: (@Sendable (URLRequest) -> HIDSocket)? = nil
+        ) {
             self.session = session
             self.request = request
+            self.timing = timing
+            self.log = log
+            self.makeSocket = makeSocket
 
             var c: AsyncStream<GLKVMWebSocketEvent>.Continuation!
             self.events = AsyncStream { continuation in
@@ -1249,9 +1369,9 @@ extension GLKVMClient {
         }
 
         func connect() {
-            guard task == nil else { return }
-            let ws = session.session.webSocketTask(with: request)
-            task = ws
+            guard socket == nil else { return }
+            let ws: HIDSocket = makeSocket?(request) ?? URLSessionHIDSocket(session.session.webSocketTask(with: request))
+            socket = ws
             isConnecting = true
             ws.resume()
 
@@ -1260,16 +1380,23 @@ extension GLKVMClient {
                 await self.receiveLoop()
             }
 
+            let interval = timing.pingInterval
             pingTask = Task { [weak self] in
                 guard let self else { return }
                 while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    try? await Task.sleep(for: interval)
                     if Task.isCancelled { break }
+                    let check = await self.pingCheck()
+                    if check == .notYetOpen {
+                        // Nothing to ping yet; URLSession gives up on a handshake that never
+                        // completes by itself.
+                        continue
+                    }
+                    guard check == .due else { break }
                     do {
-                        await self.markPingSent()
-                        try await self.send(eventType: "ping")
+                        try await self.sendPing()
                     } catch {
-                        // A failed ping is how a silently dropped socket is noticed.
+                        // A failed ping is how a dropped socket is noticed.
                         await self.markDisconnected()
                         break
                     }
@@ -1278,18 +1405,7 @@ extension GLKVMClient {
         }
 
         func disconnect() {
-            receiveTask?.cancel()
-            receiveTask = nil
-
-            pingTask?.cancel()
-            pingTask = nil
-
-            task?.cancel(with: .goingAway, reason: nil)
-            task = nil
-            isConnected = false
-            isConnecting = false
-
-            continuation.finish()
+            close(abort: false)
         }
 
         /// Clears the keyboard report and releases every mouse button on the device, so a key or
@@ -1305,35 +1421,80 @@ extension GLKVMClient {
         /// notices (the ping loop is how a silently dead socket is caught), and the owner opens a
         /// fresh client rather than reconnecting this one.
         private func markDisconnected() {
+            close(abort: true)
+        }
+
+        /// Returns without waiting for anything: a frame the socket is still holding, and every
+        /// frame waiting behind it, fail at once instead of whenever (or if ever) it lets go.
+        private func close(abort: Bool) {
             receiveTask?.cancel()
             receiveTask = nil
             pingTask?.cancel()
             pingTask = nil
-            task?.cancel()
-            task = nil
+            if abort {
+                socket?.abort()
+            } else {
+                socket?.cancel(with: .goingAway, reason: nil)
+            }
+            socket = nil
             isConnected = false
             isConnecting = false
+            sendInFlight?.end(.closed)
+            sendInFlight = nil
+            let waiting = waitingToSend
+            waitingToSend.removeAll()
+            waiting.forEach { $0.resume(returning: false) }
             continuation.finish()
         }
 
-        private func markPingSent() {
-            pingSentAt = .now
+        private enum PingCheck {
+            case due
+            case notYetOpen
+            /// No pong within the deadline; the socket has been closed.
+            case silent
+        }
+
+        /// Whether to ping now. The deadline is checked once per ping interval, so a socket that
+        /// stops answering is closed between `pongDeadline` and one interval after it.
+        private func pingCheck() -> PingCheck {
+            guard socket != nil else { return .silent }
+            guard isOpen else { return .notYetOpen }
+            if let since = unansweredPingSince {
+                let silence = ContinuousClock.now - since
+                if silence >= timing.pongDeadline {
+                    log?.warning(.hid, "No pong from the device for \(Self.milliseconds(silence)) ms; closing the HID socket")
+                    markDisconnected()
+                    return .silent
+                }
+            }
+            return .due
+        }
+
+        private func sendPing() async throws {
+            let now = ContinuousClock.now
+            pingSentAt = now
+            if unansweredPingSince == nil {
+                unansweredPingSince = now
+            }
+            try await send(eventType: "ping")
         }
 
         /// Attaches the measured round trip to a pong; other events pass through untouched.
         private func timed(_ event: GLKVMWebSocketEvent) -> GLKVMWebSocketEvent {
-            guard event.eventType == "pong", let sentAt = pingSentAt else { return event }
+            guard event.eventType == "pong" else { return event }
+            unansweredPingSince = nil
+            guard let sentAt = pingSentAt else { return event }
             pingSentAt = nil
             var timedEvent = event
-            timedEvent.roundTripMs = Int(((ContinuousClock.now - sentAt) / .milliseconds(1)).rounded())
+            timedEvent.roundTripMs = Self.milliseconds(ContinuousClock.now - sentAt)
             return timedEvent
         }
 
-        func send(eventType: String, event: JSONValue = .object([:])) async throws {
-            guard let task else {
-                throw WebSocketError.notConnected
-            }
+        private static func milliseconds(_ duration: Duration) -> Int {
+            Int((duration / .milliseconds(1)).rounded())
+        }
 
+        func send(eventType: String, event: JSONValue = .object([:])) async throws {
             let payload = GLKVMWebSocketSend(eventType: eventType, event: event)
             let encoder = JSONEncoder()
             let data: Data
@@ -1344,21 +1505,72 @@ extension GLKVMClient {
             }
 
             let text = String(decoding: data, as: UTF8.self)
-            try await task.send(.string(text))
-            // The socket may have been dropped while the frame was in flight.
-            guard self.task === task else { return }
-            isConnecting = false
-            isConnected = true
+            try await transmit(.string(text), describing: eventType)
         }
 
         private func sendBinary(_ data: Data) async throws {
-            guard let task else {
+            try await transmit(.data(data), describing: "HID report")
+        }
+
+        /// Puts one frame on the socket, after every frame sent before it. Every send goes through
+        /// here, pings and input alike, so the socket is never asked to take two frames at once
+        /// and they reach the device in the order they were sent. (The ping loop used to send on
+        /// its own, overlapping whatever input was going out.)
+        ///
+        /// Each frame has a deadline. A socket that has not taken a frame by then has stopped
+        /// draining: it is closed, the event stream ends so the owner reconnects, and the frames
+        /// queued behind it fail at once instead of waiting on a socket that is gone.
+        private func transmit(_ message: URLSessionWebSocketTask.Message, describing what: String) async throws {
+            guard socket != nil else { throw WebSocketError.notConnected }
+            if isSending {
+                let isOurTurn = await withCheckedContinuation { waitingToSend.append($0) }
+                guard isOurTurn else { throw WebSocketError.notConnected }
+            } else {
+                isSending = true
+            }
+            defer { passTheTurn() }
+
+            guard let socket else { throw WebSocketError.notConnected }
+            let deadline = isOpen ? timing.sendTimeout : timing.openTimeout
+            let outcome: PendingSend.Outcome = await withCheckedContinuation { continuation in
+                let pending = PendingSend(continuation)
+                sendInFlight = pending
+                socket.send(message) { error in
+                    pending.end(error.map { PendingSend.Outcome.failed($0) } ?? .sent)
+                }
+                pending.startDeadline(deadline)
+            }
+            sendInFlight = nil
+
+            switch outcome {
+            case .sent:
+                // The socket may have been dropped while the frame was in flight.
+                guard self.socket === socket else { return }
+                isOpen = true
+                isConnecting = false
+                isConnected = true
+            case .failed(let error):
+                throw error
+            case .timedOut:
+                if self.socket === socket {
+                    log?.warning(
+                        .hid,
+                        "HID socket did not take a \(what) frame within \(Self.milliseconds(deadline)) ms; closing it"
+                    )
+                    markDisconnected()
+                }
+                throw WebSocketError.sendTimedOut
+            case .closed:
                 throw WebSocketError.notConnected
             }
-            try await task.send(.data(data))
-            guard self.task === task else { return }
-            isConnecting = false
-            isConnected = true
+        }
+
+        private func passTheTurn() {
+            if waitingToSend.isEmpty {
+                isSending = false
+            } else {
+                waitingToSend.removeFirst().resume(returning: true)
+            }
         }
 
         func sendHidKey(key: String, state: Bool, finish: Bool = false) async throws {
@@ -1426,9 +1638,11 @@ extension GLKVMClient {
         private func receiveLoop() async {
             let decoder = JSONDecoder()
             while !Task.isCancelled {
-                guard let task else { break }
+                guard let socket else { break }
                 do {
-                    let msg = try await task.receive()
+                    let msg = try await socket.receive()
+                    // kvmd sends its state as soon as the socket opens.
+                    isOpen = true
                     switch msg {
                     case .string(let text):
                         guard let data = text.data(using: .utf8) else { continue }
@@ -1446,6 +1660,55 @@ extension GLKVMClient {
                     markDisconnected()
                     break
                 }
+            }
+        }
+
+        /// One frame's wait for the socket, ended once by whichever comes first: the socket
+        /// taking the frame (or failing it), the deadline, or the socket being closed. The
+        /// socket's completion arrives on a URLSession queue, hence the lock.
+        private final class PendingSend: @unchecked Sendable {
+            enum Outcome: Sendable {
+                case sent
+                case failed(Error)
+                case timedOut
+                case closed
+            }
+
+            private let lock = NSLock()
+            private var continuation: CheckedContinuation<Outcome, Never>?
+            private var deadline: Task<Void, Never>?
+
+            init(_ continuation: CheckedContinuation<Outcome, Never>) {
+                self.continuation = continuation
+            }
+
+            func startDeadline(_ duration: Duration) {
+                let timer = Task { [weak self] in
+                    try? await Task.sleep(for: duration)
+                    guard !Task.isCancelled else { return }
+                    self?.end(.timedOut)
+                }
+                let hasEnded = lock.withLock { () -> Bool in
+                    guard continuation != nil else { return true }
+                    deadline = timer
+                    return false
+                }
+                if hasEnded {
+                    timer.cancel()
+                }
+            }
+
+            func end(_ outcome: Outcome) {
+                let (continuation, deadline) = lock.withLock {
+                    () -> (CheckedContinuation<Outcome, Never>?, Task<Void, Never>?) in
+                    defer {
+                        self.continuation = nil
+                        self.deadline = nil
+                    }
+                    return (self.continuation, self.deadline)
+                }
+                deadline?.cancel()
+                continuation?.resume(returning: outcome)
             }
         }
     }
