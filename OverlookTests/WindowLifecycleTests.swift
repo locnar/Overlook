@@ -34,7 +34,7 @@ struct WindowLifecycleTests {
     /// A session connected to "Rack 3" and recording into `folder`.
     private func recordingSession(_ link: RecordingSessionLink, into folder: URL) async -> ConsoleSession {
         let session = makeSession(link)
-        _ = await session.connect(to: Fixtures.device(name: "Rack 3", host: "192.0.2.80"))
+        _ = await session.connect(to: Fixtures.device(nickname: "Rack 3", host: "192.0.2.80"))
         session.captureManager.recordingsFolder = folder
         session.captureManager.startRecording()
         return session
@@ -43,7 +43,7 @@ struct WindowLifecycleTests {
     // MARK: - Deciding
 
     @Test func whatClosingInvolvesFollowsTheSessionsState() {
-        let device = Fixtures.device(name: "Rack 3")
+        let device = Fixtures.device(nickname: "Rack 3")
         #expect(ConsoleSession.closeDecision(device: nil, isConnecting: false, isRecording: false) == .close)
         #expect(ConsoleSession.closeDecision(device: device, isConnecting: false, isRecording: false) == .disconnectAndClose)
         #expect(ConsoleSession.closeDecision(device: nil, isConnecting: true, isRecording: false) == .disconnectAndClose)
@@ -129,7 +129,7 @@ struct WindowLifecycleTests {
         // The recording was finished before the hang-up, not by it.
         let hangUp = link.entries.first { $0.step == .hangUp }
         #expect(hangUp?.wasRecording == false)
-        #expect(hangUp?.device?.name == "Rack 3")
+        #expect(hangUp?.device?.displayName == "Rack 3")
         // With nothing to ask about any more, the close goes ahead.
         #expect(session.closeDecision == .close)
     }
@@ -305,7 +305,7 @@ struct WindowLifecycleTests {
     // MARK: - The title
 
     @Test func theWindowTitleNamesTheDevice() {
-        let device = Fixtures.device(name: "Rack 3")
+        let device = Fixtures.device(nickname: "Rack 3")
         #expect(ContentView.windowTitlePrefix(device: device, isConnected: true) == "Overlook - Rack 3 / Connected")
         #expect(ContentView.windowTitlePrefix(device: device, isConnected: false) == "Overlook - Rack 3 / Disconnected")
         #expect(ContentView.windowTitlePrefix(device: nil, isConnected: false) == "Overlook - Overlook / Disconnected")

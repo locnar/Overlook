@@ -307,7 +307,7 @@ class TailscaleManager: ObservableObject {
             if await isKVMServiceAvailable(host: node.dnsName, port: port) {
                 return KVMDevice(
                     id: "tailscale-\(node.id)",
-                    name: "\(node.hostname) (Tailscale)",
+                    nickname: node.hostname,
                     host: node.dnsName,
                     port: port,
                     type: .tailscale,

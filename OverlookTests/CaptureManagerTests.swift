@@ -20,7 +20,7 @@ struct CaptureManagerTests {
     }
 
     private func connect(name: String = "Test KVM") {
-        connection.connectedDevice = Fixtures.device(name: name)
+        connection.connectedDevice = Fixtures.device(nickname: name)
     }
 
     private func disconnect() {

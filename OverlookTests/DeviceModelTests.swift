@@ -21,9 +21,9 @@ struct DeviceModelTests {
     }
 
     @Test func devicesAreEqualByIDAlone() {
-        let a = Fixtures.device(id: "same", name: "A", host: "192.0.2.1")
-        let b = Fixtures.device(id: "same", name: "B", host: "192.0.2.2")
-        let c = Fixtures.device(id: "other", name: "A", host: "192.0.2.1")
+        let a = Fixtures.device(id: "same", nickname: "A", host: "192.0.2.1")
+        let b = Fixtures.device(id: "same", nickname: "B", host: "192.0.2.2")
+        let c = Fixtures.device(id: "other", nickname: "A", host: "192.0.2.1")
         #expect(a == b)
         #expect(a != c)
         #expect(Set([a, b, c]).count == 2)

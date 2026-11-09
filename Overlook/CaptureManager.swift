@@ -464,7 +464,7 @@ final class CaptureManager: ObservableObject {
     /// `date` is a parameter so tests can pin the timestamp.
     func makeFileURL(in folder: URL, extension ext: String, date: Date = Date()) -> URL {
         var stem = "Overlook"
-        if let deviceName = connection.connectedDevice?.name {
+        if let deviceName = connection.connectedDevice?.displayName {
             let cleaned = deviceName
                 .replacingOccurrences(of: "/", with: "-")
                 .replacingOccurrences(of: ":", with: "-")

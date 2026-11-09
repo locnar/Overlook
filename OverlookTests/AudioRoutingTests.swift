@@ -85,7 +85,7 @@ struct AudioRoutingTests {
     @Test func playingFromAllWindowsTakesEffectAtOnceWithoutReconnecting() async {
         let a = openWindow()
         let b = openWindow()
-        _ = await b.connect(to: Fixtures.device(name: "Rack 7", host: "192.0.2.70"))
+        _ = await b.connect(to: Fixtures.device(nickname: "Rack 7", host: "192.0.2.70"))
         let bLink = links.all[1]
         let stepsBefore = bLink.steps
 

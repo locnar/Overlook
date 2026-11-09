@@ -45,7 +45,7 @@ struct DeviceCatalogTests {
     }
 
     @Test func loadsSavedDevicesSortedByNameWithStableIDs() throws {
-        try Fixtures.writeRecords([
+        try Fixtures.writeLegacyRecords([
             record(host: "192.0.2.20", name: "Bravo"),
             record(host: "fd00::5", port: 8443, name: "Alpha"),
         ], to: scratch.defaults)
@@ -53,7 +53,7 @@ struct DeviceCatalogTests {
 
         let devices = makeCatalog().availableDevices
 
-        #expect(devices.map(\.name) == ["Alpha", "Bravo"])
+        #expect(devices.map(\.displayName) == ["Alpha", "Bravo"])
         // Colons in an IPv6 host are replaced so the id stays one token.
         #expect(devices.map(\.id) == ["saved-fd00__5-8443", "saved-192.0.2.20-443"])
         #expect(devices[0].authToken == "")
@@ -63,17 +63,19 @@ struct DeviceCatalogTests {
     }
 
     @Test func collapsesRecordsForTheSameHostAndPort() throws {
-        try Fixtures.writeRecords([
+        try Fixtures.writeLegacyRecords([
             record(host: "192.0.2.20", name: "First"),
             record(host: "192.0.2.20", name: "Second"),
         ], to: scratch.defaults)
 
         let devices = makeCatalog().availableDevices
 
-        #expect(devices.map(\.name) == ["First"])
+        #expect(devices.map(\.displayName) == ["First"])
     }
 
     @Test func ignoresUnreadableSavedData() {
+        scratch.defaults.set(Data("not json".utf8), forKey: Fixtures.legacySavedDevicesKey)
+        #expect(makeCatalog().availableDevices.isEmpty)
         scratch.defaults.set(Data("not json".utf8), forKey: Fixtures.savedDevicesKey)
         #expect(makeCatalog().availableDevices.isEmpty)
     }
@@ -81,37 +83,37 @@ struct DeviceCatalogTests {
     // MARK: - Legacy token migration
 
     @Test func movesALegacyTokenIntoTheCredentialStore() throws {
-        try Fixtures.writeRecords([record(host: "192.0.2.20", name: "Old", authToken: "legacy")], to: scratch.defaults)
+        try Fixtures.writeLegacyRecords([record(host: "192.0.2.20", name: "Old", authToken: "legacy")], to: scratch.defaults)
 
         let devices = makeCatalog().availableDevices
 
         #expect(devices.first?.authToken == "legacy")
         #expect(credentials.tokens[FakeCredentialStore.key(host: "192.0.2.20", port: 443)] == "legacy")
-        let rewritten = try Fixtures.readRecords(from: scratch.defaults)
+        let rewritten = try Fixtures.readLegacyRecords(from: scratch.defaults)
         #expect(rewritten.count == 1)
         #expect(rewritten.first?.authToken == nil)
     }
 
     @Test func prefersTheKeychainTokenOverALegacyOne() throws {
-        try Fixtures.writeRecords([record(host: "192.0.2.20", name: "Old", authToken: "legacy")], to: scratch.defaults)
+        try Fixtures.writeLegacyRecords([record(host: "192.0.2.20", name: "Old", authToken: "legacy")], to: scratch.defaults)
         credentials.tokens[FakeCredentialStore.key(host: "192.0.2.20", port: 443)] = "current"
 
         let devices = makeCatalog().availableDevices
 
         #expect(devices.first?.authToken == "current")
         #expect(credentials.tokens[FakeCredentialStore.key(host: "192.0.2.20", port: 443)] == "current")
-        #expect(try Fixtures.readRecords(from: scratch.defaults).first?.authToken == nil)
+        #expect(try Fixtures.readLegacyRecords(from: scratch.defaults).first?.authToken == nil)
     }
 
     @Test func keepsTheLegacyTokenWhenTheKeychainRefusesIt() throws {
-        try Fixtures.writeRecords([record(host: "192.0.2.20", name: "Old", authToken: "legacy")], to: scratch.defaults)
+        try Fixtures.writeLegacyRecords([record(host: "192.0.2.20", name: "Old", authToken: "legacy")], to: scratch.defaults)
         credentials.refusesWrites = true
 
         let devices = makeCatalog().availableDevices
 
         #expect(devices.first?.authToken == "legacy")
         // Not rewritten: dropping the token from the record now would lose it.
-        #expect(try Fixtures.readRecords(from: scratch.defaults).first?.authToken == "legacy")
+        #expect(try Fixtures.readLegacyRecords(from: scratch.defaults).first?.authToken == "legacy")
     }
 
     // MARK: - Saving
@@ -132,34 +134,42 @@ struct DeviceCatalogTests {
 
         let records = try Fixtures.readRecords(from: scratch.defaults)
         #expect(records.count == 1)
-        #expect(records.first?.host == "192.0.2.30")
-        #expect(records.first?.port == 443)
-        #expect(records.first?.name == manual.name)
-        #expect(records.first?.authToken == nil)
+        #expect(records.first?.id == "saved-192.0.2.30-443")
+        #expect(records.first?.addresses == [.init(host: "192.0.2.30", port: 443)])
+        #expect(records.first?.lastUsed == .init(host: "192.0.2.30", port: 443))
+        // A manual entry has no nickname to save; the token is not in the record at all.
+        #expect(records.first?.nickname == nil)
+        let raw = String(decoding: scratch.defaults.data(forKey: Fixtures.savedDevicesKey) ?? Data(), as: UTF8.self)
+        #expect(raw.contains("secret") == false)
     }
 
     @Test func aSavedDeviceComesBackOnTheNextLaunch() {
         let first = makeCatalog()
-        let saved = first.persistDevice(Fixtures.device(name: "Rack 3", host: "192.0.2.40", authToken: "tok"))
+        let saved = first.persistDevice(Fixtures.device(nickname: "Rack 3", host: "192.0.2.40", authToken: "tok"))
 
         let second = makeCatalog()
 
         #expect(second.availableDevices.count == 1)
         let reloaded = second.availableDevices.first
         #expect(reloaded?.id == saved.id)
-        #expect(reloaded?.name == "Rack 3")
+        #expect(reloaded?.nickname == "Rack 3")
         #expect(reloaded?.host == "192.0.2.40")
         #expect(reloaded?.authToken == "tok")
     }
 
-    @Test func persistingAgainReplacesTheRecordForThatHostAndPort() throws {
+    @Test func persistingAgainKeepsTheOneRecordAndItsNickname() throws {
         let catalog = makeCatalog()
-        _ = catalog.persistDevice(Fixtures.device(name: "Old name", host: "192.0.2.40"))
-        _ = catalog.persistDevice(Fixtures.device(id: "manual-other", name: "New name", host: "192.0.2.40"))
+        let saved = catalog.persistDevice(Fixtures.device(nickname: "Old name", host: "192.0.2.40"))
+        // A later connect through the same address, from an entry with another name (a scan, a
+        // manual entry) does not rename the device or save a second one.
+        _ = catalog.persistDevice(Fixtures.device(id: "manual-other", nickname: "New name", host: "192.0.2.40"))
+        _ = catalog.persistDevice(Fixtures.device(id: "scanned-192.0.2.40-443", nickname: nil, host: "192.0.2.40"))
 
         let records = try Fixtures.readRecords(from: scratch.defaults)
-        #expect(records.map(\.name) == ["New name"])
-        #expect(catalog.availableDevices.map(\.name) == ["New name"])
+        #expect(records.map(\.nickname) == ["Old name"])
+        #expect(records.map(\.id) == [saved.id])
+        #expect(catalog.availableDevices.map(\.displayName) == ["Old name"])
+        #expect(catalog.availableDevices.map(\.id) == [saved.id])
     }
 
     @Test func persistingAnEmptyTokenRemovesTheStoredOne() {
@@ -179,7 +189,8 @@ struct DeviceCatalogTests {
         let device = catalog.addManualDevice(host: "192.0.2.50", port: 8443, type: .glinetComet)
 
         #expect(device.id.hasPrefix("manual-"))
-        #expect(device.name == "Manual KVM @ 192.0.2.50:8443")
+        #expect(device.nickname == nil)
+        #expect(device.displayName == "192.0.2.50:8443")
         #expect(device.capabilities == [.videoStreaming, .keyboardInput, .mouseInput])
         #expect(catalog.availableDevices.map(\.id) == [device.id])
         #expect(try Fixtures.readRecords(from: scratch.defaults).isEmpty)
@@ -198,7 +209,7 @@ struct DeviceCatalogTests {
         let catalog = makeCatalog()
         let keep = catalog.addManualDevice(host: "192.0.2.50", port: 443, type: .glinetComet)
         let drop = catalog.addManualDevice(host: "192.0.2.51", port: 443, type: .glinetComet)
-        _ = catalog.persistDevice(Fixtures.device(name: "Saved", host: "192.0.2.52"))
+        _ = catalog.persistDevice(Fixtures.device(nickname: "Saved", host: "192.0.2.52"))
 
         catalog.removeDevice(drop)
 
@@ -215,15 +226,15 @@ struct DeviceCatalogTests {
         scratch.defaults.set([pinKey: "aa", otherPinKey: "bb"], forKey: "overlook.trusted_certificates.v1")
         let trust = Fixtures.trustStore(scratch)
         let catalog = KVMDeviceManager(defaults: scratch.defaults, credentials: credentials, trustStore: trust)
-        let saved = catalog.persistDevice(Fixtures.device(name: "Gone", host: "192.0.2.60", authToken: "tok"))
-        _ = catalog.persistDevice(Fixtures.device(name: "Stays", host: "192.0.2.61", authToken: "tok2"))
+        let saved = catalog.persistDevice(Fixtures.device(nickname: "Gone", host: "192.0.2.60", authToken: "tok"))
+        _ = catalog.persistDevice(Fixtures.device(nickname: "Stays", host: "192.0.2.61", authToken: "tok2"))
         // A manual entry for the same address goes too: forgetting is by host and port.
         _ = catalog.addManualDevice(host: "192.0.2.60", port: 443, type: .glinetComet)
 
         catalog.forgetDevice(saved)
 
-        #expect(catalog.availableDevices.map(\.name) == ["Stays"])
-        #expect(try Fixtures.readRecords(from: scratch.defaults).map(\.name) == ["Stays"])
+        #expect(catalog.availableDevices.map(\.displayName) == ["Stays"])
+        #expect(try Fixtures.readRecords(from: scratch.defaults).map(\.nickname) == ["Stays"])
         #expect(credentials.deletedTokens == ["192.0.2.60:443"])
         #expect(credentials.deletedPasswords == ["192.0.2.60:443"])
         #expect(credentials.tokens[FakeCredentialStore.key(host: "192.0.2.61", port: 443)] == "tok2")
@@ -271,7 +282,7 @@ struct DeviceCatalogTests {
 
         catalog.forgetDevice(saved)
 
-        #expect(heard == [.forgotten(host: "192.0.2.80", port: 8443)])
+        #expect(heard == [.forgotten(id: saved.id, addresses: [DeviceAddress(host: "192.0.2.80", port: 8443)])])
     }
 
     @Test func updatingADeviceReplacesTheEntryWithTheSameID() {
@@ -296,7 +307,7 @@ struct DeviceCatalogTests {
 
         // Another window connects to it: saved under a new id, renamed, and the list re-sorted.
         var connected = manual
-        connected.name = "Rack 3"
+        connected.nickname = "Rack 3"
         let saved = catalog.persistDevice(connected)
 
         #expect(saved.id != manual.id)
@@ -305,7 +316,7 @@ struct DeviceCatalogTests {
         #expect(catalog.availableDevices.contains(manual) == false)
         // ...while one held by address still finds it, and is still one of the Picker's tags.
         #expect(catalog.device(at: selection)?.id == saved.id)
-        #expect(catalog.device(at: selection)?.name == "Rack 3")
+        #expect(catalog.device(at: selection)?.displayName == "Rack 3")
         #expect(catalog.availableDevices.map(\.address).contains(selection))
     }
 

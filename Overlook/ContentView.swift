@@ -99,7 +99,7 @@ struct ContentView: View {
     /// The device's name, not its type: with several windows open the title is what tells them
     /// apart (in the Window menu and Mission Control too), and every one of them is a GLKVM.
     static func windowTitlePrefix(device: KVMDevice?, isConnected: Bool) -> String {
-        let deviceLabel = device?.name ?? "Overlook"
+        let deviceLabel = device?.displayName ?? "Overlook"
 
         let connectionState: String
         if device == nil || isConnected == false {
@@ -308,7 +308,7 @@ struct ContentView: View {
                         isConnected: isConnected,
                         isScanning: kvmDeviceManager.isScanning,
                         devices: kvmDeviceManager.availableDevices,
-                        connectedDeviceName: connection.connectedDevice?.name,
+                        connectedDeviceName: connection.connectedDevice?.displayName,
                         videoSize: webRTCManager.videoSize,
                         onScan: {
                             kvmDeviceManager.scanForDevices()
@@ -324,7 +324,7 @@ struct ContentView: View {
                             guard device.id.hasPrefix("saved-") else { return }
                             // Forgetting a device another window is connected to would pull it out
                             // from under that session; show where it is open instead.
-                            if let other = session.registry?.session(showing: device.address, excluding: session) {
+                            if let other = session.registry?.session(showing: device, excluding: session) {
                                 other.bringWindowForward()
                                 return
                             }
@@ -1059,7 +1059,7 @@ struct ConnectionsPopoverView: View {
             Picker("Device", selection: $selection) {
                 Text("Select Device").tag(nil as DeviceAddress?)
                 ForEach(devices) { device in
-                    Text(device.name).tag(device.address as DeviceAddress?)
+                    Text(device.displayName).tag(device.address as DeviceAddress?)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -1096,7 +1096,7 @@ struct ConnectionsPopoverView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(connectedDeviceName ?? (selectedDevice?.name ?? "No Device"))
+                Text(connectedDeviceName ?? (selectedDevice?.displayName ?? "No Device"))
                     .font(.caption)
 
                 HStack {

@@ -618,7 +618,7 @@ class WebRTCManager: NSObject, ObservableObject {
         // attempt still waiting on Janus, or the live session when switching devices.
         consecutiveStallReconnects = 0
         telemetry.update { $0.clearSession() }
-        self.log.notice(.lifecycle, "Connect requested: \(device.name) (\(device.connectionString))")
+        self.log.notice(.lifecycle, "Connect requested: \(device.displayName) (\(device.connectionString))")
         beginSessionEnvironment()
         do {
             try await replaceConnection(with: device)
@@ -631,7 +631,7 @@ class WebRTCManager: NSObject, ObservableObject {
             throw error
         }
         telemetry.update { $0.sessionConnectedAt = Date() }
-        self.log.notice(.lifecycle, "Connected to \(device.name)")
+        self.log.notice(.lifecycle, "Connected to \(device.displayName)")
     }
 
     // MARK: - Session environment

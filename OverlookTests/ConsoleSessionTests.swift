@@ -153,7 +153,7 @@ struct ConsoleSessionTests {
         session.connection.connectedDevice = connected
 
         let manual = catalog.addManualDevice(host: "192.0.2.21", port: 443, type: .glinetComet)
-        let saved = catalog.persistDevice(Fixtures.device(name: "Other", host: "192.0.2.22"))
+        let saved = catalog.persistDevice(Fixtures.device(nickname: "Other", host: "192.0.2.22"))
         catalog.removeDevice(manual)
         catalog.forgetDevice(saved)
         catalog.cancelScan()
@@ -192,8 +192,8 @@ struct ConsoleSessionTests {
     @Test func forgettingADeviceReachesOnlyTheSessionConnectedToIt() throws {
         let a = makeSession()
         let b = makeSession()
-        let savedA = catalog.persistDevice(Fixtures.device(name: "A", host: "192.0.2.30"))
-        let deviceB = Fixtures.device(name: "B", host: "192.0.2.31")
+        let savedA = catalog.persistDevice(Fixtures.device(nickname: "A", host: "192.0.2.30"))
+        let deviceB = Fixtures.device(nickname: "B", host: "192.0.2.31")
         a.connection.connectedDevice = savedA
         a.connection.glkvmClient = try GLKVMClient(device: savedA)
         b.connection.connectedDevice = deviceB

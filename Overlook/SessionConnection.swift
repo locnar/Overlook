@@ -33,12 +33,22 @@ final class SessionConnection: ObservableObject {
                     if self.connectedDevice?.id == id {
                         self.connectedDevice = nil
                     }
-                case .forgotten(let host, let port):
-                    if self.connectedDevice?.host == host, self.connectedDevice?.port == port {
+                case .forgotten(let id, let addresses):
+                    if let connected = self.connectedDevice,
+                       connected.id == id || addresses.contains(connected.address) {
                         self.connectedDevice = nil
                         self.glkvmClient = nil
                     }
                 }
+            }
+            .store(in: &cancellables)
+
+        // A rename, a changed address list, or this entry becoming part of another device: take
+        // the new details and stay connected through the same address.
+        catalog.deviceUpdates
+            .sink { [weak self] update in
+                guard let self, let connected = self.connectedDevice, update.applies(to: connected) else { return }
+                self.connectedDevice = update.applied(to: connected)
             }
             .store(in: &cancellables)
     }
@@ -92,10 +102,9 @@ final class SessionConnection: ObservableObject {
             // A password typed for this attempt wins; otherwise fall back to one saved for the
             // device, so an expired token logs back in without a prompt.
             let provided = (password?.isEmpty == false) ? password : nil
-            let saved = provided == nil
-                ? DevicePasswordStore.load(host: finalDevice.host, port: finalDevice.port)
-                : nil
-            guard let candidate = provided ?? saved else {
+            // A password belongs to the device, so one saved under any of its addresses will do.
+            let saved = provided == nil ? catalog.savedPassword(for: finalDevice) : nil
+            guard let candidate = provided ?? saved?.password else {
                 throw KVMError.authenticationFailed
             }
 
@@ -117,10 +126,10 @@ final class SessionConnection: ObservableObject {
                 guard Self.isAuthRejection(error) else {
                     throw error
                 }
-                if saved != nil {
+                if let saved {
                     // Stale saved password: drop it so the operator is re-prompted rather than
                     // looping on it.
-                    DevicePasswordStore.delete(host: finalDevice.host, port: finalDevice.port)
+                    DevicePasswordStore.delete(host: saved.address.host, port: saved.address.port)
                 }
                 throw KVMError.authenticationFailed
             }

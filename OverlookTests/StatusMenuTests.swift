@@ -44,7 +44,7 @@ struct StatusMenuTests {
 
     private func openConnectedWindow(_ name: String, host: String) async -> ConsoleSession {
         let session = openWindow()
-        _ = await session.connect(to: Fixtures.device(id: "manual-\(host)", name: name, host: host))
+        _ = await session.connect(to: Fixtures.device(id: "manual-\(host)", nickname: name, host: host))
         return session
     }
 
@@ -104,7 +104,7 @@ struct StatusMenuTests {
         let a = openWindow()
         #expect(menu.model.connected.isEmpty)
 
-        _ = await a.connect(to: Fixtures.device(name: "Rack 1", host: "192.0.2.11"))
+        _ = await a.connect(to: Fixtures.device(nickname: "Rack 1", host: "192.0.2.11"))
         #expect(menu.model.connected.map(\.title) == ["Rack 1"])
 
         a.disconnect()

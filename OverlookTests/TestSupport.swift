@@ -55,6 +55,10 @@ final class FakeCredentialStore: DeviceCredentialStore {
         deletedTokens.append(key)
     }
 
+    func password(host: String, port: Int) -> String? {
+        passwords[Self.key(host: host, port: port)]
+    }
+
     func deletePassword(host: String, port: Int) {
         let key = Self.key(host: host, port: port)
         passwords.removeValue(forKey: key)
@@ -62,9 +66,9 @@ final class FakeCredentialStore: DeviceCredentialStore {
     }
 }
 
-/// The record format `KVMDeviceManager` writes under `overlook.saved_devices.v1`, spelled out
-/// here rather than borrowed from the app, so a change to the stored format fails a test instead
-/// of silently changing with it.
+/// The record format earlier versions wrote under `overlook.saved_devices.v1`, one per host:port,
+/// spelled out here rather than borrowed from the app, so a change to the stored format fails a
+/// test instead of silently changing with it.
 struct StoredDeviceRecord: Codable, Equatable {
     var host: String
     var port: Int
@@ -74,35 +78,71 @@ struct StoredDeviceRecord: Codable, Equatable {
     var capabilities: [String]
 }
 
+/// The record format `KVMDeviceManager` writes under `overlook.saved_devices.v2`, one per device
+/// with all of its addresses; spelled out here for the same reason.
+struct StoredDeviceRecordV2: Codable, Equatable {
+    struct Address: Codable, Equatable {
+        var host: String
+        var port: Int
+    }
+
+    var id: String
+    var nickname: String?
+    var addresses: [Address]
+    var lastUsed: Address?
+    var type: String
+    var capabilities: [String]
+}
+
 enum Fixtures {
-    static let savedDevicesKey = "overlook.saved_devices.v1"
+    static let legacySavedDevicesKey = "overlook.saved_devices.v1"
+    static let legacyBackupKey = "overlook.saved_devices.v1.backup"
+    static let savedDevicesKey = "overlook.saved_devices.v2"
 
     static func device(
         id: String = "manual-test",
-        name: String = "Test KVM",
+        nickname: String? = "Test KVM",
         host: String = "192.0.2.10",
         port: Int = 443,
+        addresses: [DeviceAddress] = [],
         type: KVMDeviceType = .glinetComet,
         authToken: String = ""
     ) -> KVMDevice {
         KVMDevice(
             id: id,
-            name: name,
+            nickname: nickname,
             host: host,
             port: port,
+            addresses: addresses,
             type: type,
             authToken: authToken,
             capabilities: [.videoStreaming, .keyboardInput, .mouseInput]
         )
     }
 
-    static func writeRecords(_ records: [StoredDeviceRecord], to defaults: UserDefaults) throws {
+    /// Records as a version before multi-address devices saved them.
+    static func writeLegacyRecords(_ records: [StoredDeviceRecord], to defaults: UserDefaults) throws {
+        defaults.set(try JSONEncoder().encode(records), forKey: legacySavedDevicesKey)
+    }
+
+    static func readLegacyRecords(from defaults: UserDefaults) throws -> [StoredDeviceRecord] {
+        guard let data = defaults.data(forKey: legacySavedDevicesKey) else { return [] }
+        return try JSONDecoder().decode([StoredDeviceRecord].self, from: data)
+    }
+
+    static func readRecords(from defaults: UserDefaults) throws -> [StoredDeviceRecordV2] {
+        guard let data = defaults.data(forKey: savedDevicesKey) else { return [] }
+        return try JSONDecoder().decode([StoredDeviceRecordV2].self, from: data)
+    }
+
+    static func writeRecords(_ records: [StoredDeviceRecordV2], to defaults: UserDefaults) throws {
         defaults.set(try JSONEncoder().encode(records), forKey: savedDevicesKey)
     }
 
-    static func readRecords(from defaults: UserDefaults) throws -> [StoredDeviceRecord] {
-        guard let data = defaults.data(forKey: savedDevicesKey) else { return [] }
-        return try JSONDecoder().decode([StoredDeviceRecord].self, from: data)
+    /// A catalog on `scratch`'s defaults, `credentials`, and a trust store of its own.
+    @MainActor
+    static func catalog(_ scratch: ScratchDefaults, credentials: FakeCredentialStore = FakeCredentialStore(), trust: DeviceTrustStore? = nil) -> KVMDeviceManager {
+        KVMDeviceManager(defaults: scratch.defaults, credentials: credentials, trustStore: trust ?? trustStore(scratch))
     }
 
     /// A trust store backed by its own scratch suite, so `forgetDevice` cannot drop a real pin.

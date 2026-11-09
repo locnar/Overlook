@@ -69,6 +69,7 @@
 		0100010F /* ConnectionLogTaggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200010F /* ConnectionLogTaggingTests.swift */; };
 		01000038 /* StatusMenuModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003C /* StatusMenuModel.swift */; };
 		01000039 /* RemotePaste.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003D /* RemotePaste.swift */; };
+		0100003A /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003E /* DeviceIdentity.swift */; };
 		01000110 /* StatusMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000110 /* StatusMenuTests.swift */; };
 		01000037 /* WindowDelegateInterposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200003B /* WindowDelegateInterposer.swift */; };
 		01000111 /* WindowDelegateInterposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000111 /* WindowDelegateInterposerTests.swift */; };
@@ -81,6 +82,8 @@
 		01000118 /* JanusTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000118 /* JanusTransactionTests.swift */; };
 		01000119 /* StreamStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000119 /* StreamStatsTests.swift */; };
 		0100011A /* HIDSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011A /* HIDSocketTests.swift */; };
+		0100011C /* MultiAddressCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011C /* MultiAddressCatalogTests.swift */; };
+		0100011B /* DeviceIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011B /* DeviceIdentityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -163,6 +166,7 @@
 		0200010F /* ConnectionLogTaggingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionLogTaggingTests.swift; sourceTree = "<group>"; };
 		0200003C /* StatusMenuModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuModel.swift; sourceTree = "<group>"; };
 		0200003D /* RemotePaste.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePaste.swift; sourceTree = "<group>"; };
+		0200003E /* DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentity.swift; sourceTree = "<group>"; };
 		02000110 /* StatusMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuTests.swift; sourceTree = "<group>"; };
 		0200003B /* WindowDelegateInterposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowDelegateInterposer.swift; sourceTree = "<group>"; };
 		02000111 /* WindowDelegateInterposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowDelegateInterposerTests.swift; sourceTree = "<group>"; };
@@ -175,6 +179,8 @@
 		02000118 /* JanusTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusTransactionTests.swift; sourceTree = "<group>"; };
 		02000119 /* StreamStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamStatsTests.swift; sourceTree = "<group>"; };
 		0200011A /* HIDSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDSocketTests.swift; sourceTree = "<group>"; };
+		0200011C /* MultiAddressCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiAddressCatalogTests.swift; sourceTree = "<group>"; };
+		0200011B /* DeviceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -249,6 +255,7 @@
 				0200003B /* WindowDelegateInterposer.swift */,
 				0200003C /* StatusMenuModel.swift */,
 				0200003D /* RemotePaste.swift */,
+				0200003E /* DeviceIdentity.swift */,
 				0200003A /* AudioPreferences.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
@@ -289,6 +296,8 @@
 				02000118 /* JanusTransactionTests.swift */,
 				02000119 /* StreamStatsTests.swift */,
 				0200011A /* HIDSocketTests.swift */,
+				0200011C /* MultiAddressCatalogTests.swift */,
+				0200011B /* DeviceIdentityTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
 				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
@@ -458,6 +467,7 @@
 				01000037 /* WindowDelegateInterposer.swift in Sources */,
 				01000038 /* StatusMenuModel.swift in Sources */,
 				01000039 /* RemotePaste.swift in Sources */,
+				0100003A /* DeviceIdentity.swift in Sources */,
 				01000036 /* AudioPreferences.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
@@ -496,6 +506,8 @@
 				01000118 /* JanusTransactionTests.swift in Sources */,
 				01000119 /* StreamStatsTests.swift in Sources */,
 				0100011A /* HIDSocketTests.swift in Sources */,
+				0100011C /* MultiAddressCatalogTests.swift in Sources */,
+				0100011B /* DeviceIdentityTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
 				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,

@@ -21,7 +21,7 @@ struct ContentControlBar: View {
             Picker("Device", selection: $selectedDevice) {
                 Text("Select Device").tag(nil as KVMDevice?)
                 ForEach(devices) { device in
-                    Text(device.name).tag(device as KVMDevice?)
+                    Text(device.displayName).tag(device as KVMDevice?)
                 }
             }
             .frame(width: 200)

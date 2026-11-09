@@ -292,13 +292,13 @@ class MenuBarAgent: NSObject, ObservableObject {
             deviceMenu.addItem(noDevicesItem)
         } else {
             for device in availableDevices {
-                let deviceItem = NSMenuItem(title: device.name, action: #selector(connectToDevice(_:)), keyEquivalent: "")
+                let deviceItem = NSMenuItem(title: device.displayName, action: #selector(connectToDevice(_:)), keyEquivalent: "")
                 deviceItem.target = self
                 deviceItem.representedObject = device
                 
                 // Checked when the active window shows it; choosing a device open in another
                 // window brings that window forward instead.
-                if currentDevice?.host == device.host, currentDevice?.port == device.port {
+                if let currentDevice, currentDevice.id == device.id || device.includes(currentDevice.address) {
                     deviceItem.state = .on
                 }
                 
@@ -316,7 +316,7 @@ class MenuBarAgent: NSObject, ObservableObject {
             forgetMenu.addItem(NSMenuItem(title: "No saved devices", action: nil, keyEquivalent: ""))
         } else {
             for device in savedDevices {
-                let item = NSMenuItem(title: device.name, action: #selector(forgetDevice(_:)), keyEquivalent: "")
+                let item = NSMenuItem(title: device.displayName, action: #selector(forgetDevice(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = device
                 forgetMenu.addItem(item)
@@ -333,7 +333,7 @@ class MenuBarAgent: NSObject, ObservableObject {
             removeMenu.addItem(NSMenuItem(title: "No manual devices", action: nil, keyEquivalent: ""))
         } else {
             for device in manualDevices {
-                let item = NSMenuItem(title: device.name, action: #selector(removeManualDevice(_:)), keyEquivalent: "")
+                let item = NSMenuItem(title: device.displayName, action: #selector(removeManualDevice(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = device
                 removeMenu.addItem(item)
@@ -467,7 +467,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     /// the active session if it is free, or to a new window if it is not (or none is open).
     private func connectFromMenu(to device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
         let target: ConsoleSession
-        switch registry.connectTarget(for: device.address) {
+        switch registry.connectTarget(for: device) {
         case .bringForward(let open):
             open.bringWindowForward()
             closePopover()
@@ -478,7 +478,7 @@ class MenuBarAgent: NSObject, ObservableObject {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate()
             guard let opened = registry.openWindow() else {
-                showError(title: "Failed to connect", message: "Overlook could not open a window for \(device.name).")
+                showError(title: "Failed to connect", message: "Overlook could not open a window for \(device.displayName).")
                 return
             }
             target = opened
@@ -514,7 +514,7 @@ class MenuBarAgent: NSObject, ObservableObject {
                 showError(title: "Failed to connect", message: String(describing: KVMError.authenticationFailed))
                 return
             }
-            guard let entry = promptForPassword(deviceName: device.name) else { return }
+            guard let entry = promptForPassword(deviceName: device.displayName) else { return }
             await connectSession(session, to: device, password: entry.password, savePassword: entry.save)
         case .certificateChanged(let host, let port, let fingerprint):
             let error = KVMError.certificateChanged(host: host, port: port, fingerprint: fingerprint)
@@ -668,7 +668,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     /// Refused while any window shows the device, not only the active one: the catalog would
     /// pull it out from under that window's session.
     private func forget(_ device: KVMDevice) {
-        if registry.session(showing: device.address) != nil {
+        if registry.session(showing: device) != nil {
             showError(title: "Cannot forget", message: "Disconnect before forgetting this device.")
             return
         }
@@ -676,7 +676,7 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
 
     private func remove(_ device: KVMDevice) {
-        if registry.session(showing: device.address) != nil {
+        if registry.session(showing: device) != nil {
             showError(title: "Cannot remove", message: "Disconnect before removing this device.")
             return
         }
@@ -791,7 +791,7 @@ struct MenuBarView: View {
                         ForEach(kvmDeviceManager.availableDevices) { device in
                             MenuBarDeviceRow(
                                 device: device,
-                                isConnected: connection.connectedDevice?.host == device.host && connection.connectedDevice?.port == device.port,
+                                isConnected: connection.connectedDevice.map { $0.id == device.id || device.includes($0.address) } ?? false,
                                 onConnect: {
                                     onConnect(device)
                                 },
@@ -845,7 +845,7 @@ struct MenuBarDeviceRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading) {
-                Text(device.name)
+                Text(device.displayName)
                     .font(.subheadline)
                     .fontWeight(.medium)
                 

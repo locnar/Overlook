@@ -92,7 +92,7 @@ struct ConnectionLogTaggingTests {
         #expect(session.webRTCManager.log === session.log)
         #expect(session.inputManager.log === session.log)
 
-        _ = await session.connect(to: Fixtures.device(name: "Rack 8", host: "192.0.2.88", port: 8443))
+        _ = await session.connect(to: Fixtures.device(nickname: "Rack 8", host: "192.0.2.88", port: 8443))
         #expect(session.log.deviceLabel == "192.0.2.88:8443")
 
         // The operator disconnect line, which the session logs as it hangs up.

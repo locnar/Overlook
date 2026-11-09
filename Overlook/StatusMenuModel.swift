@@ -118,7 +118,7 @@ final class StatusMenuState: ObservableObject {
                 .combineLatest(session.captureManager.$isRecording)
                 .sink { [weak self] device, isRecording in
                     guard let self else { return }
-                    self.states[id] = StatusMenuModel.SessionState(id: id, deviceName: device?.name, isRecording: isRecording)
+                    self.states[id] = StatusMenuModel.SessionState(id: id, deviceName: device?.displayName, isRecording: isRecording)
                     self.rebuild()
                 }
         }

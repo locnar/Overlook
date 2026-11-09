@@ -106,6 +106,12 @@ final class SessionRegistry: ObservableObject {
         allSessions.first { $0 !== excluding && $0.isShowing(address) }
     }
 
+    /// The session showing `device` through any of its addresses, or signing in to it, other
+    /// than `excluding`.
+    func session(showing device: KVMDevice, excluding: ConsoleSession? = nil) -> ConsoleSession? {
+        allSessions.first { $0 !== excluding && $0.isShowing(device) }
+    }
+
     /// Where a connect from the menu-bar agent goes.
     enum ConnectTarget {
         /// The device is already open in this session's window: bring it forward instead.
@@ -120,6 +126,19 @@ final class SessionRegistry: ObservableObject {
         if let open = session(showing: address) {
             return .bringForward(open)
         }
+        return idleTarget()
+    }
+
+    /// Where a connect to `device` goes: the window showing it through any of its addresses, else
+    /// the active window if it is free, else a new one.
+    func connectTarget(for device: KVMDevice) -> ConnectTarget {
+        if let open = session(showing: device) {
+            return .bringForward(open)
+        }
+        return idleTarget()
+    }
+
+    private func idleTarget() -> ConnectTarget {
         if let active = activeSession, active.isIdle {
             return .connect(active)
         }

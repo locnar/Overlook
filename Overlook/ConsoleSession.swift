@@ -35,6 +35,9 @@ final class ConsoleSession: ObservableObject {
     /// The device a connect is signing in to, from the moment it starts until the device has
     /// accepted or refused it. After that `connection.connectedDevice` says where the session is.
     @Published private(set) var connectingAddress: DeviceAddress?
+    /// The device a connect is signing in to, as the catalog listed it then, so that a connect to
+    /// another of its addresses finds this window.
+    private var connectingDevice: KVMDevice?
     /// Set as the window closes. A connect still signing in then is undone when it lands.
     private(set) var isClosed = false
     /// Whether a connect has started since the operator last disconnected, so the next teardown
@@ -137,8 +140,9 @@ final class ConsoleSession: ObservableObject {
         savePassword: Bool = false,
         onSignedIn: (KVMDevice) -> Void = { _ in }
     ) async -> ConnectOutcome {
-        // One window per device, matched by address since the id changes once a device is saved.
-        if let other = registry?.session(showing: device.address, excluding: self) {
+        // One window per device, across all of its addresses: the device's id changes once it is
+        // saved, and the same device may be reached through another of its addresses.
+        if let other = registry?.session(showing: device, excluding: self) {
             return .openElsewhere(other)
         }
 
@@ -146,11 +150,13 @@ final class ConsoleSession: ObservableObject {
         // included: the device it is talking to now is the one an operator would look for.
         log.deviceLabel = SessionLog.label(host: device.host, port: device.port)
         connectingAddress = device.address
+        connectingDevice = device
         hasConnectionToEnd = true
         let connected: KVMDevice
         do {
             connected = try await link.signIn(self, to: device, password: password, savePassword: savePassword)
             connectingAddress = nil
+            connectingDevice = nil
         } catch KVMError.authenticationFailed {
             signInDidNotLand()
             return .needsPassword
@@ -188,6 +194,7 @@ final class ConsoleSession: ObservableObject {
     /// whatever it had before, or with nothing for a later teardown to log as a disconnect.
     private func signInDidNotLand() {
         connectingAddress = nil
+        connectingDevice = nil
         if connection.connectedDevice == nil {
             hasConnectionToEnd = false
         }
@@ -210,9 +217,31 @@ final class ConsoleSession: ObservableObject {
         link.stopInput(self)
     }
 
-    /// Whether this session shows, or is signing in to, the device at `address`.
+    /// Whether this session shows, or is signing in to, the device at `address`: through that
+    /// address, or through another address of the same device.
     func isShowing(_ address: DeviceAddress) -> Bool {
-        connection.connectedDevice?.address == address || connectingAddress == address
+        if let connected = connection.connectedDevice, connected.includes(address) {
+            return true
+        }
+        if let connectingDevice, connectingDevice.includes(address) {
+            return true
+        }
+        return connectingAddress == address
+    }
+
+    /// Whether this session shows, or is signing in to, `device` through any of its addresses.
+    func isShowing(_ device: KVMDevice) -> Bool {
+        if let connected = connection.connectedDevice {
+            if connected.id == device.id || device.includes(connected.address) || connected.includes(device.address) {
+                return true
+            }
+        }
+        if let connectingDevice {
+            if connectingDevice.id == device.id || device.includes(connectingDevice.address) || connectingDevice.includes(device.address) {
+                return true
+            }
+        }
+        return false
     }
 
     /// Neither connected nor connecting, so a connect from the menu bar can use this window.
@@ -251,7 +280,7 @@ final class ConsoleSession: ObservableObject {
 
     static func closeDecision(device: KVMDevice?, isConnecting: Bool, isRecording: Bool) -> CloseDecision {
         if isRecording {
-            return .confirmStopRecording(deviceName: device?.name ?? "Overlook")
+            return .confirmStopRecording(deviceName: device?.displayName ?? "Overlook")
         }
         if device != nil || isConnecting {
             return .disconnectAndClose

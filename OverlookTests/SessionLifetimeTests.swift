@@ -92,7 +92,7 @@ struct SessionLifetimeTests {
         let session = registry.sessionForNewWindow()
         registry.add(session)
         registry.sessionDidBecomeKey(session)
-        _ = await session.connect(to: Fixtures.device(name: "Rack \(host)", host: host))
+        _ = await session.connect(to: Fixtures.device(nickname: "Rack \(host)", host: host))
         #expect(session.panels.isSessionActive)
         #expect(menu.model.connected.contains { $0.deviceName == "Rack \(host)" })
         let watched = Watched(session)
@@ -155,7 +155,7 @@ struct SessionLifetimeTests {
         let session = registry.sessionForNewWindow()
         registry.add(session)
         registry.sessionDidBecomeKey(session)
-        _ = await session.connect(to: Fixtures.device(name: "Rack \(host)", host: host))
+        _ = await session.connect(to: Fixtures.device(nickname: "Rack \(host)", host: host))
         let client = try #require(session.connection.glkvmClient)
         let watched = WatchedClient(client)
         #expect(watched.delegate != nil)
@@ -234,7 +234,7 @@ struct SessionLifetimeTests {
     @Test func anotherWindowStayingOpenDoesNotKeepTheClosedOneAlive() async {
         let other = registry.sessionForNewWindow()
         registry.add(other)
-        _ = await other.connect(to: Fixtures.device(name: "Rack other", host: "192.0.2.32"))
+        _ = await other.connect(to: Fixtures.device(nickname: "Rack other", host: "192.0.2.32"))
 
         let watched = await openUseAndClose(host: "192.0.2.33")
         await waitForRelease(watched)
