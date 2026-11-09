@@ -234,6 +234,14 @@ final class JanusTransactions {
     }
 }
 
+/// One entry of a WebRTC statistics report: its `type` ("inbound-rtp", "candidate-pair", …) and
+/// its values. A polling tick works from these, keyed by entry id, rather than from
+/// `RTCStatisticsReport`, which only WebRTC can make, so a test can hand a tick numbers of its own.
+struct StatsEntry {
+    let type: String
+    let values: [String: Any]
+}
+
 #if canImport(WebRTC)
 @MainActor
 class WebRTCManager: NSObject, ObservableObject {
@@ -1726,11 +1734,49 @@ class WebRTCManager: NSObject, ObservableObject {
             }
         }
 
-        let video = await collectInboundVideoStats(from: peerConnection)
+        var readAudio: (@MainActor () async -> [String: StatsEntry])?
+        if let audioPeerConnection {
+            readAudio = { await Self.statisticsEntries(of: audioPeerConnection) }
+        }
+        await measureStreamStats(
+            readVideo: { await Self.statisticsEntries(of: peerConnection) },
+            readAudio: readAudio
+        )
+    }
+
+    private static func statisticsEntries(of peerConnection: RTCPeerConnection) async -> [String: StatsEntry] {
+        await peerConnection.statistics().statistics.mapValues { StatsEntry(type: $0.type, values: $0.values) }
+    }
+
+    /// Reads the video report and, when there is an audio peer, the audio one, then turns them
+    /// into samples against the previous tick's counters. Internal so a test can run a tick on
+    /// reports of its own.
+    func measureStreamStats(
+        readVideo: @MainActor () async -> [String: StatsEntry],
+        readAudio: (@MainActor () async -> [String: StatsEntry])?
+    ) async {
+        // Both reads suspend, and a teardown or a reconnect can land during either. The teardown
+        // resets the previous tick's counters, which then belong to the next connection: applied
+        // after that, an old peer's report became the new connection's kbps baseline (its first
+        // reading compared the new peer's byte count with the old one's) and put the old
+        // connection's numbers in the new session's panel. So nothing is read from or written to
+        // that state until both reports are in, and then only if the connection is the same one.
+        let generation = connectionGeneration
+        let videoReport = await readVideo()
+        var audioReport: [String: StatsEntry]?
+        if let readAudio {
+            audioReport = await readAudio()
+        }
+        guard generation == connectionGeneration else {
+            self.log.debug(.stream, "Dropped a stats sample from a connection that has since been replaced")
+            return
+        }
+
+        let video = inboundVideoSample(from: videoReport)
 
         let audio: AudioStatsSample
-        if let audioPeerConnection {
-            audio = await collectInboundAudioStats(from: audioPeerConnection)
+        if let audioReport {
+            audio = inboundAudioSample(from: audioReport)
         } else {
             lastInboundAudioBytesReceived = nil
             lastInboundAudioBytesTimestamp = nil
@@ -1761,14 +1807,14 @@ class WebRTCManager: NSObject, ObservableObject {
     /// The ICE candidate pair traffic is flowing over. libwebrtc names it on the `transport`
     /// statistic (`selectedCandidatePairId`); the pair itself carries no `selected` flag. A
     /// nominated, succeeded pair is the fallback for builds that lack the transport entry.
-    private static func selectedCandidatePair(in report: RTCStatisticsReport) -> RTCStatistics? {
-        for statistic in report.statistics.values where statistic.type == "transport" {
+    private static func selectedCandidatePair(in report: [String: StatsEntry]) -> StatsEntry? {
+        for statistic in report.values where statistic.type == "transport" {
             if let pairId = statistic.values["selectedCandidatePairId"] as? String,
-               let pair = report.statistics[pairId] {
+               let pair = report[pairId] {
                 return pair
             }
         }
-        for statistic in report.statistics.values where statistic.type == "candidate-pair" {
+        for statistic in report.values where statistic.type == "candidate-pair" {
             let state = statistic.values["state"] as? String
             let nominated = (statistic.values["nominated"] as? Bool)
                 ?? (statistic.values["nominated"] as? NSNumber)?.boolValue
@@ -1782,12 +1828,12 @@ class WebRTCManager: NSObject, ObservableObject {
 
     /// "host → host · UDP", plus the remote address, for the selected pair.
     private static func describeNetworkPath(
-        pair: RTCStatistics,
-        in report: RTCStatisticsReport
+        pair: StatsEntry,
+        in report: [String: StatsEntry]
     ) -> (path: String?, remoteAddress: String?) {
-        func candidate(_ key: String) -> RTCStatistics? {
+        func candidate(_ key: String) -> StatsEntry? {
             guard let id = pair.values[key] as? String else { return nil }
-            return report.statistics[id]
+            return report[id]
         }
         let local = candidate("localCandidateId")
         let remote = candidate("remoteCandidateId")
@@ -1814,11 +1860,10 @@ class WebRTCManager: NSObject, ObservableObject {
         return (parts.joined(separator: " · "), remoteAddress)
     }
 
-    private func collectInboundVideoStats(from peerConnection: RTCPeerConnection) async -> VideoStatsSample {
+    private func inboundVideoSample(from report: [String: StatsEntry]) -> VideoStatsSample {
         let lastBytes = lastInboundVideoBytesReceived
         let lastTs = lastInboundVideoBytesTimestamp
 
-        let report = await peerConnection.statistics()
         func numberValue(_ any: Any?) -> NSNumber? {
             any as? NSNumber
         }
@@ -1841,7 +1886,7 @@ class WebRTCManager: NSObject, ObservableObject {
         var decoder: String?
         var decoderIsPowerEfficient: Bool?
 
-        for statistic in report.statistics.values {
+        for statistic in report.values {
             guard statistic.type == "inbound-rtp" else { continue }
 
             if let kind = statistic.values["kind"] as? String, kind != "video" { continue }
@@ -1890,7 +1935,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 pauseCount = n.intValue
             }
             if let codecId = statistic.values["codecId"] as? String,
-               let mimeType = report.statistics[codecId]?.values["mimeType"] as? String {
+               let mimeType = report[codecId]?.values["mimeType"] as? String {
                 // "video/H264" → "H264"
                 codec = mimeType.split(separator: "/").last.map(String.init) ?? mimeType
             }
@@ -2022,11 +2067,10 @@ class WebRTCManager: NSObject, ObservableObject {
         )
     }
 
-    private func collectInboundAudioStats(from audioPeerConnection: RTCPeerConnection) async -> AudioStatsSample {
+    private func inboundAudioSample(from audioReport: [String: StatsEntry]) -> AudioStatsSample {
         let lastAudioBytes = lastInboundAudioBytesReceived
         let lastAudioTs = lastInboundAudioBytesTimestamp
 
-        let audioReport = await audioPeerConnection.statistics()
         func audioNumberValue(_ any: Any?) -> NSNumber? {
             any as? NSNumber
         }
@@ -2043,7 +2087,7 @@ class WebRTCManager: NSObject, ObservableObject {
             audioCurrentRoundTripTimeSeconds = rtt
         }
 
-        for statistic in audioReport.statistics.values {
+        for statistic in audioReport.values {
             guard statistic.type == "inbound-rtp" else { continue }
 
             if let kind = statistic.values["kind"] as? String, kind != "audio" { continue }
