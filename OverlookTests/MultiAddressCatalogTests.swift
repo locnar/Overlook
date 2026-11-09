@@ -380,4 +380,62 @@ struct MultiAddressCatalogTests {
         }
         #expect(open === first)
     }
+
+    // MARK: - Menu bar and Quick Connect
+
+    @Test func aTypedAddressOfASavedDeviceConnectsAsThatDevice() {
+        let catalog = makeCatalog()
+        let desk = saveDesk(in: catalog)
+
+        let typed = catalog.device(forTyped: DeviceAddress(host: "MDesktopKVM", port: 443))
+
+        #expect(typed.id == desk.id)
+        #expect(typed.nickname == "Desk")
+        #expect(typed.address == Self.tailnet)
+        // No manual entry was added for it.
+        #expect(catalog.availableDevices.map(\.id) == [desk.id])
+    }
+
+    @Test func anUnknownTypedAddressGetsAManualEntry() {
+        let catalog = makeCatalog()
+        _ = saveDesk(in: catalog)
+
+        let typed = catalog.device(forTyped: DeviceAddress(host: "192.0.2.77", port: 8443))
+
+        #expect(typed.id.hasPrefix("manual-"))
+        #expect(typed.nickname == nil)
+        #expect(catalog.availableDevices.count == 2)
+    }
+
+    @Test func theMenuBarConnectsThroughTheLastUsedAddressAndFindsTheOpenWindow() async {
+        let catalog = makeCatalog()
+        let desk = saveDesk(in: catalog)
+        catalog.setLastUsedAddress(Self.tailnet, for: desk)
+        let defaults = scratch.defaults
+        var links: [RecordingSessionLink] = []
+        let registry = SessionRegistry(catalog: catalog) { catalog in
+            let link = RecordingSessionLink(catalog: catalog)
+            links.append(link)
+            return ConsoleSession(catalog: catalog, defaults: defaults, link: link, connectionLog: .inMemory())
+        }
+        let active = registry.sessionForNewWindow()
+        registry.add(active)
+
+        // What the Devices menu and the popover do with the listed entry.
+        let entry = catalog.availableDevices[0]
+        guard case .connect(let target) = registry.connectTarget(for: ConnectVia.plainConnect(entry)) else {
+            Issue.record("Expected the free active window")
+            return
+        }
+        _ = await target.connect(to: ConnectVia.plainConnect(entry))
+        #expect(links.first?.steps.first == .signIn(host: "mdesktopkvm", password: nil))
+
+        // Quick Connect to the device's other address finds that window.
+        let typed = catalog.device(forTyped: Self.lan)
+        guard case .bringForward(let open) = registry.connectTarget(for: typed) else {
+            Issue.record("Expected the open window")
+            return
+        }
+        #expect(open === active)
+    }
 }

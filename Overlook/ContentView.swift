@@ -692,8 +692,7 @@ struct ContentView: View {
         }
 
         // An address of a saved device connects as that device; any other gets a manual entry.
-        let device = kvmDeviceManager.savedDevice(containing: address)?.via(address)
-            ?? kvmDeviceManager.addManualDevice(host: address.host, port: address.port, type: .glinetComet)
+        let device = kvmDeviceManager.device(forTyped: address)
 
         selectedAddress = device.address
 

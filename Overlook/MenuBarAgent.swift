@@ -291,8 +291,13 @@ class MenuBarAgent: NSObject, ObservableObject {
             noDevicesItem.tag = 300
             deviceMenu.addItem(noDevicesItem)
         } else {
+            // As in the Connections panel: the nickname with the address after it, or the
+            // address alone. Choosing one connects through its last-used address.
+            let column = DeviceMenuTitle.column(for: availableDevices.map(DeviceMenuTitle.init))
             for device in availableDevices {
+                let title = DeviceMenuTitle(device)
                 let deviceItem = NSMenuItem(title: device.displayName, action: #selector(connectToDevice(_:)), keyEquivalent: "")
+                deviceItem.attributedTitle = title.attributed(column: column)
                 deviceItem.target = self
                 deviceItem.representedObject = device
                 
@@ -399,6 +404,18 @@ class MenuBarAgent: NSObject, ObservableObject {
         return (password, saveCheckbox.state == .on)
     }
 
+    /// "This is <device>": Add address, or Keep separate (also Escape).
+    private func askToLink(_ prompt: DeviceLinkPrompt) -> DeviceLinkPrompt.Answer {
+        let alert = NSAlert()
+        alert.messageText = prompt.title
+        alert.informativeText = prompt.message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: DeviceLinkPrompt.addTitle)
+        let keep = alert.addButton(withTitle: DeviceLinkPrompt.keepTitle)
+        keep.keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn ? .addAddress : DeviceLinkPrompt.escapeAnswer
+    }
+
     private func showError(title: String, message: String) {
         let alert = NSAlert()
         alert.messageText = title
@@ -438,7 +455,8 @@ class MenuBarAgent: NSObject, ObservableObject {
                 onShowWindow: { [weak self] in self?.showMainWindow() },
                 onScan: { [weak self] in self?.kvmDeviceManager.scanForDevices() },
                 onConnect: { [weak self] device in
-                    self?.connectFromMenu(to: device)
+                    // Through the device's last-used address, as from the Devices menu.
+                    self?.connectFromMenu(to: ConnectVia.plainConnect(device))
                 },
                 onDisconnect: { [weak self] in
                     guard let self else { return }
@@ -460,7 +478,10 @@ class MenuBarAgent: NSObject, ObservableObject {
     
     @objc private func connectToDevice(_ sender: NSMenuItem) {
         guard let device = sender.representedObject as? KVMDevice else { return }
-        connectFromMenu(to: device)
+        // The catalog's entry now (its last-used address may have changed since the menu was
+        // built), through its last-used address: one attempt, no fallback.
+        let current = kvmDeviceManager.availableDevices.first { $0.id == device.id } ?? device
+        connectFromMenu(to: ConnectVia.plainConnect(current))
     }
 
     /// A device open in a window already brings that window forward. Otherwise the connect goes to
@@ -498,16 +519,21 @@ class MenuBarAgent: NSObject, ObservableObject {
         // A window the agent has just asked for has not appeared yet; it comes forward on its own.
         NSApp.activate()
         session.bringWindowForward()
+        // Before the connect saves it: whether the address belonged to a saved device already.
+        let addressWasSaved = kvmDeviceManager.savedDevice(containing: device.address) != nil
 
         let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { _ in
             closePopover()
         }
 
         switch outcome {
-        case .connected(_, let streamError):
+        case .connected(let connected, let streamError):
             if let streamError {
                 // still consider ourselves connected at the API layer
                 showError(title: "WebRTC connect failed", message: String(describing: streamError))
+            }
+            if let prompt = DeviceLinkPrompt.after(connecting: connected, addressWasSaved: addressWasSaved, catalog: kvmDeviceManager) {
+                prompt.answer(askToLink(prompt), catalog: kvmDeviceManager)
             }
         case .needsPassword:
             guard password == nil else {
@@ -520,7 +546,14 @@ class MenuBarAgent: NSObject, ObservableObject {
             let error = KVMError.certificateChanged(host: host, port: port, fingerprint: fingerprint)
             showError(title: "Failed to connect", message: String(describing: error))
         case .failed(let error):
-            showError(title: "Failed to connect", message: String(describing: error))
+            showError(
+                title: "Failed to connect",
+                message: ConnectVia.failureMessage(
+                    address: device.address,
+                    deviceHasOtherAddresses: device.addresses.contains { $0 != device.address },
+                    error: error
+                )
+            )
         case .openElsewhere(let other):
             // Another window got there between choosing the target and connecting.
             other.bringWindowForward()
@@ -573,27 +606,17 @@ class MenuBarAgent: NSObject, ObservableObject {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
-        let raw = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-
-        var host = raw
-        var portString = portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let schemeRange = host.range(of: "://") {
-            host = String(host[schemeRange.upperBound...])
+        guard !hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let address: DeviceAddress
+        switch AddressInput.parse(hostField.stringValue, port: portField.stringValue) {
+        case .success(let parsed):
+            address = parsed
+        case .failure(let problem):
+            showError(title: "Quick Connect", message: problem.message)
+            return
         }
-
-        if let colonIndex = host.lastIndex(of: ":") {
-            let maybeHost = String(host[..<colonIndex])
-            let maybePort = String(host[host.index(after: colonIndex)...])
-            if !maybeHost.isEmpty, !maybePort.isEmpty {
-                host = maybeHost
-                portString = maybePort
-            }
-        }
-
-        let port = Int(portString) ?? 443
-        let device = kvmDeviceManager.addManualDevice(host: host, port: port, type: .glinetComet)
+        // An address of a saved device connects as that device, through that address.
+        let device = kvmDeviceManager.device(forTyped: address)
         let password = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let savePassword = saveCheckbox.state == .on
 
@@ -646,11 +669,14 @@ class MenuBarAgent: NSObject, ObservableObject {
         
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            let ip = ipField.stringValue
-            let port = portField.integerValue
-            
-            if !ip.isEmpty && port > 0 {
-                _ = kvmDeviceManager.addManualDevice(host: ip, port: port, type: .glinetComet)
+            switch AddressInput.parse(ipField.stringValue, port: portField.stringValue) {
+            case .success(let address):
+                // An address a saved device already has is that device; nothing to add.
+                if kvmDeviceManager.savedDevice(containing: address) == nil {
+                    _ = kvmDeviceManager.addManualDevice(host: address.host, port: address.port, type: .glinetComet)
+                }
+            case .failure(let problem):
+                showError(title: "Add Manual Device", message: problem.message)
             }
         }
     }
@@ -849,7 +875,7 @@ struct MenuBarDeviceRow: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                 
-                Text(device.connectionString)
+                Text(device.address.labelWithTag)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

@@ -808,6 +808,15 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             ?? availableDevices.first { $0.includes(address) }
     }
 
+    /// What a typed address (Manual Connect, Quick Connect) connects to: the saved device that has
+    /// it, through that address, or else a new manual entry for it.
+    func device(forTyped address: DeviceAddress) -> KVMDevice {
+        if let saved = savedDevice(containing: address) {
+            return saved.via(address)
+        }
+        return addManualDevice(host: address.host, port: address.port, type: .glinetComet)
+    }
+
     /// The saved device that has `address` among its addresses, if any.
     func savedDevice(containing address: DeviceAddress) -> KVMDevice? {
         availableDevices.first { $0.isSaved && $0.addresses.contains(address) }
