@@ -83,6 +83,20 @@ struct DisplayNameTests {
         #expect(chosen == ["b", nil])
     }
 
+    @Test func theAddressesSitAgainstTheRightEdgeOfAWideButton() throws {
+        let button = DevicePopUpButton.DevicePopUpNSButton(frame: NSRect(x: 0, y: 0, width: 340, height: 22), pullsDown: false)
+        button.addItems(withTitles: [DevicePopUpButton.placeholder, "Desk", "x"])
+        button.titles = [DeviceMenuTitle(name: "Desk", address: "192.168.0.131"), DeviceMenuTitle(name: "192.0.2.1", address: nil)]
+
+        let paragraph = try #require(button.item(at: 1)?.attributedTitle?.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        #expect(paragraph.tabStops.first?.location == 340 - DevicePopUpButton.DevicePopUpNSButton.trailingInset)
+        #expect(button.item(at: 2)?.attributedTitle?.string == "192.0.2.1")
+
+        button.setFrameSize(NSSize(width: 400, height: 22))
+        let wider = try #require(button.item(at: 1)?.attributedTitle?.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        #expect(wider.tabStops.first?.location == 400 - DevicePopUpButton.DevicePopUpNSButton.trailingInset)
+    }
+
     // MARK: - Window title and the recording question
 
     @Test func theWindowTitleUsesTheNicknameOrTheAddress() {

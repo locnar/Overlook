@@ -77,8 +77,8 @@ struct DevicePopUpButton: NSViewRepresentable {
         Coordinator(onSelect: onSelect)
     }
 
-    func makeNSView(context: Context) -> NSPopUpButton {
-        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+    func makeNSView(context: Context) -> DevicePopUpNSButton {
+        let button = DevicePopUpNSButton(frame: .zero, pullsDown: false)
         button.target = context.coordinator
         button.action = #selector(Coordinator.chose(_:))
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -87,7 +87,7 @@ struct DevicePopUpButton: NSViewRepresentable {
         return button
     }
 
-    func updateNSView(_ button: NSPopUpButton, context: Context) {
+    func updateNSView(_ button: DevicePopUpNSButton, context: Context) {
         let coordinator = context.coordinator
         coordinator.onSelect = onSelect
         let titles = devices.map(DeviceMenuTitle.init)
@@ -95,22 +95,47 @@ struct DevicePopUpButton: NSViewRepresentable {
         if signature != coordinator.signature {
             coordinator.signature = signature
             coordinator.devices = devices
-            let column = DeviceMenuTitle.column(for: titles)
             button.removeAllItems()
             button.addItem(withTitle: Self.placeholder)
             for title in titles {
                 let item = NSMenuItem(title: title.name, action: nil, keyEquivalent: "")
-                item.attributedTitle = title.attributed(column: column)
                 // Read by VoiceOver and by the menu's type-to-select.
                 item.setAccessibilityLabel([title.name, title.address].compactMap { $0 }.joined(separator: ", "))
                 button.menu?.addItem(item)
             }
+            button.titles = titles
         } else {
             coordinator.devices = devices
         }
         let index = selectedID.flatMap { id in devices.firstIndex { $0.id == id } }.map { $0 + 1 } ?? 0
         if button.indexOfSelectedItem != index {
             button.selectItem(at: index)
+        }
+    }
+
+    /// Lays the rows out again whenever its width changes, so the addresses sit against the
+    /// right edge of the button and of its menu (which is as wide as the button).
+    final class DevicePopUpNSButton: NSPopUpButton {
+        var titles: [DeviceMenuTitle] = [] {
+            didSet { applyTitles(force: true) }
+        }
+        private var appliedColumn: CGFloat = -1
+
+        /// Room left of the tab stop for the pop-up's arrows and the menu's checkmark column.
+        static let trailingInset: CGFloat = 44
+
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            applyTitles(force: false)
+        }
+
+        private func applyTitles(force: Bool) {
+            let column = max(DeviceMenuTitle.column(for: titles), floor(bounds.width - Self.trailingInset))
+            guard force || column != appliedColumn else { return }
+            appliedColumn = column
+            for (index, title) in titles.enumerated() {
+                item(at: index + 1)?.attributedTitle = title.attributed(column: column)
+            }
         }
     }
 

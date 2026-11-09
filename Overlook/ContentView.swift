@@ -1111,6 +1111,12 @@ struct ConnectionsPopoverView: View {
     let onForgetSelectedDevice: () -> Void
     let onOpenLog: () -> Void
 
+    /// The Connect menu's rows, as one value that changes whenever any of them does.
+    private var connectMenuIdentity: String {
+        guard let selectedDevice else { return "none" }
+        return ([selectedDevice.id] + ConnectVia.items(for: selectedDevice).map(\.title)).joined(separator: "|")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connections")
@@ -1148,6 +1154,9 @@ struct ConnectionsPopoverView: View {
                     }
                     .fixedSize()
                     .disabled(selectedDevice == nil)
+                    // A new identity whenever the rows change: AppKit keeps the menu it built
+                    // for the first device chosen otherwise.
+                    .id(connectMenuIdentity)
                 }
 
                 // Editable while connected: changing the addresses does not disconnect.
