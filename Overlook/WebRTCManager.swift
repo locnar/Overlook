@@ -132,6 +132,85 @@ struct PeerConnectionRoles<Peer: AnyObject> {
     }
 }
 
+/// The Janus requests that are answered by transaction (`create` and `attach`) and are still
+/// waiting for that answer.
+///
+/// Each request's waiter is in place before the request is sent. Janus's answer is read by the
+/// signaling listener, and the send's completion and the answer both come back through URLSession
+/// callbacks that then wait their turn on the main actor, in no set order: a device on the LAN can
+/// have its answer handled while the send is still suspended. A waiter registered only once the
+/// send had returned missed such an answer, and the connect then sat out the whole timeout.
+@MainActor
+final class JanusTransactions {
+    typealias Reply = [String: Any]
+
+    private struct Pending {
+        let continuation: CheckedContinuation<Reply, Error>
+        let deadline: Task<Void, Never>
+    }
+
+    private var pending: [String: Pending] = [:]
+    private let timeoutNanoseconds: UInt64
+    private let timeoutError: Error
+
+    /// Requests that have neither been answered nor failed yet.
+    var count: Int { pending.count }
+
+    /// `timeoutError` is what a request throws when no answer comes within `timeoutNanoseconds`.
+    nonisolated init(timeoutNanoseconds: UInt64, timeoutError: Error) {
+        self.timeoutNanoseconds = timeoutNanoseconds
+        self.timeoutError = timeoutError
+    }
+
+    /// Waits for Janus's answer to `transaction`, which `send` puts on the wire. The deadline
+    /// starts before the send, so a send that never finishes times out as well. A send that fails
+    /// fails the request at once with its own error.
+    func request(_ transaction: String, send: @escaping @MainActor () async throws -> Void) async throws -> Reply {
+        try await withCheckedThrowingContinuation { continuation in
+            let timeoutNanoseconds = self.timeoutNanoseconds
+            let timeoutError = self.timeoutError
+            let deadline = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                guard !Task.isCancelled else { return }
+                self?.finish(transaction, with: .failure(timeoutError))
+            }
+            pending[transaction] = Pending(continuation: continuation, deadline: deadline)
+            Task { [weak self] in
+                do {
+                    try await send()
+                } catch {
+                    self?.finish(transaction, with: .failure(error))
+                }
+            }
+        }
+    }
+
+    /// Hands `message` to the request waiting on its transaction. False when no request is
+    /// waiting on it, so the caller treats it as a notification (a keepalive's ack, say).
+    func deliver(_ message: Reply) -> Bool {
+        guard let transaction = message["transaction"] as? String, pending[transaction] != nil else {
+            return false
+        }
+        finish(transaction, with: .success(message))
+        return true
+    }
+
+    /// Ends every waiting request with `error`; for a teardown.
+    func failAll(_ error: Error) {
+        for transaction in Array(pending.keys) {
+            finish(transaction, with: .failure(error))
+        }
+    }
+
+    /// Whichever of the answer, the deadline, a failed send and a teardown comes first ends the
+    /// request; the others find nothing left to end.
+    private func finish(_ transaction: String, with result: Result<Reply, Error>) {
+        guard let entry = pending.removeValue(forKey: transaction) else { return }
+        entry.deadline.cancel()
+        entry.continuation.resume(with: result)
+    }
+}
+
 #if canImport(WebRTC)
 @MainActor
 class WebRTCManager: NSObject, ObservableObject {
@@ -254,9 +333,11 @@ class WebRTCManager: NSObject, ObservableObject {
     private var janusHandleId: Int?
     private var janusAudioHandleId: Int?
     private var janusKeepAliveTimer: Timer?
-    private var janusWaiters: [String: CheckedContinuation<[String: Any], Error>] = [:]
-    private var janusTimeoutTasks: [String: Task<Void, Never>] = [:]
     private static let janusTransactionTimeoutNs: UInt64 = 8_000_000_000
+    private let janusTransactions = JanusTransactions(
+        timeoutNanoseconds: WebRTCManager.janusTransactionTimeoutNs,
+        timeoutError: WebRTCError.signalingTimeout
+    )
     /// When Janus last answered anything. `URLSessionWebSocketTask.send` reports success long
     /// after the far end has stopped listening, so a send that "worked" is not evidence the
     /// session is alive; an ack is.
@@ -961,30 +1042,22 @@ class WebRTCManager: NSObject, ObservableObject {
             await self.listenForSignalingMessages(socket: socketTask, generation: generation)
         }
 
-        // Janus session setup
-        let createTransaction = makeJanusTransaction()
-        try await sendJanusMessage([
-            "janus": "create",
-            "transaction": createTransaction,
-        ])
-
-        let createResponse = try await waitForJanusTransaction(createTransaction)
+        // Janus session setup. Every step goes out on this connect's own socket and checks that the
+        // connect is still current when it resumes: after a teardown, `webSocketTask` and the
+        // handle IDs belong to the next connection, and carrying on would attach to its session.
+        let createResponse = try await requestJanus(["janus": "create"], on: socketTask, generation: generation)
         guard let data = createResponse["data"] as? [String: Any],
               let sessionId = data["id"] as? Int else {
             throw WebRTCError.signalingConnectionLost
         }
         janusSessionId = sessionId
 
-        let attachTransaction = makeJanusTransaction()
-        try await sendJanusMessage([
+        let attachResponse = try await requestJanus([
             "janus": "attach",
             "plugin": "janus.plugin.ustreamer",
             "opaque_id": "oid-\(UUID().uuidString)",
-            "transaction": attachTransaction,
             "session_id": sessionId,
-        ])
-
-        let attachResponse = try await waitForJanusTransaction(attachTransaction)
+        ], on: socketTask, generation: generation)
         guard let attachData = attachResponse["data"] as? [String: Any],
               let handleId = attachData["id"] as? Int else {
             throw WebRTCError.signalingConnectionLost
@@ -992,7 +1065,8 @@ class WebRTCManager: NSObject, ObservableObject {
         janusHandleId = handleId
 
         // Video handle always requests video-only to avoid A/V sync causing video buffering.
-        let watchTransaction = makeJanusTransaction()
+        // Nothing waits on a `watch`: Janus acks it, and the event that follows with the offer is
+        // handled by the listener whenever it comes.
         try await sendJanusMessage([
             "janus": "message",
             "body": [
@@ -1005,22 +1079,19 @@ class WebRTCManager: NSObject, ObservableObject {
                     "camera": false,
                 ],
             ],
-            "transaction": watchTransaction,
+            "transaction": makeJanusTransaction(),
             "session_id": sessionId,
             "handle_id": handleId,
-        ])
+        ], on: socketTask)
+        guard generation == connectionGeneration else { throw WebRTCError.superseded }
 
         if (audioEnabled || negotiatedMicEnabled), let audioPeerConnection {
-            let audioAttachTransaction = makeJanusTransaction()
-            try await sendJanusMessage([
+            let audioAttachResponse = try await requestJanus([
                 "janus": "attach",
                 "plugin": "janus.plugin.ustreamer",
                 "opaque_id": "oid-audio-\(UUID().uuidString)",
-                "transaction": audioAttachTransaction,
                 "session_id": sessionId,
-            ])
-
-            let audioAttachResponse = try await waitForJanusTransaction(audioAttachTransaction)
+            ], on: socketTask, generation: generation)
             guard let audioAttachData = audioAttachResponse["data"] as? [String: Any],
                   let audioHandleId = audioAttachData["id"] as? Int else {
                 throw WebRTCError.signalingConnectionLost
@@ -1030,7 +1101,6 @@ class WebRTCManager: NSObject, ObservableObject {
             // The device carries the microphone on the audio session's transceiver, so a mic-only
             // request has to ask for audio too (its own web client enforces "mic only with audio").
             // Playback of that audio is muted locally when the Audio toggle is off.
-            let audioWatchTransaction = makeJanusTransaction()
             try await sendJanusMessage([
                 "janus": "message",
                 "body": [
@@ -1043,10 +1113,11 @@ class WebRTCManager: NSObject, ObservableObject {
                         "camera": false,
                     ],
                 ],
-                "transaction": audioWatchTransaction,
+                "transaction": makeJanusTransaction(),
                 "session_id": sessionId,
                 "handle_id": audioHandleId,
-            ])
+            ], on: socketTask)
+            guard generation == connectionGeneration else { throw WebRTCError.superseded }
 
             _ = audioPeerConnection
         }
@@ -1151,27 +1222,38 @@ class WebRTCManager: NSObject, ObservableObject {
         UUID().uuidString.replacingOccurrences(of: "-", with: "")
     }
 
-    private func waitForJanusTransaction(_ transaction: String) async throws -> [String: Any] {
-        try await withCheckedThrowingContinuation { continuation in
-            janusWaiters[transaction] = continuation
-            // A device that never answers used to leave connect() suspended forever.
-            janusTimeoutTasks[transaction] = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: Self.janusTransactionTimeoutNs)
-                guard !Task.isCancelled, let self,
-                      let waiter = self.janusWaiters.removeValue(forKey: transaction) else { return }
-                self.janusTimeoutTasks.removeValue(forKey: transaction)
-                waiter.resume(throwing: WebRTCError.signalingTimeout)
-            }
+    /// Sends `message` on `socket` as a new transaction and returns Janus's answer to it. The
+    /// waiter is registered before the send (see `JanusTransactions`); a device that never answers
+    /// fails the request after `janusTransactionTimeoutNs` rather than leaving connect() suspended.
+    private func requestJanus(
+        _ message: [String: Any],
+        on socket: URLSessionWebSocketTask,
+        generation: Int
+    ) async throws -> [String: Any] {
+        let transaction = makeJanusTransaction()
+        var request = message
+        request["transaction"] = transaction
+        let reply = try await janusTransactions.request(transaction) { [weak self] in
+            guard let self else { throw WebRTCError.superseded }
+            try await self.sendJanusMessage(request, on: socket)
         }
+        guard generation == connectionGeneration else { throw WebRTCError.superseded }
+        return reply
     }
 
     private func sendJanusMessage(_ message: [String: Any]) async throws {
-        guard let webSocketTask = webSocketTask,
-              let data = try? JSONSerialization.data(withJSONObject: message),
+        guard let webSocketTask else {
+            throw WebRTCError.signalingConnectionLost
+        }
+        try await sendJanusMessage(message, on: webSocketTask)
+    }
+
+    private func sendJanusMessage(_ message: [String: Any], on socket: URLSessionWebSocketTask) async throws {
+        guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {
             throw WebRTCError.signalingConnectionLost
         }
-        try await webSocketTask.send(.string(text))
+        try await socket.send(.string(text))
     }
 
     private func normalizedWebSocketURL(_ url: URL) -> URL {
@@ -1237,10 +1319,7 @@ class WebRTCManager: NSObject, ObservableObject {
         // waiter on purpose, so their acks fall through to the switch below and refresh
         // `lastJanusAckAt` — which is the whole liveness check. Registering a waiter for them
         // would silently break it.
-        if let transaction = message["transaction"] as? String,
-           let waiter = janusWaiters.removeValue(forKey: transaction) {
-            janusTimeoutTasks.removeValue(forKey: transaction)?.cancel()
-            waiter.resume(returning: message)
+        if janusTransactions.deliver(message) {
             return
         }
 
@@ -2081,13 +2160,7 @@ class WebRTCManager: NSObject, ObservableObject {
         janusSessionId = nil
         janusHandleId = nil
         janusAudioHandleId = nil
-        let waiters = janusWaiters
-        janusWaiters.removeAll()
-        janusTimeoutTasks.values.forEach { $0.cancel() }
-        janusTimeoutTasks.removeAll()
-        for (_, waiter) in waiters {
-            waiter.resume(throwing: WebRTCError.signalingConnectionLost)
-        }
+        janusTransactions.failAll(WebRTCError.signalingConnectionLost)
         
         webSocketTask?.cancel()
         webSocketTask = nil
