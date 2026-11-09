@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var certificatePrompt: CertificateChangePrompt?
     /// The Edit… sheet's state while it is open.
     @State private var editingDevice: DeviceEditModel?
+    /// "This is <device>": a new address whose certificate matches a saved device's.
+    @State private var linkPrompt: DeviceLinkPrompt?
 
     @State private var didAutoOpenConnections = false
 
@@ -516,6 +518,27 @@ struct ContentView: View {
             Text(connectionErrorMessage ?? "")
         }
         .alert(
+            linkPrompt?.title ?? "",
+            isPresented: Binding(
+                get: { linkPrompt != nil },
+                set: { if !$0 { linkPrompt = nil } }
+            ),
+            presenting: linkPrompt
+        ) { prompt in
+            Button(DeviceLinkPrompt.keepTitle, role: .cancel) {
+                prompt.answer(.keepSeparate, catalog: kvmDeviceManager)
+                linkPrompt = nil
+            }
+            Button(DeviceLinkPrompt.addTitle) {
+                if let linked = prompt.answer(.addAddress, catalog: kvmDeviceManager) {
+                    selectedAddress = linked.address
+                }
+                linkPrompt = nil
+            }
+        } message: { prompt in
+            Text(prompt.message)
+        }
+        .alert(
             "Certificate Changed",
             isPresented: Binding(
                 get: { certificatePrompt != nil },
@@ -612,6 +635,8 @@ struct ContentView: View {
     /// The steps are the session's (`ConsoleSession.connect`), shared with the menu-bar agent;
     /// what this window adds is how each outcome is shown.
     private func connectToDevice(_ device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
+        // Before the connect saves it: whether the address belonged to a saved device already.
+        let addressWasSaved = kvmDeviceManager.savedDevice(containing: device.address) != nil
         Task { @MainActor in
             let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { connected in
                 selectedAddress = connected.address
@@ -620,9 +645,13 @@ struct ContentView: View {
             }
 
             switch outcome {
-            case .connected:
+            case .connected(let connected, _):
                 // A stream that failed to come up is in the log; the API connection stands.
-                break
+                linkPrompt = DeviceLinkPrompt.after(
+                    connecting: connected,
+                    addressWasSaved: addressWasSaved,
+                    catalog: kvmDeviceManager
+                )
             case .needsPassword:
                 pendingPasswordDevice = device
                 showingPasswordPrompt = true

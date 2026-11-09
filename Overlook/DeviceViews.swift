@@ -346,3 +346,56 @@ struct DeviceEditSheet: View {
         .frame(width: 420)
     }
 }
+
+// MARK: - Linking an address to a saved device
+
+/// The question asked after connecting to an address no saved device has, when its certificate
+/// is the one pinned for a saved device: "This is <device>", Add address or Keep separate.
+struct DeviceLinkPrompt: Identifiable {
+    /// The device as just connected (saved on its own by the connect).
+    let connected: KVMDevice
+    /// The saved device whose pin matches.
+    let candidate: KVMDevice
+
+    var id: String { "\(connected.id)->\(candidate.id)" }
+
+    enum Answer: Equatable {
+        case addAddress
+        case keepSeparate
+    }
+
+    static let addTitle = "Add address"
+    static let keepTitle = "Keep separate"
+    /// Escape keeps the address separate.
+    static let escapeAnswer = Answer.keepSeparate
+
+    var title: String { "This is \(candidate.displayName)" }
+
+    var message: String {
+        "\(connected.address.labelWithTag) presented the same certificate as \(candidate.displayName). "
+            + "Add it as another address of \(candidate.displayName), or keep it as a separate device."
+    }
+
+    /// The question to ask after a connect, or nil: only for an address that no saved device had
+    /// before the connect (`addressWasSaved` is worked out before it starts), and only when the
+    /// certificate it presented matches a saved device's pin.
+    @MainActor
+    static func after(connecting connected: KVMDevice, addressWasSaved: Bool, catalog: KVMDeviceManager) -> DeviceLinkPrompt? {
+        guard !addressWasSaved, let candidate = catalog.linkCandidate(for: connected) else { return nil }
+        return DeviceLinkPrompt(connected: connected, candidate: candidate)
+    }
+
+    /// Carries out the answer. Add address makes the address one of the candidate's, and a
+    /// session connected through it becomes the candidate's; Keep separate changes nothing.
+    @MainActor
+    @discardableResult
+    func answer(_ answer: Answer, catalog: KVMDeviceManager) -> KVMDevice? {
+        switch answer {
+        case .addAddress:
+            let current = catalog.availableDevices.first { $0.id == connected.id } ?? connected
+            return catalog.link(connected.address, of: current, to: candidate)
+        case .keepSeparate:
+            return nil
+        }
+    }
+}

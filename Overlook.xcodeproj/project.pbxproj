@@ -83,6 +83,7 @@
 		01000118 /* JanusTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000118 /* JanusTransactionTests.swift */; };
 		01000119 /* StreamStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000119 /* StreamStatsTests.swift */; };
 		0100011A /* HIDSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011A /* HIDSocketTests.swift */; };
+		01000120 /* DeviceLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000120 /* DeviceLinkTests.swift */; };
 		0100011F /* ConnectViaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011F /* ConnectViaTests.swift */; };
 		0100011E /* DeviceEditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011E /* DeviceEditTests.swift */; };
 		0100011D /* DisplayNameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011D /* DisplayNameTests.swift */; };
@@ -184,6 +185,7 @@
 		02000118 /* JanusTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusTransactionTests.swift; sourceTree = "<group>"; };
 		02000119 /* StreamStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamStatsTests.swift; sourceTree = "<group>"; };
 		0200011A /* HIDSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDSocketTests.swift; sourceTree = "<group>"; };
+		02000120 /* DeviceLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceLinkTests.swift; sourceTree = "<group>"; };
 		0200011F /* ConnectViaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectViaTests.swift; sourceTree = "<group>"; };
 		0200011E /* DeviceEditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceEditTests.swift; sourceTree = "<group>"; };
 		0200011D /* DisplayNameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayNameTests.swift; sourceTree = "<group>"; };
@@ -305,6 +307,7 @@
 				02000118 /* JanusTransactionTests.swift */,
 				02000119 /* StreamStatsTests.swift */,
 				0200011A /* HIDSocketTests.swift */,
+				02000120 /* DeviceLinkTests.swift */,
 				0200011F /* ConnectViaTests.swift */,
 				0200011E /* DeviceEditTests.swift */,
 				0200011D /* DisplayNameTests.swift */,
@@ -519,6 +522,7 @@
 				01000118 /* JanusTransactionTests.swift in Sources */,
 				01000119 /* StreamStatsTests.swift in Sources */,
 				0100011A /* HIDSocketTests.swift in Sources */,
+				01000120 /* DeviceLinkTests.swift in Sources */,
 				0100011F /* ConnectViaTests.swift in Sources */,
 				0100011E /* DeviceEditTests.swift in Sources */,
 				0100011D /* DisplayNameTests.swift in Sources */,
