@@ -465,10 +465,7 @@ final class CaptureManager: ObservableObject {
     func makeFileURL(in folder: URL, extension ext: String, date: Date = Date()) -> URL {
         var stem = "Overlook"
         if let deviceName = connection.connectedDevice?.displayName {
-            let cleaned = deviceName
-                .replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: ":", with: "-")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = Self.fileNameComponent(deviceName)
             if !cleaned.isEmpty {
                 stem += " \(cleaned)"
             }
@@ -482,6 +479,25 @@ final class CaptureManager: ObservableObject {
             counter += 1
         }
         return candidate
+    }
+
+    /// A device's name made safe to put in a file name: path separators, the colon Finder shows
+    /// as a slash, characters other systems refuse (`\ * ? " < > |`) and control characters each
+    /// become "-"; leading dots (a hidden file) and surrounding spaces go; and it is kept short.
+    static func fileNameComponent(_ name: String) -> String {
+        let unsafe = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters).union(.newlines)
+        var scalars = String.UnicodeScalarView()
+        for scalar in name.unicodeScalars {
+            scalars.append(unsafe.contains(scalar) ? "-" : scalar)
+        }
+        var cleaned = String(scalars).trimmingCharacters(in: .whitespaces)
+        while cleaned.hasPrefix(".") {
+            cleaned.removeFirst()
+        }
+        if cleaned.count > 80 {
+            cleaned = String(cleaned.prefix(80))
+        }
+        return cleaned.trimmingCharacters(in: .whitespaces)
     }
 
     private static func durationText(_ duration: TimeInterval) -> String {

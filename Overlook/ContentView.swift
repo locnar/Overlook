@@ -1056,11 +1056,10 @@ struct ConnectionsPopoverView: View {
             Text("Connections")
                 .font(.headline)
 
-            Picker("Device", selection: $selection) {
-                Text("Select Device").tag(nil as DeviceAddress?)
-                ForEach(devices) { device in
-                    Text(device.displayName).tag(device.address as DeviceAddress?)
-                }
+            // Each device by its nickname, with its address after it; the address alone for a
+            // device without one.
+            DevicePopUpButton(devices: devices, selectedID: selectedDevice?.id) { device in
+                selection = device?.address
             }
             .frame(maxWidth: .infinity)
 

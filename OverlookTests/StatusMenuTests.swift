@@ -135,6 +135,19 @@ struct StatusMenuTests {
         #expect(menu.model.recordingTitle == "Start Recording")
     }
 
+    @Test func renamingAConnectedDeviceRenamesItInTheMenu() async throws {
+        let a = await openConnectedWindow("Rack 1", host: "192.0.2.11")
+        let saved = try #require(a.connection.connectedDevice)
+
+        catalog.saveEdits(of: saved, nickname: "Desk", addresses: saved.addresses)
+        #expect(menu.model.connected.map(\.title) == ["Desk"])
+        #expect(menu.model.disconnectTitle == "Disconnect Desk")
+
+        catalog.saveEdits(of: saved, nickname: nil, addresses: saved.addresses)
+        #expect(menu.model.connected.map(\.title) == ["192.0.2.11"])
+        #expect(menu.model.disconnectTitle == "Disconnect 192.0.2.11")
+    }
+
     @Test func closingAWindowDropsItsSessionFromTheList() async {
         let a = await openConnectedWindow("Rack 1", host: "192.0.2.11")
         _ = await openConnectedWindow("Rack 2", host: "192.0.2.12")

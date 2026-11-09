@@ -138,6 +138,19 @@ struct CaptureManagerTests {
         #expect(url.lastPathComponent == "Overlook Rack-3- Lab 2026-09-13 at 14.05.22.mp4")
     }
 
+    @Test func fileNameUsesTheNicknameOrElseTheAddress() throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        connection.connectedDevice = Fixtures.device(nickname: "Desk", host: "192.168.0.131")
+        #expect(capture.makeFileURL(in: folder, extension: "png", date: Self.sampleDate).lastPathComponent
+            == "Overlook Desk 2026-09-13 at 14.05.22.png")
+
+        connection.connectedDevice = Fixtures.device(nickname: nil, host: "kvm.example", port: 8443)
+        #expect(capture.makeFileURL(in: folder, extension: "png", date: Self.sampleDate).lastPathComponent
+            == "Overlook kvm.example-8443 2026-09-13 at 14.05.22.png")
+    }
+
     @Test func fileNameIsMadeUniqueInTheFolder() throws {
         let folder = try makeTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
