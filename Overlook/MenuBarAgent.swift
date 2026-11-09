@@ -519,8 +519,8 @@ class MenuBarAgent: NSObject, ObservableObject {
         // A window the agent has just asked for has not appeared yet; it comes forward on its own.
         NSApp.activate()
         session.bringWindowForward()
-        // Before the connect saves it: whether the address belonged to a saved device already.
-        let addressWasSaved = kvmDeviceManager.savedDevice(containing: device.address) != nil
+        // Before the connect saves it: the saved device the address belonged to, if any.
+        let savedBefore = kvmDeviceManager.savedDevice(containing: device.address)
 
         let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { _ in
             closePopover()
@@ -532,7 +532,7 @@ class MenuBarAgent: NSObject, ObservableObject {
                 // still consider ourselves connected at the API layer
                 showError(title: "WebRTC connect failed", message: String(describing: streamError))
             }
-            if let prompt = DeviceLinkPrompt.after(connecting: connected, addressWasSaved: addressWasSaved, catalog: kvmDeviceManager) {
+            if let prompt = DeviceLinkPrompt.after(connecting: connected, savedBefore: savedBefore, catalog: kvmDeviceManager) {
                 prompt.answer(askToLink(prompt), catalog: kvmDeviceManager)
             }
         case .needsPassword:

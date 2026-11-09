@@ -356,6 +356,9 @@ struct DeviceLinkPrompt: Identifiable {
     let connected: KVMDevice
     /// The saved device whose pin matches.
     let candidate: KVMDevice
+    /// Whether the address was already saved as a device of its own before this connect (one
+    /// saved by an earlier version, say), rather than new.
+    var wasSavedSeparately = false
 
     var id: String { "\(connected.id)->\(candidate.id)" }
 
@@ -372,17 +375,25 @@ struct DeviceLinkPrompt: Identifiable {
     var title: String { "This is \(candidate.displayName)" }
 
     var message: String {
-        "\(connected.address.labelWithTag) presented the same certificate as \(candidate.displayName). "
-            + "Add it as another address of \(candidate.displayName), or keep it as a separate device."
+        let address = connected.address.labelWithTag
+        let lead = wasSavedSeparately
+            ? "\(address) is saved as a device of its own (\(connected.displayName)), and it presented the same certificate as \(candidate.displayName). "
+            : "\(address) presented the same certificate as \(candidate.displayName). "
+        return lead + "Add it as another address of \(candidate.displayName), or keep it as a separate device."
     }
 
-    /// The question to ask after a connect, or nil: only for an address that no saved device had
-    /// before the connect (`addressWasSaved` is worked out before it starts), and only when the
-    /// certificate it presented matches a saved device's pin.
+    /// The question to ask after a connect, or nil. `savedBefore` is the saved device that had the
+    /// address before the connect started. Asked for an address no saved device had, or that a
+    /// saved device had as its only address (as every device saved by an earlier version has),
+    /// when the certificate it presented matches the pin of another saved device's address and
+    /// the operator has not already chosen to keep the two separate.
     @MainActor
-    static func after(connecting connected: KVMDevice, addressWasSaved: Bool, catalog: KVMDeviceManager) -> DeviceLinkPrompt? {
-        guard !addressWasSaved, let candidate = catalog.linkCandidate(for: connected) else { return nil }
-        return DeviceLinkPrompt(connected: connected, candidate: candidate)
+    static func after(connecting connected: KVMDevice, savedBefore: KVMDevice?, catalog: KVMDeviceManager) -> DeviceLinkPrompt? {
+        if let savedBefore, savedBefore.addresses.count > 1 {
+            return nil
+        }
+        guard let candidate = catalog.linkCandidate(for: connected) else { return nil }
+        return DeviceLinkPrompt(connected: connected, candidate: candidate, wasSavedSeparately: savedBefore != nil)
     }
 
     /// Carries out the answer. Add address makes the address one of the candidate's, and a
@@ -395,6 +406,7 @@ struct DeviceLinkPrompt: Identifiable {
             let current = catalog.availableDevices.first { $0.id == connected.id } ?? connected
             return catalog.link(connected.address, of: current, to: candidate)
         case .keepSeparate:
+            catalog.declineLink(connected.address, to: candidate)
             return nil
         }
     }

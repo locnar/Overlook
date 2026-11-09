@@ -635,8 +635,8 @@ struct ContentView: View {
     /// The steps are the session's (`ConsoleSession.connect`), shared with the menu-bar agent;
     /// what this window adds is how each outcome is shown.
     private func connectToDevice(_ device: KVMDevice, password: String? = nil, savePassword: Bool = false) {
-        // Before the connect saves it: whether the address belonged to a saved device already.
-        let addressWasSaved = kvmDeviceManager.savedDevice(containing: device.address) != nil
+        // Before the connect saves it: the saved device the address belonged to, if any.
+        let savedBefore = kvmDeviceManager.savedDevice(containing: device.address)
         Task { @MainActor in
             let outcome = await session.connect(to: device, password: password, savePassword: savePassword) { connected in
                 selectedAddress = connected.address
@@ -649,7 +649,7 @@ struct ContentView: View {
                 // A stream that failed to come up is in the log; the API connection stands.
                 linkPrompt = DeviceLinkPrompt.after(
                     connecting: connected,
-                    addressWasSaved: addressWasSaved,
+                    savedBefore: savedBefore,
                     catalog: kvmDeviceManager
                 )
             case .needsPassword:

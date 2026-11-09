@@ -988,18 +988,37 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     /// for the address it connected through matches the pin of one of that device's addresses.
     /// Nil when the address has no pin (a certificate the system trusts is never pinned), or no
     /// other saved device has a matching one.
+    /// A pairing the operator answered Keep separate to is not offered again.
     func linkCandidate(for connected: KVMDevice) -> KVMDevice? {
         guard let pin = trustStore.pinnedFingerprint(host: connected.host, port: connected.port) else {
             return nil
         }
+        let declined = Set(defaults.stringArray(forKey: Self.declinedLinksKey) ?? [])
         return availableDevices.first { candidate in
             candidate.isSaved
                 && candidate.id != connected.id
                 && !candidate.addresses.contains(connected.address)
+                && !declined.contains(Self.declinedLinkKey(connected.address, candidate.id))
                 && candidate.addresses.contains { address in
                     trustStore.pinnedFingerprint(host: address.host, port: address.port) == pin
                 }
         }
+    }
+
+    /// Pairs of address and device the operator chose to keep separate, as `host:port|id`.
+    static let declinedLinksKey = "overlook.declined_links.v1"
+
+    private static func declinedLinkKey(_ address: DeviceAddress, _ deviceID: String) -> String {
+        "\(DeviceTrustStore.key(host: address.host, port: address.port))|\(deviceID)"
+    }
+
+    /// Keep separate: `address` is not offered to `candidate` again.
+    func declineLink(_ address: DeviceAddress, to candidate: KVMDevice) {
+        var declined = defaults.stringArray(forKey: Self.declinedLinksKey) ?? []
+        let key = Self.declinedLinkKey(address, candidate.id)
+        guard !declined.contains(key) else { return }
+        declined.append(key)
+        defaults.set(declined, forKey: Self.declinedLinksKey)
     }
 
     /// Add address: `address`, which `source` was saved with on its own, becomes another address

@@ -33,8 +33,8 @@ struct DeviceLinkTests {
 
     /// Connects a session to the Tailscale address as a device of its own, as a Manual Connect
     /// would, and returns the session with whether the address was saved before.
-    private func connectNewAddress(_ catalog: KVMDeviceManager) async -> (ConsoleSession, Bool) {
-        let addressWasSaved = catalog.savedDevice(containing: Self.tailnet) != nil
+    private func connectNewAddress(_ catalog: KVMDeviceManager) async -> (ConsoleSession, KVMDevice?) {
+        let savedBefore = catalog.savedDevice(containing: Self.tailnet)
         let session = ConsoleSession(
             catalog: catalog,
             defaults: scratch.defaults,
@@ -43,7 +43,7 @@ struct DeviceLinkTests {
         )
         let manual = catalog.addManualDevice(host: Self.tailnet.host, port: 443, type: .glinetComet, authToken: "tailnet-token")
         _ = await session.connect(to: manual)
-        return (session, addressWasSaved)
+        return (session, savedBefore)
     }
 
     // MARK: - When to ask
@@ -53,7 +53,7 @@ struct DeviceLinkTests {
         let (session, wasSaved) = await connectNewAddress(catalog)
         let connected = try #require(session.connection.connectedDevice)
 
-        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, addressWasSaved: wasSaved, catalog: catalog))
+        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, savedBefore: wasSaved, catalog: catalog))
 
         #expect(prompt.candidate.id == desk.id)
         #expect(prompt.title == "This is Desk")
@@ -68,7 +68,7 @@ struct DeviceLinkTests {
         let (session, wasSaved) = await connectNewAddress(catalog)
         let connected = try #require(session.connection.connectedDevice)
 
-        #expect(DeviceLinkPrompt.after(connecting: connected, addressWasSaved: wasSaved, catalog: catalog) == nil)
+        #expect(DeviceLinkPrompt.after(connecting: connected, savedBefore: wasSaved, catalog: catalog) == nil)
     }
 
     @Test func noPinDoesNotAsk() async throws {
@@ -77,20 +77,49 @@ struct DeviceLinkTests {
         let (session, wasSaved) = await connectNewAddress(catalog)
         let connected = try #require(session.connection.connectedDevice)
 
-        #expect(DeviceLinkPrompt.after(connecting: connected, addressWasSaved: wasSaved, catalog: catalog) == nil)
+        #expect(DeviceLinkPrompt.after(connecting: connected, savedBefore: wasSaved, catalog: catalog) == nil)
     }
 
-    @Test func anAddressAlreadySavedDoesNotAsk() async throws {
-        let (catalog, _, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa"])
-        // Kept separate once: the address is now a saved device of its own.
+    @Test func anAddressSavedOnItsOwnAsksTooAsDevicesFromEarlierVersionsAre() async throws {
+        let (catalog, desk, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa"])
+        // Saved as a device of its own, the way the migration leaves every old record.
         _ = catalog.persistDevice(Fixtures.device(id: "manual-t", nickname: nil, host: Self.tailnet.host))
-        let (session, wasSaved) = await connectNewAddress(catalog)
+        let (session, savedBefore) = await connectNewAddress(catalog)
         let connected = try #require(session.connection.connectedDevice)
 
-        #expect(wasSaved)
-        #expect(DeviceLinkPrompt.after(connecting: connected, addressWasSaved: wasSaved, catalog: catalog) == nil)
-        // And connecting through an address of the device itself never asks either.
-        #expect(DeviceLinkPrompt.after(connecting: catalog.availableDevices.first { $0.nickname == "Desk" }!, addressWasSaved: true, catalog: catalog) == nil)
+        #expect(savedBefore != nil)
+        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, savedBefore: savedBefore, catalog: catalog))
+        #expect(prompt.candidate.id == desk.id)
+        #expect(prompt.wasSavedSeparately)
+        #expect(prompt.message.hasPrefix("mdesktopkvm (Tailscale) is saved as a device of its own"))
+
+        prompt.answer(.addAddress, catalog: catalog)
+        #expect(catalog.availableDevices.map(\.id) == [desk.id])
+        #expect(catalog.availableDevices.first?.addresses == [Self.lan, Self.tailnet])
+    }
+
+    @Test func connectingThroughAnAddressOfADeviceWithSeveralNeverAsks() async throws {
+        let (catalog, desk, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa", DeviceAddress(host: "192.0.2.9", port: 443): "aa"])
+        let both = try #require(catalog.saveEdits(of: desk, nickname: "Desk", addresses: [Self.lan, Self.tailnet]))
+        // Another device whose pin happens to match must not pull an address out of this one.
+        _ = catalog.persistDevice(Fixtures.device(id: "manual-o", nickname: "Other", host: "192.0.2.9"))
+
+        #expect(DeviceLinkPrompt.after(connecting: both.via(Self.tailnet), savedBefore: both, catalog: catalog) == nil)
+    }
+
+    @Test func keepSeparateIsNotAskedAgain() async throws {
+        let (catalog, _, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa"])
+        let (session, savedBefore) = await connectNewAddress(catalog)
+        let connected = try #require(session.connection.connectedDevice)
+        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, savedBefore: savedBefore, catalog: catalog))
+
+        prompt.answer(.keepSeparate, catalog: catalog)
+
+        let again = try #require(catalog.availableDevices.first { $0.id == connected.id })
+        #expect(DeviceLinkPrompt.after(connecting: again, savedBefore: again, catalog: catalog) == nil)
+        // Remembered across launches.
+        let relaunched = Fixtures.catalog(scratch, credentials: credentials, trust: Fixtures.trustStore(scratch))
+        #expect(DeviceLinkPrompt.after(connecting: again, savedBefore: again, catalog: relaunched) == nil)
     }
 
     // MARK: - The answers
@@ -100,7 +129,7 @@ struct DeviceLinkTests {
         let (session, wasSaved) = await connectNewAddress(catalog)
         let connected = try #require(session.connection.connectedDevice)
         let client = session.connection.glkvmClient
-        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, addressWasSaved: wasSaved, catalog: catalog))
+        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, savedBefore: wasSaved, catalog: catalog))
 
         let linked = try #require(prompt.answer(.addAddress, catalog: catalog))
 
@@ -140,7 +169,7 @@ struct DeviceLinkTests {
         let (catalog, desk, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa"])
         let (session, wasSaved) = await connectNewAddress(catalog)
         let connected = try #require(session.connection.connectedDevice)
-        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, addressWasSaved: wasSaved, catalog: catalog))
+        let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, savedBefore: wasSaved, catalog: catalog))
         let before = try Fixtures.readRecords(from: scratch.defaults)
 
         #expect(prompt.answer(.keepSeparate, catalog: catalog) == nil)
