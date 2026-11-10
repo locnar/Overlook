@@ -498,7 +498,9 @@ class InputManager: ObservableObject {
         // Scrolling reaches the window under the pointer whether or not it is key.
         guard isMouseCaptureEnabled, focusGate.admitsPointerMotion else { return }
         if isRelativeMouseMode, !isPointerLocked { return }
-        guard let steps = scrollAccumulator.add(input) else { return }
+        // Physical direction out: the Mac's Natural Scrolling is taken off before anything else,
+        // and the target applies its own preference, as it would for a mouse plugged into it.
+        guard let steps = scrollAccumulator.add(input.physicalDirection) else { return }
         // From here on the steps are in the target's direction, not the Mac's.
         let target = Self.targetScrollSteps(macDeltaX: steps.deltaX, macDeltaY: steps.deltaY)
         let scrollEvent = MouseScrollEvent(deltaX: target.deltaX, deltaY: target.deltaY, timestamp: CACurrentMediaTime())
@@ -507,16 +509,16 @@ class InputManager: ObservableObject {
 
     /// Turns wheel steps in the Mac's direction into the target's, the one place this happens.
     ///
-    /// Vertically the two agree: a positive `scrollingDeltaY` scrolls up on the Mac, and a
-    /// positive USB HID Wheel value scrolls up on the target. Horizontally they are opposite: a
-    /// positive `scrollingDeltaX` scrolls left on the Mac, but a positive HID AC Pan value scrolls
-    /// right (Windows `WM_MOUSEHWHEEL` and Linux `REL_HWHEEL` are positive-right too). kvmd puts
-    /// the wheel numbers into the USB report unchanged, so X is negated here and Y is not.
+    /// The steps come in physical direction, as macOS reports scrolling with Natural Scrolling
+    /// off (`ScrollWheelInput.physicalDirection` has already taken it off). Vertically the Mac
+    /// and the target agree: a positive `scrollingDeltaY` scrolls up on the Mac, and a positive
+    /// USB HID Wheel value scrolls up on the target. Horizontally they are opposite: a positive
+    /// `scrollingDeltaX` scrolls left on the Mac, but a positive HID AC Pan value scrolls right
+    /// (Windows `WM_MOUSEHWHEEL` and Linux `REL_HWHEEL` are positive-right too). kvmd puts the
+    /// wheel numbers into the USB report unchanged, so X is negated here and Y is not.
     ///
-    /// Natural Scrolling needs nothing extra: macOS flips both signs before Overlook sees the
-    /// event, so the target scrolls the way the Mac's own apps do, on both axes. This runs after
-    /// `ScrollAccumulator` has turned lines or points into steps, so it applies once to every
-    /// path: notched wheel and trackpad, absolute mode and locked relative mode.
+    /// This runs after `ScrollAccumulator` has turned lines or points into steps, so it applies
+    /// once to every path: notched wheel and trackpad, absolute mode and locked relative mode.
     nonisolated static func targetScrollSteps(macDeltaX: CGFloat, macDeltaY: CGFloat) -> (deltaX: CGFloat, deltaY: CGFloat) {
         (-macDeltaX, macDeltaY)
     }

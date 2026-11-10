@@ -154,7 +154,8 @@ struct ScrollScalingTests {
         _ deltaY: CGFloat,
         at time: TimeInterval,
         phase: NSEvent.Phase = .changed,
-        momentum: NSEvent.Phase = []
+        momentum: NSEvent.Phase = [],
+        inverted: Bool = false
     ) -> ScrollWheelInput {
         ScrollWheelInput(
             deltaX: deltaX,
@@ -162,7 +163,8 @@ struct ScrollScalingTests {
             hasPreciseDeltas: true,
             phase: phase,
             momentumPhase: momentum,
-            timestamp: time
+            timestamp: time,
+            invertedFromDevice: inverted
         )
     }
 
@@ -631,5 +633,187 @@ struct ScrollScalingTests {
         #expect(abs(input.deltaY - 0.1) < 0.001)
         #expect(input.lineDeltaY == Int(cg.getIntegerValueField(.scrollWheelEventDeltaAxis1)))
         #expect(steps([input]) == [[0, 1]])
+    }
+
+    // MARK: - Natural Scrolling: physical direction out
+
+    // Each case below gives the same physical scroll twice: as macOS hands it over with Natural
+    // Scrolling off, and as it hands it over with Natural Scrolling on (both signs flipped,
+    // `invertedFromDevice` set). The target must receive the same thing from both.
+
+    @Test func physicalDirectionUndoesNaturalScrollingOnBothAxes() {
+        let natural = ScrollWheelInput(
+            deltaX: 0.25, deltaY: -3.5, hasPreciseDeltas: true, phase: .changed, timestamp: 4,
+            lineDeltaX: 1, lineDeltaY: -4, invertedFromDevice: true
+        )
+
+        let physical = natural.physicalDirection
+
+        #expect(physical == ScrollWheelInput(
+            deltaX: -0.25, deltaY: 3.5, hasPreciseDeltas: true, phase: .changed, timestamp: 4,
+            lineDeltaX: -1, lineDeltaY: 4, invertedFromDevice: false
+        ))
+        // Missing whole lines stay missing.
+        let noLines = ScrollWheelInput(deltaX: 1, deltaY: 2, invertedFromDevice: true).physicalDirection
+        #expect(noLines.lineDeltaX == nil && noLines.lineDeltaY == nil)
+        #expect([noLines.deltaX, noLines.deltaY] == [-1, -2])
+    }
+
+    @Test func physicalDirectionLeavesAnUnflippedEventAlone() {
+        let traditional = ScrollWheelInput(
+            deltaX: 0.25, deltaY: -3.5, timestamp: 4, lineDeltaX: 1, lineDeltaY: -4, invertedFromDevice: false
+        )
+        #expect(traditional.physicalDirection == traditional)
+    }
+
+    @Test func aNotchedEventReachesTheTargetTheSameWithNaturalScrollingOnOrOff() {
+        let off = Capture()
+        off.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0.2, deltaY: -0.3, lineDeltaX: 1, lineDeltaY: -2))
+        off.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: 1, lineDeltaX: 0, lineDeltaY: 1))
+
+        let on = Capture()
+        on.input.handleVideoMouseScroll(ScrollWheelInput(
+            deltaX: -0.2, deltaY: 0.3, lineDeltaX: -1, lineDeltaY: 2, invertedFromDevice: true
+        ))
+        on.input.handleVideoMouseScroll(ScrollWheelInput(
+            deltaX: 0, deltaY: -1, lineDeltaX: 0, lineDeltaY: -1, invertedFromDevice: true
+        ))
+
+        // One line left and two down, then one up: X flipped once for HID, Y as it physically went.
+        let expected: [InputManager.SentInput] = [.scroll(deltaX: -1, deltaY: -2), .scroll(deltaX: 0, deltaY: 1)]
+        #expect(off.sent == expected)
+        #expect(on.sent == expected)
+        #expect(reports(on.sent) == [[-1, -2], [0, 1]])
+    }
+
+    @Test func aTrackpadGestureReachesTheTargetTheSameWithNaturalScrollingOnOrOff() {
+        func gesture(_ sign: CGFloat, inverted: Bool) -> [InputManager.SentInput] {
+            let c = Capture()
+            c.input.handleVideoMouseScroll(precise(sign * 2.5, sign * 2.5, at: 0, phase: .began, inverted: inverted))
+            for i in 1..<20 {
+                c.input.handleVideoMouseScroll(
+                    precise(sign * 2.5, sign * 2.5, at: Double(i) * 0.01, phase: .changed, inverted: inverted)
+                )
+            }
+            return c.sent
+        }
+
+        // 50 points left and up, physically: five steps, each a pan of -1 and a wheel of +1.
+        let expected = Array(repeating: InputManager.SentInput.scroll(deltaX: -1, deltaY: 1), count: 5)
+        #expect(gesture(1, inverted: false) == expected)
+        #expect(gesture(-1, inverted: true) == expected)
+    }
+
+    @Test func theHorizontalFlipStillHappensOnceWithNaturalScrollingOn() {
+        let c = Capture()
+        // Physically one line left (Mac-traditional +1): macOS hands it over as -1, flagged.
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: -1, deltaY: 0, lineDeltaX: -1, lineDeltaY: 0, invertedFromDevice: true))
+        // Physically one line right.
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 1, deltaY: 0, lineDeltaX: 1, lineDeltaY: 0, invertedFromDevice: true))
+
+        #expect(reports(c.sent) == [[-1, 0], [1, 0]])
+    }
+
+    @Test func aReversalWithNaturalScrollingOnStillDropsWhatWasPending() {
+        let c = Capture()
+        c.input.handleVideoMouseScroll(precise(0, -9, at: 0, phase: .began, inverted: true))
+        // Without the reset this would cancel the 9 points and send nothing.
+        c.input.handleVideoMouseScroll(precise(0, 9, at: 0.01, inverted: true))
+        c.input.handleVideoMouseScroll(precise(0, 1, at: 0.02, inverted: true))
+
+        // Physically 9 points up, then 10 down: one step down.
+        #expect(c.sent == [.scroll(deltaX: 0, deltaY: -1)])
+    }
+
+    @Test func momentumWithNaturalScrollingOnStartsFreshAndEndsTheGesture() {
+        let c = Capture()
+        for input in [
+            precise(0, -9, at: 0, phase: .changed, inverted: true),
+            precise(0, -5, at: 0.01, phase: [], momentum: .began, inverted: true),
+            precise(0, -8, at: 0.02, phase: [], momentum: .changed, inverted: true),
+            precise(0, -9, at: 0.03, phase: [], momentum: .changed, inverted: true),
+            precise(0, 0, at: 0.04, phase: [], momentum: .ended, inverted: true),
+        ] {
+            c.input.handleVideoMouseScroll(input)
+        }
+
+        // As `momentumStartsFreshAndEndsTheGesture`, physically up: the 9 points before momentum
+        // are dropped, and momentum's 22 points send two steps.
+        #expect(c.sent == [.scroll(deltaX: 0, deltaY: 1), .scroll(deltaX: 0, deltaY: 1)])
+    }
+
+    /// The field behind `NSEvent.isDirectionInvertedFromDevice`. It is not a public
+    /// `CGEventField`: a run that set every field from 100 to 255 on a scroll event found that
+    /// 137, and only 137, turns the flag on. Only these tests use it, to build the event macOS
+    /// delivers with Natural Scrolling on; the app reads the public NSEvent property.
+    private static let directionInvertedField = CGEventField(rawValue: 137)!
+
+    /// `cg` as macOS delivers it with Natural Scrolling on: both axes flipped and the flag set.
+    private func flippedForNaturalScrolling(_ cg: CGEvent) -> CGEvent {
+        for (whole, fixed, point) in [
+            (CGEventField.scrollWheelEventDeltaAxis1, CGEventField.scrollWheelEventFixedPtDeltaAxis1,
+             CGEventField.scrollWheelEventPointDeltaAxis1),
+            (.scrollWheelEventDeltaAxis2, .scrollWheelEventFixedPtDeltaAxis2, .scrollWheelEventPointDeltaAxis2),
+        ] {
+            // Read all three first: setting one of them can recompute the others.
+            let values = (cg.getIntegerValueField(whole), cg.getDoubleValueField(fixed), cg.getIntegerValueField(point))
+            cg.setIntegerValueField(whole, value: -values.0)
+            cg.setDoubleValueField(fixed, value: -values.1)
+            cg.setIntegerValueField(point, value: -values.2)
+        }
+        cg.setIntegerValueField(Self.directionInvertedField, value: 1)
+        return cg
+    }
+
+    @Test func theEventsInvertedFlagIsCaptured() throws {
+        let plain = try #require(NSEvent(cgEvent: try lineEvent(vertical: 1)))
+        let natural = try #require(NSEvent(cgEvent: flippedForNaturalScrolling(try lineEvent(vertical: 1))))
+
+        #expect(plain.isDirectionInvertedFromDevice == false)
+        #expect(ScrollWheelInput(event: plain).invertedFromDevice == false)
+        #expect(natural.isDirectionInvertedFromDevice)
+        #expect(natural.scrollingDeltaY < 0)
+        let input = ScrollWheelInput(event: natural)
+        #expect(input.invertedFromDevice)
+        #expect(input.lineDeltaY == -1)
+        #expect(input.physicalDirection.lineDeltaY == 1)
+        #expect(input.physicalDirection.deltaY > 0)
+    }
+
+    @Test func aLineEventFromTheNSEventReachesTheTargetTheSameWithNaturalScrollingOnOrOff() throws {
+        let lines: [(vertical: Int32, horizontal: Int32)] = [(1, 0), (0, 1), (-2, 3)]
+        let off = Capture()
+        let on = Capture()
+        for line in lines {
+            let plain = try lineEvent(vertical: line.vertical, horizontal: line.horizontal)
+            let natural = flippedForNaturalScrolling(try lineEvent(vertical: line.vertical, horizontal: line.horizontal))
+            off.input.handleVideoMouseScroll(ScrollWheelInput(event: try #require(NSEvent(cgEvent: plain))))
+            on.input.handleVideoMouseScroll(ScrollWheelInput(event: try #require(NSEvent(cgEvent: natural))))
+        }
+
+        // Up; left (X flipped once); down two and left three.
+        #expect(reports(off.sent) == [[0, 1], [-1, 0], [-3, -2]])
+        #expect(reports(on.sent) == reports(off.sent))
+    }
+
+    @Test func aTrackpadEventFromTheNSEventReachesTheTargetTheSameWithNaturalScrollingOnOrOff() throws {
+        func pixelEvent() throws -> CGEvent {
+            let cg = try #require(CGEvent(
+                scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -12, wheel2: 25, wheel3: 0
+            ))
+            cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(CGScrollPhase.began.rawValue))
+            return cg
+        }
+        let off = Capture()
+        off.input.handleVideoMouseScroll(ScrollWheelInput(event: try #require(NSEvent(cgEvent: try pixelEvent()))))
+        let natural = try #require(NSEvent(cgEvent: flippedForNaturalScrolling(try pixelEvent())))
+        #expect(natural.isDirectionInvertedFromDevice)
+        #expect(natural.scrollingDeltaX < 0)
+        let on = Capture()
+        on.input.handleVideoMouseScroll(ScrollWheelInput(event: natural))
+
+        // Physically 25 points left and 12 down: two steps of pan left, one down.
+        #expect(reports(off.sent) == [[-2, -1]])
+        #expect(reports(on.sent) == [[-2, -1]])
     }
 }

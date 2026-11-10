@@ -3,9 +3,10 @@ import AppKit
 /// One scroll-wheel event as the video view received it.
 struct ScrollWheelInput: Equatable {
     /// `NSEvent.scrollingDeltaX/Y`: lines for a notched wheel, points for a trackpad or Magic
-    /// Mouse. The user's natural-scrolling choice is already applied. A notched wheel's lines are
-    /// scaled by macOS's wheel acceleration, so one slow notch is often a fraction of a line.
-    /// In the Mac's direction: positive Y scrolls up and positive X scrolls left.
+    /// Mouse. The Mac's Natural Scrolling choice is already applied (`invertedFromDevice` says
+    /// whether it flipped them); `physicalDirection` takes it off again. A notched wheel's lines
+    /// are scaled by macOS's wheel acceleration, so one slow notch is often a fraction of a line.
+    /// With Natural Scrolling off, positive Y scrolls up and positive X scrolls left.
     /// `InputManager.targetScrollSteps` turns X around for the target.
     var deltaX: CGFloat
     var deltaY: CGFloat
@@ -23,6 +24,9 @@ struct ScrollWheelInput: Equatable {
     var momentumPhase: NSEvent.Phase
     /// Seconds on the clock of `NSEvent.timestamp`.
     var timestamp: TimeInterval
+    /// `NSEvent.isDirectionInvertedFromDevice`: macOS flipped both axes' signs (deltas and whole
+    /// lines) for the Mac's Natural Scrolling setting. The same for every event of a gesture.
+    var invertedFromDevice: Bool
 
     init(
         deltaX: CGFloat,
@@ -32,7 +36,8 @@ struct ScrollWheelInput: Equatable {
         momentumPhase: NSEvent.Phase = [],
         timestamp: TimeInterval = 0,
         lineDeltaX: Int? = nil,
-        lineDeltaY: Int? = nil
+        lineDeltaY: Int? = nil,
+        invertedFromDevice: Bool = false
     ) {
         self.deltaX = deltaX
         self.deltaY = deltaY
@@ -42,6 +47,7 @@ struct ScrollWheelInput: Equatable {
         self.phase = phase
         self.momentumPhase = momentumPhase
         self.timestamp = timestamp
+        self.invertedFromDevice = invertedFromDevice
     }
 
     init(event: NSEvent) {
@@ -58,8 +64,29 @@ struct ScrollWheelInput: Equatable {
             momentumPhase: event.momentumPhase,
             timestamp: event.timestamp,
             lineDeltaX: lines(.scrollWheelEventDeltaAxis2),
-            lineDeltaY: lines(.scrollWheelEventDeltaAxis1)
+            lineDeltaY: lines(.scrollWheelEventDeltaAxis1),
+            invertedFromDevice: event.isDirectionInvertedFromDevice
         )
+    }
+
+    /// This event in the direction the wheel or fingers actually moved, as a mouse plugged into
+    /// the target would report it.
+    ///
+    /// The rule: physical direction out, and the target applies its own scrolling preference. To
+    /// the target the KVM is a plain USB mouse, and the target may be any OS, a Mac with Natural
+    /// Scrolling on among them. So when macOS has flipped the event for this Mac's Natural
+    /// Scrolling, both axes are flipped back, the fractional deltas and the whole lines alike;
+    /// otherwise the event is returned unchanged. The whole lines are kept within 32 bits, so
+    /// negating them cannot overflow.
+    var physicalDirection: ScrollWheelInput {
+        guard invertedFromDevice else { return self }
+        var physical = self
+        physical.deltaX = -deltaX
+        physical.deltaY = -deltaY
+        physical.lineDeltaX = lineDeltaX.map { -$0 }
+        physical.lineDeltaY = lineDeltaY.map { -$0 }
+        physical.invertedFromDevice = false
+        return physical
     }
 }
 
