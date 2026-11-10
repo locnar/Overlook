@@ -135,6 +135,7 @@ struct OverlookSettingsView: View {
     let network: NetworkPreferences
     let connection: ConnectionPreferences
     @StateObject private var sessions: SettingsSessionsModel
+    @StateObject private var paneHeights = SettingsPaneHeights()
 
     @State private var selectedTab: SettingsTab = .general
 
@@ -163,6 +164,7 @@ struct OverlookSettingsView: View {
                     .tag(tab)
             }
         }
+        .environmentObject(paneHeights)
     }
 
     @ViewBuilder
@@ -182,17 +184,72 @@ struct OverlookSettingsView: View {
     }
 }
 
-/// One tab's content: a grouped form of a fixed width, as macOS's own Settings windows have.
+/// How tall each tab's form is, as measured while the window is open, so a tab comes back at its
+/// own height when it's chosen again.
+@MainActor
+final class SettingsPaneHeights: ObservableObject {
+    @Published private(set) var heights: [SettingsTab: CGFloat] = [:]
+
+    /// A shrink smaller than this is ignored. While the window resizes, a grouped form's content
+    /// height moves by a few points as the toolbar's inset comes and goes; following those would
+    /// resize the window again, and again. Rows and captions that come and go are taller than this.
+    static let shrinkThreshold: CGFloat = 12
+
+    /// The height a pane takes after measuring `contentHeight`, given the height it has now, or
+    /// nil to keep the one it has: it grows at once, and shrinks only past `shrinkThreshold`.
+    static func height(afterMeasuring contentHeight: CGFloat, current: CGFloat?) -> CGFloat? {
+        guard contentHeight > 0 else { return nil }
+        let measured = contentHeight.rounded(.up)
+        guard let current else { return measured }
+        if measured > current || measured < current - shrinkThreshold {
+            return measured
+        }
+        return nil
+    }
+
+    func record(contentHeight: CGFloat, for tab: SettingsTab) {
+        if let height = Self.height(afterMeasuring: contentHeight, current: heights[tab]) {
+            heights[tab] = height
+        }
+    }
+}
+
+/// One tab's content: a grouped form of a fixed width, as macOS's own Settings windows have, as
+/// tall as its rows, so it doesn't scroll. On macOS 15 and later the form's content is measured,
+/// so the pane follows rows and captions that come and go, long device names and the text size.
+/// macOS 14 can't measure it; there the pane takes `fallbackHeight`, which is also its height
+/// until the first measurement arrives. Each tab's fallback is what it measured on a current
+/// macOS at the default text size in its tallest state, plus some room; macOS 14's rows are
+/// shorter.
 private struct SettingsPane<Content: View>: View {
-    let height: CGFloat
+    let tab: SettingsTab
+    let fallbackHeight: CGFloat
     @ViewBuilder let content: Content
 
+    @EnvironmentObject private var heights: SettingsPaneHeights
+
     var body: some View {
+        if #available(macOS 15, *) {
+            form
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    // The content alone: the top inset is the toolbar, which the form runs
+                    // under, and isn't part of the pane's frame.
+                    geometry.contentSize.height
+                } action: { _, contentHeight in
+                    heights.record(contentHeight: contentHeight, for: tab)
+                }
+                .frame(width: 520, height: heights.heights[tab] ?? fallbackHeight)
+        } else {
+            form
+                .frame(width: 520, height: fallbackHeight)
+        }
+    }
+
+    private var form: some View {
         Form {
             content
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: height)
     }
 }
 
@@ -219,7 +276,7 @@ private struct GeneralSettingsPane: View {
     @AppStorage(AppAppearance.key) private var appAppearance: String = AppAppearance.system.rawValue
 
     var body: some View {
-        SettingsPane(height: 180) {
+        SettingsPane(tab: .general, fallbackHeight: 180) {
             Section {
                 Picker("App appearance", selection: $appAppearance) {
                     ForEach(AppAppearance.allCases) { appearance in
@@ -253,7 +310,10 @@ private struct AudioSettingsPane: View {
     @State private var isReconnecting = false
 
     var body: some View {
-        SettingsPane(height: sessions.connectedCount > 0 ? 350 : 290) {
+        SettingsPane(tab: .audio, fallbackHeight: AudioSettingsPane.fallbackHeight(
+            connected: sessions.connectedCount > 0,
+            microphoneDenied: sessions.isMicrophoneAccessDenied
+        )) {
             Section {
                 Toggle("Audio", isOn: $preferences.audioEnabled)
                     .help("Play the target's audio. Takes effect on the next connect.")
@@ -322,6 +382,12 @@ private struct AudioSettingsPane: View {
         .onAppear(perform: refreshDevices)
     }
 
+    /// The height on macOS 14, where the form can't be measured: room for every row this state
+    /// shows, with some to spare.
+    static func fallbackHeight(connected: Bool, microphoneDenied: Bool) -> CGFloat {
+        310 + (connected ? 90 : 0) + (microphoneDenied ? 50 : 0)
+    }
+
     private func refreshDevices() {
         inputDevices = CoreAudioDevices.listInputDevices()
         outputDevices = CoreAudioDevices.listOutputDevices()
@@ -334,7 +400,7 @@ private struct CaptureSettingsPane: View {
     @ObservedObject var preferences: CapturePreferences
 
     var body: some View {
-        SettingsPane(height: 330) {
+        SettingsPane(tab: .capture, fallbackHeight: 340) {
             Section {
                 Picker("Record", selection: $preferences.recordingMode) {
                     ForEach(RecordingMode.allCases) { mode in
@@ -448,7 +514,7 @@ private struct InputSettingsPane: View {
     @ObservedObject var preferences: InputPreferences
 
     var body: some View {
-        SettingsPane(height: 530) {
+        SettingsPane(tab: .input, fallbackHeight: 550) {
             Section {
                 LabeledContent("Local sensitivity") {
                     HStack {
@@ -516,7 +582,7 @@ private struct NetworkSettingsPane: View {
     @ObservedObject var sessions: SettingsSessionsModel
 
     var body: some View {
-        SettingsPane(height: 150) {
+        SettingsPane(tab: .network, fallbackHeight: 170) {
             Section {
                 Picker("Video and audio addresses", selection: $preferences.mediaAddresses) {
                     ForEach(MediaAddresses.allCases) { choice in

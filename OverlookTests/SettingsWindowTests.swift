@@ -108,6 +108,39 @@ struct SettingsWindowTests {
         #expect(settingsWindows.isEmpty)
     }
 
+    // MARK: - Pane heights
+
+    @Test func aPaneTakesItsFirstMeasurementRoundedUp() {
+        #expect(SettingsPaneHeights.height(afterMeasuring: 512.5, current: nil) == 513)
+        #expect(SettingsPaneHeights.height(afterMeasuring: 0, current: nil) == nil)
+        #expect(SettingsPaneHeights.height(afterMeasuring: 0, current: 300) == nil)
+    }
+
+    @Test func aPaneGrowsAtOnce() {
+        #expect(SettingsPaneHeights.height(afterMeasuring: 282, current: 274) == 282)
+        #expect(SettingsPaneHeights.height(afterMeasuring: 360, current: 282) == 360)
+    }
+
+    /// The few points a form's content moves while the window animates don't resize it again; a
+    /// section going away does.
+    @Test func aPaneShrinksOnlyPastTheThreshold() {
+        #expect(SettingsPaneHeights.height(afterMeasuring: 274, current: 282) == nil)
+        #expect(SettingsPaneHeights.height(afterMeasuring: 282 - SettingsPaneHeights.shrinkThreshold, current: 282) == nil)
+        #expect(SettingsPaneHeights.height(afterMeasuring: 282, current: 360) == 282)
+    }
+
+    @Test func eachTabKeepsItsOwnHeight() {
+        let heights = SettingsPaneHeights()
+        heights.record(contentHeight: 151, for: .general)
+        heights.record(contentHeight: 282, for: .audio)
+        heights.record(contentHeight: 147, for: .general)
+        #expect(heights.heights == [.general: 151, .audio: 282])
+
+        heights.record(contentHeight: 360, for: .audio)
+        heights.record(contentHeight: 282, for: .audio)
+        #expect(heights.heights[.audio] == 282)
+    }
+
     // MARK: - Shortcuts
 
     @Test func theShortcutListNamesEveryChordOverlookKeeps() {
