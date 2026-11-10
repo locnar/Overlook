@@ -144,6 +144,23 @@ struct PeerConnectionRoles<Peer: AnyObject> {
         }
     }
 
+    /// What a track that arrived on `peer` calls for. Only the current connection's peers count:
+    /// a torn-down peer's track is ignored, so it neither renders into the next connection nor
+    /// changes its audio. Audio is switched to follow the Audio setting on either current peer;
+    /// video is rendered only from the video peer, since a second stream would fight over the
+    /// view.
+    func action(forAdded kind: AddedTrackKind, on peer: Peer) -> AddedTrackAction {
+        guard let role = currentRole(of: peer) else { return .ignore }
+        switch kind {
+        case .audio:
+            return .playAudio
+        case .video:
+            return role == .video ? .renderVideo : .hintOnly
+        case .other:
+            return .hintOnly
+        }
+    }
+
     /// `isClosed` is whether the new state is `closed`, which only a teardown's `close()` causes.
     mutating func disposition(for peer: Peer, isClosed: Bool) -> Disposition {
         let key = ObjectIdentifier(peer)
@@ -153,6 +170,26 @@ struct PeerConnectionRoles<Peer: AnyObject> {
         entries[key] = nil
         return .closed(entry.role)
     }
+}
+
+/// The kind of track a receiver added to a peer connection carries.
+enum AddedTrackKind: Equatable {
+    case audio
+    case video
+    case other
+}
+
+/// What a track added to a peer connection calls for (`PeerConnectionRoles.action(forAdded:on:)`).
+enum AddedTrackAction: Equatable {
+    /// From a peer that is no longer current, or one never seen: change nothing.
+    case ignore
+    /// Received audio on a current peer: hint low-latency playout and switch it on or off to
+    /// follow the Audio setting.
+    case playAudio
+    /// Video on the current video peer: hint low-latency playout and render it.
+    case renderVideo
+    /// Anything else on a current peer: hint low-latency playout only.
+    case hintOnly
 }
 
 /// The Janus requests that are answered by transaction (`create` and `attach`) and are still
@@ -2569,18 +2606,28 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
-        applyPlayoutDelayHintIfPossible()
-        if let audioTrack = rtpReceiver.track as? RTCAudioTrack {
-            // Present whenever the mic is on (see the audio watch request); heard only if asked for.
-            audioTrack.isEnabled = audioEnabled
-            return
-        }
-        guard let track = rtpReceiver.track as? RTCVideoTrack else { return }
+        // WebRTC's thread: only the track is read here. The playout hint reads the manager's
+        // peer connection and preference, and the audio switch follows the Audio setting, all
+        // main-actor state, so both wait for the main actor, where a torn-down peer's late
+        // callback does nothing to the next connection.
+        let track = rtpReceiver.track
+        let kind: AddedTrackKind = track is RTCAudioTrack ? .audio : (track is RTCVideoTrack ? .video : .other)
         Task { @MainActor in
-            // Only the current video peer's stream is rendered: a second one would fight over the
-            // view, and a torn-down peer's would render into the next connection.
-            guard self.peerRoles.currentRole(of: peerConnection) == .video else { return }
-            self.attachVideoTrack(track)
+            let action = self.peerRoles.action(forAdded: kind, on: peerConnection)
+            guard action != .ignore else { return }
+            self.applyPlayoutDelayHintIfPossible()
+            switch action {
+            case .playAudio:
+                // Present whenever the mic is on (see the audio watch request); heard only if
+                // asked for.
+                (track as? RTCAudioTrack)?.isEnabled = self.audioEnabled
+            case .renderVideo:
+                if let videoTrack = track as? RTCVideoTrack {
+                    self.attachVideoTrack(videoTrack)
+                }
+            case .hintOnly, .ignore:
+                break
+            }
         }
     }
 }

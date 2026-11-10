@@ -155,3 +155,70 @@ struct PeerConnectionRolesTests {
         #expect(roles.trickleHandle(for: FakePeer(), videoHandle: 101, audioHandle: 202) == nil)
     }
 }
+
+/// What a track added to a peer connection does, decided on the main actor by the peer's role:
+/// a torn-down peer's late `didAdd` changes nothing about the next connection.
+@Suite("Added tracks")
+struct AddedTrackTests {
+    final class FakePeer {}
+
+    @Test func theCurrentVideoPeersVideoIsRendered() {
+        var roles = PeerConnectionRoles<FakePeer>()
+        let video = FakePeer()
+        roles.register(video, as: .video)
+        #expect(roles.action(forAdded: .video, on: video) == .renderVideo)
+    }
+
+    @Test func audioIsSwitchedOnEitherCurrentPeer() {
+        var roles = PeerConnectionRoles<FakePeer>()
+        let video = FakePeer()
+        let audio = FakePeer()
+        roles.register(video, as: .video)
+        roles.register(audio, as: .audio)
+        #expect(roles.action(forAdded: .audio, on: audio) == .playAudio)
+        #expect(roles.action(forAdded: .audio, on: video) == .playAudio)
+    }
+
+    @Test func videoOnTheAudioPeerIsNotRendered() {
+        // Video offered on the audio handle once rendered too, and the two fought over the view.
+        var roles = PeerConnectionRoles<FakePeer>()
+        let audio = FakePeer()
+        roles.register(audio, as: .audio)
+        #expect(roles.action(forAdded: .video, on: audio) == .hintOnly)
+        #expect(roles.action(forAdded: .other, on: audio) == .hintOnly)
+    }
+
+    @Test func aTornDownPeersTracksChangeNothing() {
+        var roles = PeerConnectionRoles<FakePeer>()
+        let oldVideo = FakePeer()
+        let oldAudio = FakePeer()
+        roles.register(oldVideo, as: .video)
+        roles.register(oldAudio, as: .audio)
+        roles.retireAll()
+        let newVideo = FakePeer()
+        roles.register(newVideo, as: .video)
+
+        for kind in [AddedTrackKind.audio, .video, .other] {
+            #expect(roles.action(forAdded: kind, on: oldVideo) == .ignore)
+            #expect(roles.action(forAdded: kind, on: oldAudio) == .ignore)
+        }
+        #expect(roles.action(forAdded: .video, on: newVideo) == .renderVideo)
+    }
+
+    @Test func anUnknownPeersTracksChangeNothing() {
+        let roles = PeerConnectionRoles<FakePeer>()
+        #expect(roles.action(forAdded: .audio, on: FakePeer()) == .ignore)
+        #expect(roles.action(forAdded: .video, on: FakePeer()) == .ignore)
+    }
+
+    @Test func askingChangesNothing() {
+        // Unlike `disposition`, which drops a retired peer once its close is handled.
+        var roles = PeerConnectionRoles<FakePeer>()
+        let video = FakePeer()
+        roles.register(video, as: .video)
+        roles.retireAll()
+        _ = roles.action(forAdded: .video, on: video)
+        #expect(roles.count == 1)
+        #expect(roles.disposition(for: video, isClosed: true) == .closed(.video))
+    }
+}
