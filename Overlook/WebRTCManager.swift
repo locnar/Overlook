@@ -300,7 +300,11 @@ class WebRTCManager: NSObject, ObservableObject {
     private var audioPeerConnection: RTCPeerConnection?
     /// Which peer an ICE callback came from, still known after a teardown lets go of the peer.
     private var peerRoles = PeerConnectionRoles<RTCPeerConnection>()
-    private var videoTrack: RTCVideoTrack?
+    /// The current connection's video track, the renderers added to it, and the relay among
+    /// them that hands its frames to this manager; all taken off it when it is let go of.
+    private var videoTrack: VideoRendererHost?
+    private var videoTrackRenderers: [RTCVideoRenderer] = []
+    private var videoFrameRelay: VideoFrameRelay?
     private var localAudioTrack: RTCAudioTrack?
     private var localAudioSender: RTCRtpSender?
     /// What the current connect will actually send: the mic only when macOS granted it, so a
@@ -336,12 +340,8 @@ class WebRTCManager: NSObject, ObservableObject {
 
     private var lastPlayoutHintApplyTime: TimeInterval?
 
-    private var fpsWindowStartTime: CFTimeInterval = 0
-    private var fpsFrameCount: Int = 0
-    private var lastFpsPublishTime: CFTimeInterval = 0
-
-    private let streamHealthQueue = DispatchQueue(label: "com.overlook.stream-health")
-    private var lastVideoFrameTime: CFTimeInterval?
+    /// Frame arrivals for the current connection: last-frame time, frame rate, frames kept.
+    private let frameMeter = VideoFrameMeter()
     private var connectedIceTime: CFTimeInterval?
     private var streamHealthTimer: Timer?
 
@@ -350,6 +350,8 @@ class WebRTCManager: NSObject, ObservableObject {
     
     private var signalingSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
+    /// The one send path onto `webSocketTask`: frames in order, each with a deadline.
+    private var signalingSender: JanusSignalingSender?
     private var signalingListenerTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     /// Bumped on every connect and teardown so work started for an earlier connection — the
@@ -363,6 +365,8 @@ class WebRTCManager: NSObject, ObservableObject {
     private var janusSessionId: Int?
     private var janusHandleId: Int?
     private var janusAudioHandleId: Int?
+    /// Which of the current handles a pushed message came from; strays are dropped.
+    private var janusSenders = JanusSenderFilter()
     private var janusKeepAliveTimer: Timer?
     private static let janusTransactionTimeoutNs: UInt64 = 8_000_000_000
     private let janusTransactions = JanusTransactions(
@@ -399,7 +403,6 @@ class WebRTCManager: NSObject, ObservableObject {
     private var lastLoggedCandidatePath: String?
 
     private var isFrameCaptureEnabled: Bool = false
-    private var lastFrameCaptureTime: CFTimeInterval = 0
     
     private var cancellables = Set<AnyCancellable>()
 
@@ -470,16 +473,10 @@ class WebRTCManager: NSObject, ObservableObject {
         audioDeviceChangeDebounceTask = nil
     }
 
-    private func setLastVideoFrameTime(_ time: CFTimeInterval?) {
-        streamHealthQueue.sync {
-            lastVideoFrameTime = time
-        }
-    }
-
-    private func getLastVideoFrameTime() -> CFTimeInterval? {
-        streamHealthQueue.sync {
-            lastVideoFrameTime
-        }
+    /// When the current connection's last video frame arrived; nil before its first. What the
+    /// stall check reads. Internal so a test can see whether a frame was counted.
+    var lastVideoFrameTimestamp: CFTimeInterval? {
+        frameMeter.lastFrameTime
     }
     
     private func setupWebRTC() {
@@ -813,7 +810,7 @@ class WebRTCManager: NSObject, ObservableObject {
         isStreamStalled = false
         lastDisconnectReason = nil
         lastVideoFrameAgeSeconds = nil
-        setLastVideoFrameTime(nil)
+        frameMeter.reset(generation: generation)
         connectedIceTime = nil
         hasEverConnectedToStream = false
 
@@ -1007,6 +1004,7 @@ class WebRTCManager: NSObject, ObservableObject {
 
     func setFrameCaptureEnabled(_ enabled: Bool) {
         isFrameCaptureEnabled = enabled
+        frameMeter.setKeepsFrames(enabled)
 
         if enabled == false {
             currentFrame = nil
@@ -1065,6 +1063,7 @@ class WebRTCManager: NSObject, ObservableObject {
 
         let socketTask = session.webSocketTask(with: request)
         webSocketTask = socketTask
+        let sender = makeSignalingSender(for: URLSessionSignalingSocket(socketTask))
         socketTask.resume()
 
         let generation = connectionGeneration
@@ -1074,10 +1073,10 @@ class WebRTCManager: NSObject, ObservableObject {
             await self.listenForSignalingMessages(socket: socketTask, generation: generation)
         }
 
-        // Janus session setup. Every step goes out on this connect's own socket and checks that the
-        // connect is still current when it resumes: after a teardown, `webSocketTask` and the
+        // Janus session setup. Every step goes out on this connect's own sender and checks that the
+        // connect is still current when it resumes: after a teardown, `signalingSender` and the
         // handle IDs belong to the next connection, and carrying on would attach to its session.
-        let createResponse = try await requestJanus(["janus": "create"], on: socketTask, generation: generation)
+        let createResponse = try await requestJanus(["janus": "create"], on: sender, generation: generation)
         guard let data = createResponse["data"] as? [String: Any],
               let sessionId = data["id"] as? Int else {
             throw WebRTCError.signalingConnectionLost
@@ -1089,7 +1088,7 @@ class WebRTCManager: NSObject, ObservableObject {
             "plugin": "janus.plugin.ustreamer",
             "opaque_id": "oid-\(UUID().uuidString)",
             "session_id": sessionId,
-        ], on: socketTask, generation: generation)
+        ], on: sender, generation: generation)
         guard let attachData = attachResponse["data"] as? [String: Any],
               let handleId = attachData["id"] as? Int else {
             throw WebRTCError.signalingConnectionLost
@@ -1114,7 +1113,7 @@ class WebRTCManager: NSObject, ObservableObject {
             "transaction": makeJanusTransaction(),
             "session_id": sessionId,
             "handle_id": handleId,
-        ], on: socketTask)
+        ], on: sender)
         guard generation == connectionGeneration else { throw WebRTCError.superseded }
 
         if (audioEnabled || negotiatedMicEnabled), let audioPeerConnection {
@@ -1123,7 +1122,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 "plugin": "janus.plugin.ustreamer",
                 "opaque_id": "oid-audio-\(UUID().uuidString)",
                 "session_id": sessionId,
-            ], on: socketTask, generation: generation)
+            ], on: sender, generation: generation)
             guard let audioAttachData = audioAttachResponse["data"] as? [String: Any],
                   let audioHandleId = audioAttachData["id"] as? Int else {
                 throw WebRTCError.signalingConnectionLost
@@ -1148,7 +1147,7 @@ class WebRTCManager: NSObject, ObservableObject {
                 "transaction": makeJanusTransaction(),
                 "session_id": sessionId,
                 "handle_id": audioHandleId,
-            ], on: socketTask)
+            ], on: sender)
             guard generation == connectionGeneration else { throw WebRTCError.superseded }
 
             _ = audioPeerConnection
@@ -1185,6 +1184,10 @@ class WebRTCManager: NSObject, ObservableObject {
                 } catch {
                     // A keepalive cancelled by a teardown must not reconnect what was just hung up.
                     guard generation == self.connectionGeneration else { return }
+                    // The sender reports a socket that missed a deadline itself, once (see
+                    // `signalingSendMissedDeadline`); a second reconnect request here would only
+                    // be suppressed.
+                    if error is JanusSignalingSender.SendError { return }
                     self.log.error(.signaling, "Keepalive send failed: \(error.localizedDescription)")
                     self.requestReconnect(reason: "Signaling keepalive failed")
                 }
@@ -1259,7 +1262,7 @@ class WebRTCManager: NSObject, ObservableObject {
     /// fails the request after `janusTransactionTimeoutNs` rather than leaving connect() suspended.
     private func requestJanus(
         _ message: [String: Any],
-        on socket: URLSessionWebSocketTask,
+        on sender: JanusSignalingSender,
         generation: Int
     ) async throws -> [String: Any] {
         let transaction = makeJanusTransaction()
@@ -1267,25 +1270,58 @@ class WebRTCManager: NSObject, ObservableObject {
         request["transaction"] = transaction
         let reply = try await janusTransactions.request(transaction) { [weak self] in
             guard let self else { throw WebRTCError.superseded }
-            try await self.sendJanusMessage(request, on: socket)
+            try await self.sendJanusMessage(request, on: sender)
         }
         guard generation == connectionGeneration else { throw WebRTCError.superseded }
         return reply
     }
 
+    /// Sends on the current connection's signaling socket. After a teardown there is none, and
+    /// nothing is sent.
     private func sendJanusMessage(_ message: [String: Any]) async throws {
-        guard let webSocketTask else {
-            throw WebRTCError.signalingConnectionLost
+        guard let signalingSender else {
+            throw JanusSignalingSender.SendError.closed
         }
-        try await sendJanusMessage(message, on: webSocketTask)
+        try await sendJanusMessage(message, on: signalingSender)
     }
 
-    private func sendJanusMessage(_ message: [String: Any], on socket: URLSessionWebSocketTask) async throws {
+    private func sendJanusMessage(_ message: [String: Any], on sender: JanusSignalingSender) async throws {
         guard let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else {
             throw WebRTCError.signalingConnectionLost
         }
-        try await socket.send(.string(text))
+        try await sender.send(.string(text), describing: JanusSignalingSender.describe(message))
+    }
+
+    /// The send path for the connection being made, on `socket`. A frame that misses its deadline
+    /// reconnects that connection, unless a teardown has replaced it by then. Internal so a test
+    /// can hand it a socket of its own.
+    @discardableResult
+    func makeSignalingSender(
+        for socket: SignalingSocket,
+        timing: JanusSignalingSender.Timing = .standard
+    ) -> JanusSignalingSender {
+        let generation = connectionGeneration
+        let sender = JanusSignalingSender(socket: socket, timing: timing) { [weak self] what, deadline in
+            self?.signalingSendMissedDeadline(what, deadline: deadline, generation: generation)
+        }
+        signalingSender?.close()
+        signalingSender = sender
+        return sender
+    }
+
+    /// A socket that has not taken a frame within its deadline has stopped draining; waiting for
+    /// a read to fail, or for the ack-silence limit, can take minutes on a black-holed path.
+    private func signalingSendMissedDeadline(_ what: String, deadline: Duration, generation: Int) {
+        // A teardown closes the sender first, so this is only a backstop: a stuck send must never
+        // reconnect a connection that has been hung up or replaced.
+        guard generation == connectionGeneration else { return }
+        let milliseconds = Int((deadline / .milliseconds(1)).rounded())
+        self.log.error(
+            .signaling,
+            "Signaling socket did not take a \(what) frame within \(milliseconds) ms; treating it as dead"
+        )
+        requestReconnect(reason: "Signaling send timed out")
     }
 
     private func normalizedWebSocketURL(_ url: URL) -> URL {
@@ -1346,7 +1382,8 @@ class WebRTCManager: NSObject, ObservableObject {
         }
     }
 
-    private func handleJanusMessage(_ message: [String: Any]) async {
+    /// Internal so a test can hand it recorded messages.
+    func handleJanusMessage(_ message: [String: Any]) async {
         // Only a transaction someone is *waiting* on short-circuits here. Keepalives register no
         // waiter on purpose, so their acks fall through to the switch below and refresh
         // `lastJanusAckAt` — which is the whole liveness check. Registering a waiter for them
@@ -1356,19 +1393,32 @@ class WebRTCManager: NSObject, ObservableObject {
         }
 
         guard let janusType = message["janus"] as? String else { return }
-        if janusType == "trickle" {
-            guard let candidateObj = message["candidate"] as? [String: Any],
-                  let candidateString = candidateObj["candidate"] as? String,
-                  let videoPeerConnection = peerConnection else {
-                return
-            }
 
-            let senderHandleId = message["sender"] as? Int
-            let peerConnection: RTCPeerConnection
-            if let senderHandleId, senderHandleId == janusAudioHandleId, let audioPeerConnection {
-                peerConnection = audioPeerConnection
-            } else {
-                peerConnection = videoPeerConnection
+        // A candidate or an offer is applied to the peer of the leg whose handle sent it, and to
+        // no peer when that handle is not one of the current connection's.
+        let leg: JanusLeg?
+        switch janusSenders.verdict(for: message, videoHandle: janusHandleId, audioHandle: janusAudioHandleId) {
+        case .leg(let senderLeg):
+            leg = senderLeg
+        case .session:
+            leg = nil
+        case .drop(let sender, let isFirst):
+            if isFirst {
+                self.log.info(
+                    .signaling,
+                    "Dropped Janus \(JanusSenderFilter.describe(message)) from unknown sender "
+                        + "\(sender.map(String.init) ?? "(none)"); later ones from it are dropped silently"
+                )
+            }
+            return
+        }
+
+        if janusType == "trickle" {
+            guard let leg,
+                  let peerConnection = peer(for: leg),
+                  let candidateObj = message["candidate"] as? [String: Any],
+                  let candidateString = candidateObj["candidate"] as? String else {
+                return
             }
 
             if (candidateObj["completed"] as? Bool) == true {
@@ -1495,14 +1545,22 @@ class WebRTCManager: NSObject, ObservableObject {
             }
         }
 
-        guard let jsep = message["jsep"] as? [String: Any],
+        guard let leg,
+              let jsep = message["jsep"] as? [String: Any],
               let jsepType = jsep["type"] as? String,
               jsepType == "offer",
               let sdpString = jsep["sdp"] as? String else {
             return
         }
 
-        await handleOfferSDP(sdpString, senderHandleId: senderHandleId)
+        await handleOfferSDP(sdpString, leg: leg)
+    }
+
+    private func peer(for leg: JanusLeg) -> RTCPeerConnection? {
+        switch leg {
+        case .video: return peerConnection
+        case .audio: return audioPeerConnection
+        }
     }
 
     /// `RTCIceConnectionState` is an ObjC enum: it logs as an integer unless named.
@@ -1528,20 +1586,13 @@ class WebRTCManager: NSObject, ObservableObject {
         return "unknown"
     }
     
-    private func handleOfferSDP(_ sdpString: String, senderHandleId: Int?) async {
-        guard let videoHandleId = janusHandleId else { return }
-
-        let peerConnection: RTCPeerConnection?
+    private func handleOfferSDP(_ sdpString: String, leg: JanusLeg) async {
         let handleId: Int?
-        if let senderHandleId, senderHandleId == janusAudioHandleId {
-            peerConnection = audioPeerConnection
-            handleId = janusAudioHandleId
-        } else {
-            peerConnection = self.peerConnection
-            handleId = videoHandleId
+        switch leg {
+        case .video: handleId = janusHandleId
+        case .audio: handleId = janusAudioHandleId
         }
-
-        guard let peerConnection, let handleId else { return }
+        guard let peerConnection = peer(for: leg), let handleId else { return }
         
         let sessionDescription = RTCSessionDescription(
             type: .offer,
@@ -1570,7 +1621,7 @@ class WebRTCManager: NSObject, ObservableObject {
     }
 
     private func createAndSendAnswer(peerConnection: RTCPeerConnection, handleId: Int) async {
-
+        let generation = connectionGeneration
         do {
             let generated = try await peerConnection.answer(
                 for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -1588,8 +1639,10 @@ class WebRTCManager: NSObject, ObservableObject {
             return
         }
         
-        // Send answer to Janus
-        guard let localDescription = peerConnection.localDescription,
+        // Send answer to Janus. Making it suspends twice, and a teardown in between hands the
+        // session to the next connection: this answer belongs to a handle that is gone.
+        guard generation == connectionGeneration,
+              let localDescription = peerConnection.localDescription,
               let sessionId = janusSessionId else {
             return
         }
@@ -1636,7 +1689,7 @@ class WebRTCManager: NSObject, ObservableObject {
                     return
                 }
 
-                let lastFrame = self.getLastVideoFrameTime()
+                let lastFrame = self.lastVideoFrameTimestamp
                 let age = lastFrame.map { now - $0 }
 
                 if let age {
@@ -2207,6 +2260,10 @@ class WebRTCManager: NSObject, ObservableObject {
     /// itself (or a reconnect that should not kill a pending retry).
     private func tearDown(cancelReconnect: Bool) {
         connectionGeneration += 1
+        // First, so nothing from the old track counts towards what follows: once this returns no
+        // frame from it reaches the manager, and one already past the relay is not counted.
+        detachVideoTrack()
+        frameMeter.reset(generation: connectionGeneration)
         signalingListenerTask?.cancel()
         signalingListenerTask = nil
         if cancelReconnect {
@@ -2228,7 +2285,12 @@ class WebRTCManager: NSObject, ObservableObject {
         janusSessionId = nil
         janusHandleId = nil
         janusAudioHandleId = nil
+        janusSenders.reset()
         janusTransactions.failAll(WebRTCError.signalingConnectionLost)
+        // Fails every send in flight or queued at once, without waiting on a socket that may never
+        // give a frame back.
+        signalingSender?.close()
+        signalingSender = nil
         
         webSocketTask?.cancel()
         webSocketTask = nil
@@ -2258,10 +2320,10 @@ class WebRTCManager: NSObject, ObservableObject {
         isStreamStalled = false
         lastDisconnectReason = nil
         lastVideoFrameAgeSeconds = nil
-        setLastVideoFrameTime(nil)
         connectedIceTime = nil
         videoSize = nil
         isFrameCaptureEnabled = false
+        frameMeter.setKeepsFrames(false)
         // The video view is gone too; a screenshot now would show a stream that no longer exists.
         captureHub.clearLatestFrame()
         telemetry.clearStreamStats()
@@ -2276,9 +2338,76 @@ class WebRTCManager: NSObject, ObservableObject {
         lastInboundAudioBytesTimestamp = nil
         lastAudioJitterBufferDelaySeconds = nil
         lastAudioJitterBufferEmittedCount = nil
-        fpsWindowStartTime = 0
-        fpsFrameCount = 0
-        lastFpsPublishTime = 0
+    }
+
+    // MARK: - Video track
+
+    /// Renders `track` in the video view and counts its frames for this connection, after taking
+    /// everything off the track it replaces. Internal so a test can hand it a track of its own.
+    func attachVideoTrack(_ track: VideoRendererHost) {
+        detachVideoTrack()
+        let generation = connectionGeneration
+        let relay = VideoFrameRelay(
+            onFrame: { [weak self] frame in self?.handleDecodedFrame(frame, generation: generation) },
+            onSize: { [weak self] size in self?.handleVideoSize(size, generation: generation) }
+        )
+        var renderers: [RTCVideoRenderer] = []
+        if let videoView {
+            track.add(videoView)
+            renderers.append(videoView)
+        }
+        track.add(relay)
+        renderers.append(relay)
+        videoTrack = track
+        videoTrackRenderers = renderers
+        videoFrameRelay = relay
+    }
+
+    /// Takes every renderer this manager added off the current video track and lets go of it.
+    /// The relay is retired first, so a frame it is handing on right now finishes before this
+    /// returns, and nothing after it gets through.
+    private func detachVideoTrack() {
+        videoFrameRelay?.retire()
+        videoFrameRelay = nil
+        if let videoTrack {
+            for renderer in videoTrackRenderers {
+                videoTrack.remove(renderer)
+            }
+        }
+        videoTrack = nil
+        videoTrackRenderers = []
+    }
+
+    /// libwebrtc's decoder thread, by way of the relay of the track the frame came from;
+    /// `generation` is that track's connection. A frame from a connection that is no longer current
+    /// is dropped here, and work it queued for the main actor is dropped there.
+    nonisolated private func handleDecodedFrame(_ frame: RTCVideoFrame, generation: Int) {
+        let now = CACurrentMediaTime()
+        guard let tick = frameMeter.record(at: now, generation: generation) else { return }
+        captureHub.handleVideoFrame(frame, hostTime: now)
+
+        if let fps = tick.fps {
+            Task { @MainActor in
+                guard generation == self.connectionGeneration else { return }
+                self.telemetry.update { $0.videoFps = fps }
+            }
+        }
+        if tick.keepsFrame, let cvBuffer = frame.buffer as? RTCCVPixelBuffer {
+            let pixelBuffer = cvBuffer.pixelBuffer
+            Task { @MainActor in
+                guard generation == self.connectionGeneration, self.isFrameCaptureEnabled else { return }
+                self.currentFrame = pixelBuffer
+            }
+        }
+    }
+
+    nonisolated private func handleVideoSize(_ size: CGSize, generation: Int) {
+        Task { @MainActor in
+            guard generation == self.connectionGeneration else { return }
+            if size.width > 0, size.height > 0, self.videoSize != size {
+                self.videoSize = size
+            }
+        }
     }
 
     private func ensureMicrophoneAccess() async -> Bool {
@@ -2446,14 +2575,13 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
             audioTrack.isEnabled = audioEnabled
             return
         }
-        // Only the video handle's stream is rendered; a second one would fight over the view.
-        guard peerConnection === self.peerConnection,
-              let track = rtpReceiver.track as? RTCVideoTrack else { return }
-        videoTrack = track
-        if let videoView {
-            track.add(videoView)
+        guard let track = rtpReceiver.track as? RTCVideoTrack else { return }
+        Task { @MainActor in
+            // Only the current video peer's stream is rendered: a second one would fight over the
+            // view, and a torn-down peer's would render into the next connection.
+            guard self.peerRoles.currentRole(of: peerConnection) == .video else { return }
+            self.attachVideoTrack(track)
         }
-        track.add(self)
     }
 }
 
@@ -2488,61 +2616,6 @@ extension WebRTCManager: @preconcurrency RTCDataChannelDelegate {
         }
     }
  }
-
-// MARK: - RTCVideoRenderer
-extension WebRTCManager: @preconcurrency RTCVideoRenderer {
-    func renderFrame(_ frame: RTCVideoFrame?) {
-        guard let frame else { return }
-
-        let now = CACurrentMediaTime()
-
-        setLastVideoFrameTime(now)
-        captureHub.handleVideoFrame(frame, hostTime: now)
-
-        if fpsWindowStartTime == 0 {
-            fpsWindowStartTime = now
-            lastFpsPublishTime = now
-        }
-
-        fpsFrameCount += 1
-
-        if now - lastFpsPublishTime >= 0.5 {
-            let dt = now - fpsWindowStartTime
-            if dt > 0 {
-                let fps = Int((Double(fpsFrameCount) / dt).rounded())
-                Task { @MainActor in
-                    telemetry.update { $0.videoFps = fps }
-                }
-            }
-            fpsWindowStartTime = now
-            fpsFrameCount = 0
-            lastFpsPublishTime = now
-        }
-
-        guard isFrameCaptureEnabled else { return }
-
-        let minInterval: CFTimeInterval = 1.0 / 12.0
-        if now - lastFrameCaptureTime < minInterval {
-            return
-        }
-        lastFrameCaptureTime = now
-
-        if let cvBuffer = frame.buffer as? RTCCVPixelBuffer {
-            let pb = cvBuffer.pixelBuffer
-            Task { @MainActor in
-                currentFrame = pb
-            }
-        }
-    }
-    
-    func setSize(_ size: CGSize) {
-        Task { @MainActor in
-            if size.width > 0, size.height > 0, videoSize != size {
-                videoSize = size
-            }
-        }
-    }
-}
 
 // MARK: - Supporting Types
 enum WebRTCError: Error {
