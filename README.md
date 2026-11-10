@@ -149,13 +149,13 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 #### Telemetry and UI
 
 - **Latency**: the Connections panel pinged over a WebRTC data channel nothing on the device answers, so it read 0 forever.
-- **ICE RTT**: the selected candidate pair was found by a selected flag libwebrtc never sets, so ICE RTT was a
+- **ICE RTT**: the selected candidate pair was found by a selected flag libwebrtc never sets, so ICE RTT was always blank.
 - **Stats re-render**: ~15 scalar stats published several times per second re-evaluated the whole view hierarchy and leaked SwiftUI observation state — 101% CPU, footprint climbing past 450 MB.
-- **Status menu**: items auto-enabled, so Disconnect's isEnabled never took effect; the connection sink also r step stale.
+- **Status menu**: items auto-enabled, so Disconnect's isEnabled never took effect; the connection sink also read the connected device back from the manager before `@Published` had updated it, so the status line was one step stale.
 - **Connect sheets**: Return did nothing in the Manual Connect and Password sheets.
-- **Release builds**: hardened-runtime library validation rejected the vendor-signed WebRTC.framework, so any m ID died at launch with a dyld Team ID mismatch.
+- **Release builds**: hardened-runtime library validation rejected the vendor-signed WebRTC.framework, so any Release build signed without a Team ID died at launch with a dyld Team ID mismatch.
 - **Scan cancellation**: a scan could not be cancelled, and results from an abandoned scan still landed in the device list.
-- **Scan probes**: 64 concurrent probes tripped router rate limiting and starved the mDNS browsers; each dead P timeouts.
+- **Scan probes**: 64 concurrent probes tripped router rate limiting and starved the mDNS browsers; each dead address cost up to six HTTP timeouts.
 - **OCR busy state**: an OCR that found no text left the busy state set.
 - **Empty OCR result**: a drag over an area with no text opened an empty Recognized Text sheet. It now shows a "No text found" notice instead.
 - **Disconnected title**: a disconnected window was titled "Overlook - Overlook / Disconnected". It now names the device chosen in that window ("Overlook - mdesktop / Disconnected"), or is just "Overlook" when none is.
