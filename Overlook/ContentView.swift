@@ -1115,6 +1115,16 @@ struct ScanRowState: Equatable {
         guard !ranges.isEmpty else { return "Scanning Bonjour services only…" }
         return "Scanning \(ranges.joined(separator: ", "))…"
     }
+
+    /// Laid out on the caption line while idle, never shown or read out: it gives the line the
+    /// caption font's height, so nothing below the row moves when a scan starts or ends.
+    static let captionPlaceholder = "Scanning…"
+
+    /// The text the caption line lays out: the caption while scanning, the placeholder when idle.
+    var captionLine: String { caption ?? Self.captionPlaceholder }
+
+    /// Whether the caption line is visible and read by VoiceOver: only while scanning.
+    var isCaptionShown: Bool { caption != nil }
 }
 
 struct ConnectionsPopoverView: View {
@@ -1238,11 +1248,17 @@ struct ConnectionsPopoverView: View {
                     }
                 }
 
-                if let caption = scanRow.caption {
-                    Text(caption)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                // Always laid out, so its line's height is kept while idle and nothing below the
+                // row moves when a scan starts or ends; hidden and not read out while idle. One
+                // line only, so a long caption (several ranges) truncates rather than wrapping
+                // past the kept height.
+                Text(scanRow.captionLine)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .opacity(scanRow.isCaptionShown ? 1 : 0)
+                    .accessibilityHidden(!scanRow.isCaptionShown)
             }
 
             Divider()

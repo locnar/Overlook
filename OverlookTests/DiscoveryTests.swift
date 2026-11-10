@@ -1192,6 +1192,19 @@ struct ScanRowStateTests {
         #expect(ScanRowState(isScanning: false, ranges: ["192.168.0.0/24"]).caption == nil)
     }
 
+    @Test func theCaptionLineKeepsItsPlaceWhileIdle() {
+        // Idle: the line is still laid out, with the placeholder, but hidden and not read out.
+        let idle = ScanRowState(isScanning: false, ranges: ["192.168.0.0/24"])
+        #expect(!idle.isCaptionShown)
+        #expect(idle.captionLine == ScanRowState.captionPlaceholder)
+        #expect(!idle.captionLine.isEmpty)
+        // Scanning: the same line shows and reads the caption.
+        let scanning = ScanRowState(isScanning: true, ranges: ["192.168.0.0/24"])
+        #expect(scanning.isCaptionShown)
+        #expect(scanning.captionLine == "Scanning 192.168.0.0/24…")
+        #expect(ScanRowState(isScanning: true, ranges: []).captionLine == "Scanning Bonjour services only…")
+    }
+
     @Test func scanningShowsCancelScanAndTheSweptRange() {
         let row = ScanRowState(isScanning: true, ranges: ["192.168.0.0/24"])
         #expect(row.buttonTitle == "Cancel scan")
