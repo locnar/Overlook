@@ -191,6 +191,11 @@ class InputManager: ObservableObject {
     @Published private(set) var deviceJiggler: GLKVMJigglerState?
     @Published private(set) var isPointerLocked = false
 
+    /// Whether a new HID socket wakes the target's display; see `wakeTargetDisplayIfWanted`.
+    let connectionPreferences: ConnectionPreferences
+    /// Reads the device's Keyboard Control setting before a display wake, and sends it.
+    private var displayWakeTask: Task<Void, Never>?
+
     /// Relative-mode settings on this Mac, shared with every other window and with Settings › Input.
     /// Read on every captured mouse move, so a change made anywhere applies here at once.
     let inputPreferences: InputPreferences
@@ -227,9 +232,11 @@ class InputManager: ObservableObject {
     init(
         defaults: UserDefaults = AppEnvironment.defaults,
         inputPreferences: InputPreferences? = nil,
+        connectionPreferences: ConnectionPreferences? = nil,
         log: SessionLog? = nil
     ) {
         self.inputPreferences = inputPreferences ?? .forDefaults(defaults)
+        self.connectionPreferences = connectionPreferences ?? .forDefaults(defaults)
         self.log = log ?? SessionLog(destination: .shared)
     }
     
@@ -277,6 +284,7 @@ class InputManager: ObservableObject {
         remotePaste.cancelAll()
         mouseModeRefreshTask?.cancel()
         mouseModeRefreshTask = nil
+        cancelDisplayWake()
         unlockPointer()
         if client !== glkvmClient {
             // The HID socket belongs to the previous device; a still-connected one would otherwise
@@ -552,6 +560,7 @@ class InputManager: ObservableObject {
     }
 
     func disconnectGLKVMWebSocket() {
+        cancelDisplayWake()
         unlockPointer()
         stopMouseMoveSender()
         deviceEventTask?.cancel()
@@ -582,6 +591,7 @@ class InputManager: ObservableObject {
     /// everything queued behind fails at once.
     func shutdown() async {
         remotePaste.cancelAll()
+        cancelDisplayWake()
         stopFullInputCapture()  // unlocks the pointer, which queues releases for held buttons
         stopMouseMoveSender()
         mouseModeRefreshTask?.cancel()
@@ -1619,6 +1629,7 @@ class InputManager: ObservableObject {
                     self.publishHIDLink(.connected)
                     if self.glkvmWebSocketClient === ws {
                         self.resyncRemoteKeys(through: ws)
+                        self.wakeTargetDisplayIfWanted(through: ws)
                     }
                 }
                 self.handleDeviceEvent(event)
@@ -1633,6 +1644,43 @@ class InputManager: ObservableObject {
                 self.scheduleHIDReconnect()
             }
         }
+    }
+
+    // MARK: - Waking the target's display
+
+    /// With Settings › General › "Wake the target's display when connecting" on, sends one Shift
+    /// tap (ShiftLeft down, then up) when a HID socket comes up: on each connect, and on each
+    /// automatic reconnect of the socket. One tap per socket, through this session's own socket
+    /// and HID queue, after the keyboard resync. Skipped when the device's Keyboard Control is
+    /// off, and when Shift is already held on the target (a key is already reaching it).
+    private func wakeTargetDisplayIfWanted(through ws: GLKVMClient.WebSocketClient) {
+        guard connectionPreferences.wakeDisplayOnConnect,
+              transportMode == .glkvmWebSocket,
+              let client = glkvmClient else { return }
+        displayWakeTask?.cancel()
+        displayWakeTask = Task { @MainActor [weak self] in
+            // A config that cannot be read does not stop it: typing is not stopped either.
+            let keyboardControl = (try? await client.getSystemConfig())?.keyboardControl
+            guard let self, !Task.isCancelled,
+                  self.glkvmClient === client, self.glkvmWebSocketClient === ws else { return }
+            self.displayWakeTask = nil
+            if keyboardControl == false {
+                self.log.info(.hid, "Not waking the target's display: Keyboard Control is off on the device")
+                return
+            }
+            guard self.remoteHeldKeys.isDisjoint(with: ["ShiftLeft", "ShiftRight"]) else { return }
+            let log = self.log
+            self.enqueueHIDCommand(label: "display wake") {
+                try await ws.sendHidKey(key: "ShiftLeft", state: true)
+                try await ws.sendHidKey(key: "ShiftLeft", state: false)
+                log.info(.hid, "Woke the target's display (sent Shift)")
+            }
+        }
+    }
+
+    private func cancelDisplayWake() {
+        displayWakeTask?.cancel()
+        displayWakeTask = nil
     }
 
     /// Events kvmd pushes over the HID socket. Besides the pong that answers our ping, the ones

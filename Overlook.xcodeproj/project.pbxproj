@@ -100,6 +100,7 @@
 		01000048 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000048 /* SettingsWindow.swift */; };
 		01000047 /* MacPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000047 /* MacPreferences.swift */; };
 		0100012B /* MediaNetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012B /* MediaNetworkTests.swift */; };
+		0100012E /* WakeDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012E /* WakeDisplayTests.swift */; };
 		0100012D /* SettingsWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012D /* SettingsWindowTests.swift */; };
 		0100012C /* MacPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012C /* MacPreferencesTests.swift */; };
 		01000125 /* DiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000125 /* DiscoveryTests.swift */; };
@@ -221,6 +222,7 @@
 		02000048 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		02000047 /* MacPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPreferences.swift; sourceTree = "<group>"; };
 		0200012B /* MediaNetworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNetworkTests.swift; sourceTree = "<group>"; };
+		0200012E /* WakeDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeDisplayTests.swift; sourceTree = "<group>"; };
 		0200012D /* SettingsWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowTests.swift; sourceTree = "<group>"; };
 		0200012C /* MacPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPreferencesTests.swift; sourceTree = "<group>"; };
 		02000125 /* DiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryTests.swift; sourceTree = "<group>"; };
@@ -368,6 +370,7 @@
 				02000129 /* OCRManagerTests.swift */,
 				0200012A /* ScrollScalingTests.swift */,
 				0200012B /* MediaNetworkTests.swift */,
+				0200012E /* WakeDisplayTests.swift */,
 				0200012D /* SettingsWindowTests.swift */,
 				0200012C /* MacPreferencesTests.swift */,
 				02000123 /* KeyCodeTableTests.swift */,
@@ -602,6 +605,7 @@
 				01000129 /* OCRManagerTests.swift in Sources */,
 				0100012A /* ScrollScalingTests.swift in Sources */,
 				0100012B /* MediaNetworkTests.swift in Sources */,
+				0100012E /* WakeDisplayTests.swift in Sources */,
 				0100012D /* SettingsWindowTests.swift in Sources */,
 				0100012C /* MacPreferencesTests.swift in Sources */,
 				01000123 /* KeyCodeTableTests.swift in Sources */,

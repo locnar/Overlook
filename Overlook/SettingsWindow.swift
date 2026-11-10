@@ -44,7 +44,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var storedKeys: [String] {
         switch self {
         case .general:
-            return [AppAppearance.key]
+            return [AppAppearance.key, ConnectionPreferences.Keys.wakeDisplayOnConnect]
         case .audio:
             return [
                 AudioPreferences.Keys.audioEnabled,
@@ -133,6 +133,7 @@ struct OverlookSettingsView: View {
     let capture: CapturePreferences
     let input: InputPreferences
     let network: NetworkPreferences
+    let connection: ConnectionPreferences
     @StateObject private var sessions: SettingsSessionsModel
 
     @State private var selectedTab: SettingsTab = .general
@@ -143,12 +144,14 @@ struct OverlookSettingsView: View {
         audio: AudioPreferences? = nil,
         capture: CapturePreferences? = nil,
         input: InputPreferences? = nil,
-        network: NetworkPreferences? = nil
+        network: NetworkPreferences? = nil,
+        connection: ConnectionPreferences? = nil
     ) {
         self.audio = audio ?? .shared
         self.capture = capture ?? .shared
         self.input = input ?? .shared
         self.network = network ?? .shared
+        self.connection = connection ?? .shared
         _sessions = StateObject(wrappedValue: SettingsSessionsModel(registry: registry))
     }
 
@@ -166,7 +169,7 @@ struct OverlookSettingsView: View {
     private func pane(for tab: SettingsTab) -> some View {
         switch tab {
         case .general:
-            GeneralSettingsPane()
+            GeneralSettingsPane(connection: connection)
         case .audio:
             AudioSettingsPane(preferences: audio, sessions: sessions)
         case .capture:
@@ -212,10 +215,11 @@ private struct SettingsCaption: View {
 // MARK: - General
 
 private struct GeneralSettingsPane: View {
+    @ObservedObject var connection: ConnectionPreferences
     @AppStorage(AppAppearance.key) private var appAppearance: String = AppAppearance.system.rawValue
 
     var body: some View {
-        SettingsPane(height: 120) {
+        SettingsPane(height: 180) {
             Section {
                 Picker("App appearance", selection: $appAppearance) {
                     ForEach(AppAppearance.allCases) { appearance in
@@ -226,6 +230,13 @@ private struct GeneralSettingsPane: View {
                     // Console windows apply it too; this covers having none open.
                     AppAppearance.apply(newValue)
                 }
+            }
+
+            Section {
+                Toggle("Wake the target's display when connecting", isOn: $connection.wakeDisplayOnConnect)
+                    .help("After each connect, and each automatic reconnect of the keyboard and mouse link, Overlook presses and releases Shift on the target once. Not sent when Keyboard Control is off on the device.")
+            } footer: {
+                SettingsCaption("Sends one Shift key press after each connect. Off by default.")
             }
         }
     }
@@ -242,7 +253,7 @@ private struct AudioSettingsPane: View {
     @State private var isReconnecting = false
 
     var body: some View {
-        SettingsPane(height: sessions.connectedCount > 0 ? 400 : 340) {
+        SettingsPane(height: sessions.connectedCount > 0 ? 350 : 290) {
             Section {
                 Toggle("Audio", isOn: $preferences.audioEnabled)
                     .help("Play the target's audio. Takes effect on the next connect.")
@@ -323,7 +334,7 @@ private struct CaptureSettingsPane: View {
     @ObservedObject var preferences: CapturePreferences
 
     var body: some View {
-        SettingsPane(height: 420) {
+        SettingsPane(height: 330) {
             Section {
                 Picker("Record", selection: $preferences.recordingMode) {
                     ForEach(RecordingMode.allCases) { mode in
@@ -435,7 +446,7 @@ private struct InputSettingsPane: View {
     @ObservedObject var preferences: InputPreferences
 
     var body: some View {
-        SettingsPane(height: 470) {
+        SettingsPane(height: 500) {
             Section {
                 LabeledContent("Local sensitivity") {
                     HStack {
@@ -503,7 +514,7 @@ private struct NetworkSettingsPane: View {
     @ObservedObject var sessions: SettingsSessionsModel
 
     var body: some View {
-        SettingsPane(height: 190) {
+        SettingsPane(height: 150) {
             Section {
                 Picker("Video and audio addresses", selection: $preferences.mediaAddresses) {
                     ForEach(MediaAddresses.allCases) { choice in

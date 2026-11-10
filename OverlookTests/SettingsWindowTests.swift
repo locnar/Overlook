@@ -43,7 +43,7 @@ struct SettingsWindowTests {
     /// The keys are the ones these settings were stored under before they moved, so every value
     /// carries over as it was.
     @Test func eachTabsControlsUseTheKeysTheSettingsAlwaysHad() {
-        #expect(SettingsTab.general.storedKeys.first == "overlook.appAppearance")
+        #expect(SettingsTab.general.storedKeys == ["overlook.appAppearance", "overlook.connection.wakeDisplayOnConnect"])
         #expect(SettingsTab.audio.storedKeys == [
             "overlook.audio.enabled", "overlook.audio.playbackScope", "overlook.audio.micEnabled",
             "overlook.audio.inputDeviceUID", "overlook.audio.outputDeviceUID",
@@ -98,6 +98,7 @@ struct SettingsWindowTests {
         #expect(view.capture === CapturePreferences.shared)
         #expect(view.input === InputPreferences.shared)
         #expect(view.network === NetworkPreferences.shared)
+        #expect(view.connection === ConnectionPreferences.shared)
     }
 
     @Test func theTestHostHasNoSettingsWindowOpen() {

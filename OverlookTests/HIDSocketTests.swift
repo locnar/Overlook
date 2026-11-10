@@ -78,7 +78,16 @@ final class FakeHIDSocket: HIDSocket, @unchecked Sendable {
     /// "aborted", "closed" (with a close frame), or nil while open.
     var howClosed: String? { lock.withLock { closedHow } }
 
+    /// Whether the socket opens with kvmd's greeting. One that does not stands for a device that
+    /// never answered: the HID link never comes up.
+    let greets: Bool
+
+    init(greets: Bool = true) {
+        self.greets = greets
+    }
+
     func resume() {
+        guard greets else { return }
         deliver(#"{"event_type":"hid","event":{}}"#)
     }
 
@@ -186,12 +195,18 @@ final class FakeHIDSocket: HIDSocket, @unchecked Sendable {
 final class FakeHIDSockets: @unchecked Sendable {
     private let lock = NSLock()
     private var made: [FakeHIDSocket] = []
+    private var _greet = true
 
     var all: [FakeHIDSocket] { lock.withLock { made } }
     var count: Int { all.count }
+    /// Whether the sockets made from now on open with kvmd's greeting.
+    var greet: Bool {
+        get { lock.withLock { _greet } }
+        set { lock.withLock { _greet = newValue } }
+    }
 
     func make() -> FakeHIDSocket {
-        let socket = FakeHIDSocket()
+        let socket = FakeHIDSocket(greets: greet)
         lock.withLock { made.append(socket) }
         return socket
     }

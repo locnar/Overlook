@@ -52,8 +52,8 @@ final class ConsoleSession: ObservableObject {
     /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`. `link` is
     /// for tests too: the app's reaches the device, the stream and the connection log. So are
     /// `audioPreferences` (the app's sessions all share `AudioPreferences.shared`) and
-    /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file). The input and
-    /// capture settings are the app's shared objects when `defaults` is the app's, and objects of
+    /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file). The input,
+    /// capture and connection settings are the app's shared objects when `defaults` is the app's, and objects of
     /// their own on a test's scratch suite otherwise; a test that wants two sessions on one
     /// settings object passes it.
     init(
@@ -63,6 +63,7 @@ final class ConsoleSession: ObservableObject {
         audioPreferences: AudioPreferences? = nil,
         inputPreferences: InputPreferences? = nil,
         capturePreferences: CapturePreferences? = nil,
+        connectionPreferences: ConnectionPreferences? = nil,
         connectionLog: ConnectionLog? = nil
     ) {
         // Made here rather than as the default argument, which is evaluated outside the main actor.
@@ -73,7 +74,12 @@ final class ConsoleSession: ObservableObject {
         let webRTCManager = WebRTCManager(audioPreferences: audioPreferences, log: log)
         self.connection = connection
         self.webRTCManager = webRTCManager
-        inputManager = InputManager(defaults: defaults, inputPreferences: inputPreferences, log: log)
+        inputManager = InputManager(
+            defaults: defaults,
+            inputPreferences: inputPreferences,
+            connectionPreferences: connectionPreferences,
+            log: log
+        )
         ocrManager = OCRManager()
         captureManager = CaptureManager(
             webRTCManager: webRTCManager,
