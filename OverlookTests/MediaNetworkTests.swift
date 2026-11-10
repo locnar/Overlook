@@ -686,17 +686,24 @@ struct NetworkSettingsCaptionTests {
         "All addresses: the KVM may pick any network both sides share.",
     ]
 
-    @Test func explainsBothChoicesWhileDisconnected() {
+    @Test func explainsBothChoicesWhileNoWindowIsConnected() {
         for choice in MediaAddresses.allCases {
-            #expect(NetworkSettingsSection.mediaAddressesCaption(selected: choice, inEffect: nil) == explanation)
+            #expect(MediaAddressesCaption.lines(selected: choice, inEffect: []) == explanation)
         }
     }
 
-    @Test func saysWhenAChangeAppliesOnlyWhileItDiffersFromTheConnection() {
-        #expect(NetworkSettingsSection.mediaAddressesCaption(selected: .all, inEffect: .chosenNetwork)
+    @Test func saysWhenAChangeAppliesOnlyWhileItDiffersFromAConnection() {
+        #expect(MediaAddressesCaption.lines(selected: .all, inEffect: [.chosenNetwork])
             == explanation + ["Takes effect the next time you connect."])
-        #expect(NetworkSettingsSection.mediaAddressesCaption(selected: .chosenNetwork, inEffect: .all)
+        #expect(MediaAddressesCaption.lines(selected: .chosenNetwork, inEffect: [.all])
             == explanation + ["Takes effect the next time you connect."])
-        #expect(NetworkSettingsSection.mediaAddressesCaption(selected: .chosenNetwork, inEffect: .chosenNetwork) == explanation)
+        #expect(MediaAddressesCaption.lines(selected: .chosenNetwork, inEffect: [.chosenNetwork]) == explanation)
+    }
+
+    /// The Settings window serves every window: one connected with the other choice is enough.
+    @Test func anyConnectedWindowWithTheOtherChoiceShowsTheLine() {
+        #expect(MediaAddressesCaption.lines(selected: .all, inEffect: [.all, .chosenNetwork])
+            == explanation + ["Takes effect the next time you connect."])
+        #expect(MediaAddressesCaption.lines(selected: .all, inEffect: [.all, .all]) == explanation)
     }
 }

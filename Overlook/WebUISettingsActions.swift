@@ -448,20 +448,6 @@ extension WebUISettingsActions {
         return value
     }
 
-    func refreshAudioDevices() {
-        model.audioInputDevices = CoreAudioDevices.listInputDevices()
-        model.audioOutputDevices = CoreAudioDevices.listOutputDevices()
-    }
-
-    func reconnectWebRTC() async {
-        guard let device = connection.connectedDevice else { return }
-
-        await webRTCManager.reconnect(to: device, reason: "Stream settings changed")
-        if let reason = webRTCManager.lastDisconnectReason {
-            recordError("Failed to reconnect WebRTC: \(reason)")
-        }
-    }
-
     func resetKVM() async {
         guard let client = connection.glkvmClient else { return }
         do {

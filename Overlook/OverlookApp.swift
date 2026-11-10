@@ -35,6 +35,19 @@ struct OverlookApp: App {
 
             RemoteClipboardCommands()
         }
+
+        // Overlook › Settings… (⌘,): the settings kept on this Mac. SwiftUI opens it only when
+        // asked, so the test host never shows it; were it asked to, it would show nothing that
+        // reads or writes a setting.
+        Settings {
+            if AppEnvironment.isHostingTests {
+                Text("Overlook is hosting the unit tests.")
+                    .foregroundStyle(.secondary)
+                    .padding(40)
+            } else {
+                OverlookSettingsView(registry: appDelegate.sessionRegistry)
+            }
+        }
     }
 }
 

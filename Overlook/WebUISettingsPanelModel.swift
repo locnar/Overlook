@@ -56,8 +56,6 @@ final class WebUISettingsPanelModel: ObservableObject {
     @Published var isVideoExpanded = true
     @Published var isRemoteExpanded = true
     @Published var isKeyboardExpanded = true
-    @Published var isAudioExpanded = false
-    @Published var isCaptureExpanded = false
     @Published var isSystemExpanded = false
     @Published var isNetworkExpanded = false
     @Published var isAdvancedExpanded = false
@@ -101,8 +99,4 @@ final class WebUISettingsPanelModel: ObservableObject {
     @Published var streamerQualityText: String = ""
     @Published var streamerH264BitrateText: String = ""
     @Published var streamerH264GopText: String = ""
-
-    // Audio device enumeration (cheap, but re-listing on every open flickers the pickers).
-    @Published var audioInputDevices: [CoreAudioDeviceInfo] = []
-    @Published var audioOutputDevices: [CoreAudioDeviceInfo] = []
 }

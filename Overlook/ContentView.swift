@@ -85,7 +85,8 @@ struct ContentView: View {
     @State private var showFullscreenControls: Bool = false
     @State private var fullscreenHoverTask: Task<Void, Never>?
 
-    @AppStorage("overlook.appAppearance") private var appAppearance: String = "system"
+    /// Chosen in Settings › General; every console window follows it.
+    @AppStorage(AppAppearance.key) private var appAppearance: String = AppAppearance.system.rawValue
 
     private var preferredColorScheme: ColorScheme? {
         switch appAppearance {
@@ -143,14 +144,7 @@ struct ContentView: View {
     }
 
     private func applyAppAppearance() {
-        switch appAppearance {
-        case "light":
-            NSApp.appearance = NSAppearance(named: .aqua)
-        case "dark":
-            NSApp.appearance = NSAppearance(named: .darkAqua)
-        default:
-            NSApp.appearance = nil
-        }
+        AppAppearance.apply(appAppearance)
     }
     
     var body: some View {

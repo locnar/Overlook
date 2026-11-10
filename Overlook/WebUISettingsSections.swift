@@ -28,7 +28,7 @@ struct VideoSettingsSection: View {
     ]
 
     var body: some View {
-        DisclosureGroup("Video", isExpanded: $isExpanded) {
+        DisclosureGroup(WebUISettingsPanel.PanelSection.video.title, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 let modeBinding = actions.bindingString(
                     get: { $0.videoProcessing },
@@ -310,7 +310,7 @@ struct RemoteSettingsSection: View {
     ]
 
     var body: some View {
-        DisclosureGroup("Remote device settings", isExpanded: $isExpanded) {
+        DisclosureGroup(WebUISettingsPanel.PanelSection.remote.title, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Mouse Control", isOn: actions.bindingBool(
                     get: { $0.mouseControl },
@@ -393,8 +393,6 @@ struct RemoteSettingsSection: View {
                     Text("Absolute").tag(true)
                 }
 
-                LocalRelativeMouseSettings()
-
                 Stepper(
                     "Fingerbot strength: \(actions.bindingIntValue(get: { $0.fingerbotStrength }, defaultValue: 0))",
                     value: actions.bindingInt(
@@ -414,7 +412,7 @@ struct RemoteSettingsSection: View {
 
 /// The device's mouse jiggler. It shows what the device reports rather than the config's
 /// `mouse_jiggle`, which only records the web UI's switch: kvmd starts and stops the jiggler on
-/// `hid/set_params` alone. Its own view, like `LocalRelativeMouseSettings`, so a change on
+/// `hid/set_params` alone. Its own view, so a change on
 /// `InputManager` re-evaluates this row and not the whole section.
 struct MouseJigglerToggle: View {
     @EnvironmentObject var inputManager: InputManager
@@ -434,55 +432,6 @@ struct MouseJigglerToggle: View {
     }
 }
 
-// MARK: - Relative mouse mode (local)
-
-/// Overlook-side relative-mode controls. They are settings of this Mac, not of the device, kept in
-/// `InputPreferences` and shared by every window, so they get their own observer and do not
-/// re-evaluate the rest of the remote section.
-struct LocalRelativeMouseSettings: View {
-    @EnvironmentObject var inputManager: InputManager
-
-    var body: some View {
-        Group {
-            Divider()
-                .padding(.vertical, 2)
-
-            Text("Relative mode on this Mac")
-                .font(.subheadline.weight(.semibold))
-
-            RelativeMouseSettingsControls(preferences: inputManager.inputPreferences)
-        }
-    }
-}
-
-/// Local sensitivity and unaccelerated input, bound to the shared `InputPreferences`.
-struct RelativeMouseSettingsControls: View {
-    @ObservedObject var preferences: InputPreferences
-
-    var body: some View {
-        HStack {
-            Text("Local sensitivity")
-            Spacer()
-            Text(String(format: "%.2f×", preferences.relativeSensitivity))
-                .monospacedDigit()
-                .foregroundColor(.secondary)
-        }
-        Slider(
-            value: $preferences.relativeSensitivity,
-            in: InputPreferences.sensitivityRange,
-            step: InputPreferences.sensitivityStep
-        )
-        .help("Multiplier on mouse movement while the pointer is captured. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have — or, with unaccelerated input on, the target receives your mouse's raw counts unchanged.")
-
-        Toggle("Unaccelerated input (experimental)", isOn: $preferences.useUnacceleratedRelativeInput)
-            .help("Send the mouse's raw movement counts instead of macOS-accelerated movement, so the target applies its own pointer settings once, as with a directly attached mouse. Falls back to accelerated movement when the system does not provide counts. Expect to re-tune sensitivity.")
-
-        Text("Click the video to capture the pointer; press ⌃⌥ to release it.")
-            .font(.caption)
-            .foregroundColor(.secondary)
-    }
-}
-
 // MARK: - Keyboard
 
 struct KeyboardSettingsSection: View {
@@ -492,7 +441,7 @@ struct KeyboardSettingsSection: View {
     let actions: WebUISettingsActions
 
     var body: some View {
-        DisclosureGroup("Keyboard settings", isExpanded: $isExpanded) {
+        DisclosureGroup(WebUISettingsPanel.PanelSection.keyboard.title, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 Picker("Keymap", selection: actions.bindingString(
                     get: { $0.keymap },
@@ -526,105 +475,24 @@ struct KeyboardSettingsSection: View {
     }
 }
 
-// MARK: - Audio
-
-struct AudioSettingsSection: View {
-    @EnvironmentObject var webRTCManager: WebRTCManager
-    @EnvironmentObject var connection: SessionConnection
-    /// The app's audio settings, the same object in every window, so every window's Settings
-    /// shows what was last chosen in any of them.
-    @EnvironmentObject var audioPreferences: AudioPreferences
-    @ObservedObject var model: WebUISettingsPanelModel
-
-    @Binding var isExpanded: Bool
-    let actions: WebUISettingsActions
-
-    var body: some View {
-        DisclosureGroup("Audio", isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("Audio", isOn: $audioPreferences.audioEnabled)
-                    .help("Play the target's audio. Takes effect on the next connect.")
-                Picker("Play audio from", selection: $audioPreferences.playbackScope) {
-                    ForEach(AudioPreferences.PlaybackScope.allCases) { scope in
-                        Text(scope.title).tag(scope)
-                    }
-                }
-                .help("Applies to every window, at once. With \"Active window only\", the other windows stay connected and keep recording their audio; only this Mac's speakers skip them.")
-                Toggle("Microphone", isOn: $audioPreferences.micEnabled)
-                    .help("Send this Mac's microphone to the target as its USB microphone. The device carries it on the audio session, so this also opens audio; playback stays muted while Audio is off. Takes effect on the next connect. Only the active window sends it; the others send silence.")
-                if webRTCManager.isMicrophoneAccessDenied {
-                    Text("macOS refused microphone access. Allow Overlook under System Settings › Privacy & Security › Microphone, then reconnect.")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                }
-
-                Picker("Microphone device", selection: $audioPreferences.inputDeviceUID) {
-                    Text("System Default").tag("")
-                    if !audioPreferences.inputDeviceUID.isEmpty,
-                       model.audioInputDevices.contains(where: { $0.uid == audioPreferences.inputDeviceUID }) == false {
-                        Text("Unavailable").tag(audioPreferences.inputDeviceUID)
-                    }
-                    ForEach(model.audioInputDevices, id: \.uid) { device in
-                        Text(device.name).tag(device.uid)
-                    }
-                }
-
-                Picker("Output device", selection: $audioPreferences.outputDeviceUID) {
-                    Text("System Default").tag("")
-                    if !audioPreferences.outputDeviceUID.isEmpty,
-                       model.audioOutputDevices.contains(where: { $0.uid == audioPreferences.outputDeviceUID }) == false {
-                        Text("Unavailable").tag(audioPreferences.outputDeviceUID)
-                    }
-                    ForEach(model.audioOutputDevices, id: \.uid) { device in
-                        Text(device.name).tag(device.uid)
-                    }
-                }
-
-                Text("Reconnect required")
-                    .foregroundColor(.secondary)
-                    .font(.caption)
-
-                Button("Reconnect WebRTC") {
-                    Task { await actions.reconnectWebRTC() }
-                }
-                .disabled(connection.connectedDevice == nil)
-            }
-            .padding(.top, 6)
-            .onAppear { actions.refreshAudioDevices() }
-            .onChange(of: isExpanded) { _, _ in actions.refreshAudioDevices() }
-        }
-    }
-}
-
 // MARK: - System
 
+/// The device's own system settings. App appearance is this Mac's, in Settings › General.
 struct SystemSettingsSection: View {
     @Binding var isExpanded: Bool
     let actions: WebUISettingsActions
-
-    @AppStorage("overlook.appAppearance") private var appAppearance: String = "system"
-
-    private static let appAppearanceOptions: [(String, String)] = [
-        ("system", "System"),
-        ("light", "Light"),
-        ("dark", "Dark"),
-    ]
 
     private static let themeOptions: [(String, String)] = [
         ("0", "Light"),
         ("1", "Dark"),
     ]
 
-    var body: some View {
-        DisclosureGroup("System", isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                Picker("App appearance", selection: $appAppearance) {
-                    ForEach(Self.appAppearanceOptions, id: \.0) { value, label in
-                        Text(label).tag(value)
-                    }
-                }
+    private static let section = WebUISettingsPanel.PanelSection.system
 
-                Picker("Color mode", selection: actions.bindingString(
+    var body: some View {
+        DisclosureGroup(Self.section.title, isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker(Self.section.rows[0], selection: actions.bindingString(
                     get: { $0.themeMode },
                     set: { $0.themeMode = $1 },
                     defaultValue: "0"
@@ -634,8 +502,9 @@ struct SystemSettingsSection: View {
                     }
                 }
 
-                NotImplementedRow(title: "Language")
-                NotImplementedRow(title: "Timezone")
+                ForEach(Self.section.rows.dropFirst(), id: \.self) { title in
+                    NotImplementedRow(title: title)
+                }
             }
             .padding(.top, 6)
         }
@@ -644,50 +513,19 @@ struct SystemSettingsSection: View {
 
 // MARK: - Network
 
+/// The device's network settings, none of which Overlook can change yet. Which addresses video and
+/// audio use is this Mac's, in Settings › Network.
 struct NetworkSettingsSection: View {
     @Binding var isExpanded: Bool
-    /// The app's network settings, shared by every window.
-    @ObservedObject var preferences: NetworkPreferences
-    /// The "Video and audio addresses" setting this window's connection was made with; nil while
-    /// not connected.
-    let inEffect: MediaAddresses?
 
-    /// The lines under the "Video and audio addresses" pop-up: what each choice does, and, when
-    /// the choice differs from the one this window's connection was made with, when it applies.
-    nonisolated static func mediaAddressesCaption(selected: MediaAddresses, inEffect: MediaAddresses?) -> [String] {
-        var lines = [
-            "Chosen network only: video and audio use the same network as the address you connected through (LAN or Tailscale).",
-            "All addresses: the KVM may pick any network both sides share.",
-        ]
-        if let inEffect, inEffect != selected {
-            lines.append("Takes effect the next time you connect.")
-        }
-        return lines
-    }
+    private static let section = WebUISettingsPanel.PanelSection.network
 
     var body: some View {
-        DisclosureGroup("Network", isExpanded: $isExpanded) {
+        DisclosureGroup(Self.section.title, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Picker("Video and audio addresses", selection: $preferences.mediaAddresses) {
-                        ForEach(MediaAddresses.allCases) { choice in
-                            Text(choice.title).tag(choice)
-                        }
-                    }
-                    ForEach(
-                        Self.mediaAddressesCaption(selected: preferences.mediaAddresses, inEffect: inEffect),
-                        id: \.self
-                    ) { line in
-                        Text(line)
-                            .foregroundColor(.secondary)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                ForEach(Self.section.rows, id: \.self) { title in
+                    NotImplementedRow(title: title)
                 }
-
-                NotImplementedRow(title: "Modify")
-                NotImplementedRow(title: "Wi-Fi")
-                NotImplementedRow(title: "Ethernet")
             }
             .padding(.top, 6)
         }
@@ -703,7 +541,7 @@ struct AdvancedSettingsSection: View {
     let actions: WebUISettingsActions
 
     var body: some View {
-        DisclosureGroup("Advanced", isExpanded: $isExpanded) {
+        DisclosureGroup(WebUISettingsPanel.PanelSection.advanced.title, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 Button("Reset KVM") {
                     Task { await actions.resetKVM() }

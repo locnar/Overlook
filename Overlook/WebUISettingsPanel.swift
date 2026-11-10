@@ -24,6 +24,72 @@ struct WebUISettingsPanel: View {
 
     private static let panelBackground = Color(NSColor.windowBackgroundColor)
 
+    @Environment(\.openSettings) private var openSettings
+
+    /// The panel's sections, top to bottom. Only what is stored on the KVM itself: what is kept on
+    /// this Mac is in the Settings window (`SettingsTab`).
+    enum PanelSection: String, CaseIterable, Identifiable {
+        case video
+        case remote
+        case keyboard
+        case system
+        case network
+        case advanced
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .video: return "Video"
+            case .remote: return "Remote device settings"
+            case .keyboard: return "Keyboard settings"
+            case .system: return "System"
+            case .network: return "Network"
+            case .advanced: return "Advanced"
+            }
+        }
+
+        /// The rows the section shows, by label. The System and Network sections draw their rows
+        /// from this list; the others list theirs for reference.
+        var rows: [String] {
+            switch self {
+            case .video:
+                return ["Mode", "Quality", "EDID", "Orientation", "Show Cursor", "Streamer"]
+            case .remote:
+                return [
+                    "Mouse Control", "Keyboard Control", "Mouse Polling", "Sensitivity", "Scroll rate",
+                    "Scroll direction", "Mouse Jiggle", "Mouse mode", "Fingerbot strength",
+                ]
+            case .keyboard:
+                return ["Keymap", "Shortcuts"]
+            case .system:
+                return ["Color mode", "Language", "Timezone"]
+            case .network:
+                return ["Modify", "Wi-Fi", "Ethernet"]
+            case .advanced:
+                return ["Reset KVM"]
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionView(_ section: PanelSection, actions: WebUISettingsActions) -> some View {
+        switch section {
+        case .video:
+            VideoSettingsSection(model: model, isExpanded: $model.isVideoExpanded, actions: actions)
+        case .remote:
+            RemoteSettingsSection(model: model, isExpanded: $model.isRemoteExpanded, actions: actions)
+        case .keyboard:
+            KeyboardSettingsSection(model: model, isExpanded: $model.isKeyboardExpanded, actions: actions)
+        case .system:
+            SystemSettingsSection(isExpanded: $model.isSystemExpanded, actions: actions)
+        case .network:
+            NetworkSettingsSection(isExpanded: $model.isNetworkExpanded)
+        case .advanced:
+            AdvancedSettingsSection(isExpanded: $model.isAdvancedExpanded, actions: actions)
+        }
+    }
+
     /// Reload trigger: the panel only exists while open (ticket 03), so the connected device is
     /// the only thing that needs to re-drive `load()` for a mounted panel. Mounting itself runs
     /// `.task` once, which keeps the previous load-on-open behaviour.
@@ -66,48 +132,9 @@ struct WebUISettingsPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    VideoSettingsSection(
-                        model: model,
-                        isExpanded: $model.isVideoExpanded,
-                        actions: actions
-                    )
-
-                    RemoteSettingsSection(
-                        model: model,
-                        isExpanded: $model.isRemoteExpanded,
-                        actions: actions
-                    )
-
-                    KeyboardSettingsSection(
-                        model: model,
-                        isExpanded: $model.isKeyboardExpanded,
-                        actions: actions
-                    )
-
-                    AudioSettingsSection(
-                        model: model,
-                        isExpanded: $model.isAudioExpanded,
-                        actions: actions
-                    )
-
-                    // Local to this Mac (folders, codec); lives in CaptureViews.swift.
-                    CaptureSettingsSection(isExpanded: $model.isCaptureExpanded)
-
-                    SystemSettingsSection(
-                        isExpanded: $model.isSystemExpanded,
-                        actions: actions
-                    )
-
-                    NetworkSettingsSection(
-                        isExpanded: $model.isNetworkExpanded,
-                        preferences: webRTCManager.networkPreferences,
-                        inEffect: webRTCManager.mediaAddressesInEffect
-                    )
-
-                    AdvancedSettingsSection(
-                        isExpanded: $model.isAdvancedExpanded,
-                        actions: actions
-                    )
+                    ForEach(PanelSection.allCases) { section in
+                        sectionView(section, actions: actions)
+                    }
                 }
                 .padding()
             }
@@ -145,7 +172,22 @@ struct WebUISettingsPanel: View {
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 10)
+
+                Divider()
             }
+
+            // Settings kept on this Mac (audio, capture, input, media addresses, appearance) are
+            // in Overlook › Settings…, not here.
+            HStack {
+                Button("Overlook settings…") {
+                    openSettings()
+                }
+                .buttonStyle(.link)
+                .help("Open Overlook's own settings: appearance, audio, capture, input and network")
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
         }
         .background(Self.panelBackground)
         .sheet(isPresented: $model.showingErrorHistory) {
