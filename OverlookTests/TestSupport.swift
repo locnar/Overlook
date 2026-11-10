@@ -550,3 +550,32 @@ struct SettingsPanelFixture {
         model.config = try JSONDecoder().decode(GLKVMSystemConfig.self, from: JSONEncoder().encode(config))
     }
 }
+
+/// A log that keeps its lines in order, synchronously, for code that takes any `ConnectionLogging`.
+/// `ConnectionLog.inMemory()` publishes to its ring on the main actor, a hop a test would have to
+/// wait for.
+final class RecordingConnectionLog: ConnectionLogging, @unchecked Sendable {
+    struct Line: Equatable {
+        let level: ConnectionLogLevel
+        let category: ConnectionLogCategory
+        let message: String
+    }
+
+    private let lock = NSLock()
+    private var recorded: [Line] = []
+
+    func log(_ level: ConnectionLogLevel, _ category: ConnectionLogCategory, _ message: String) {
+        lock.lock()
+        recorded.append(Line(level: level, category: category, message: message))
+        lock.unlock()
+    }
+
+    var lines: [Line] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    var messages: [String] { lines.map(\.message) }
+    var errors: [String] { lines.filter { $0.level == .error }.map(\.message) }
+}

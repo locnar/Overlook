@@ -493,7 +493,8 @@ class WebRTCManager: NSObject, ObservableObject {
         let audioDevice = WebRTCAudioDevice(
             inputDeviceUID: inputUID,
             outputDeviceUID: outputUID,
-            playoutTap: captureHub
+            playoutTap: captureHub,
+            log: log
         )
         audioDevice.isOutputMuted = !audioRoute.playsAudio
         customAudioDevice = audioDevice

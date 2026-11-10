@@ -6,6 +6,97 @@ import CoreAudio
 @preconcurrency import WebRTC
 #endif
 
+/// The CoreAudio calls `WebRTCAudioDevice` makes to find its devices and to build, run and tear
+/// down its HAL units, gathered in one place so tests can stand in for the hardware. `live` is
+/// the real thing and is what the app always uses; each closure is a direct call to the CoreAudio
+/// function it is named after.
+struct AudioUnitHardware {
+    /// The device a unit is bound to: the one with `uid` when it is set and present, otherwise
+    /// the system default for the direction (0 when there is none).
+    var resolveDevice: (_ uid: String?, _ isInput: Bool) -> AudioDeviceID
+    var nominalSampleRate: (AudioDeviceID) -> Double?
+    /// The largest IO buffer the device can be configured for.
+    var maximumBufferFrames: (AudioDeviceID) -> UInt32?
+    var deviceName: (AudioDeviceID) -> String?
+    /// `AudioComponentFindNext` for Apple's HAL output unit, then `AudioComponentInstanceNew`.
+    /// A nil unit with `noErr` means the component was not found.
+    var newHALUnit: () -> (status: OSStatus, unit: AudioComponentInstance?)
+    var setProperty: (
+        _ unit: AudioComponentInstance,
+        _ property: AudioUnitPropertyID,
+        _ scope: AudioUnitScope,
+        _ element: AudioUnitElement,
+        _ data: UnsafeRawPointer,
+        _ size: UInt32
+    ) -> OSStatus
+    var initialize: (AudioComponentInstance) -> OSStatus
+    var uninitialize: (AudioComponentInstance) -> OSStatus
+    var dispose: (AudioComponentInstance) -> OSStatus
+    var start: (AudioComponentInstance) -> OSStatus
+    var stop: (AudioComponentInstance) -> OSStatus
+
+    static let live = AudioUnitHardware(
+        resolveDevice: { uid, isInput in
+            if let uid, let id = CoreAudioDevices.deviceID(forUID: uid) {
+                return id
+            }
+            return WebRTCAudioDevice.systemDefaultDeviceID(
+                selector: isInput ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice
+            )
+        },
+        nominalSampleRate: { deviceID in
+            guard deviceID != 0 else { return nil }
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyNominalSampleRate,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var rate: Double = 0
+            var dataSize = UInt32(MemoryLayout<Double>.size)
+            let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &rate)
+            guard status == noErr, rate > 0 else { return nil }
+            return rate
+        },
+        maximumBufferFrames: { deviceID in
+            guard deviceID != 0 else { return nil }
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var range = AudioValueRange(mMinimum: 0, mMaximum: 0)
+            var dataSize = UInt32(MemoryLayout<AudioValueRange>.size)
+            let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &range)
+            guard status == noErr, range.mMaximum > 0 else { return nil }
+            return UInt32(range.mMaximum)
+        },
+        deviceName: { deviceID in
+            deviceID == 0 ? nil : CoreAudioDevices.name(of: deviceID)
+        },
+        newHALUnit: {
+            var desc = AudioComponentDescription(
+                componentType: kAudioUnitType_Output,
+                componentSubType: kAudioUnitSubType_HALOutput,
+                componentManufacturer: kAudioUnitManufacturer_Apple,
+                componentFlags: 0,
+                componentFlagsMask: 0
+            )
+            guard let comp = AudioComponentFindNext(nil, &desc) else { return (noErr, nil) }
+            var unit: AudioComponentInstance?
+            let status = AudioComponentInstanceNew(comp, &unit)
+            return (status, unit)
+        },
+        setProperty: { unit, property, scope, element, data, size in
+            AudioUnitSetProperty(unit, property, scope, element, data, size)
+        },
+        initialize: { AudioUnitInitialize($0) },
+        uninitialize: { AudioUnitUninitialize($0) },
+        dispose: { AudioComponentInstanceDispose($0) },
+        start: { AudioOutputUnitStart($0) },
+        stop: { AudioOutputUnitStop($0) }
+    )
+}
+
 final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     fileprivate var delegate: RTCAudioDeviceDelegate?
 
@@ -16,6 +107,10 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     /// Nil-able so the device can run without one, and read only on the HAL render thread.
     fileprivate let playoutTap: MediaCaptureHub?
 
+    private let hardware: AudioUnitHardware
+    /// Where a unit that fails to set up is reported. Called from libwebrtc's worker thread.
+    private let log: ConnectionLogging?
+
     /// Set while this window is not one that plays its audio (`AudioRoute`). Read on the render
     /// thread after the recording tap has had the buffer, so a muted window still records what it
     /// receives. Written on the main thread with no lock: a Bool is written whole, and a stale read
@@ -24,12 +119,14 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
 
     /// The CoreAudio devices the units were bound to at initialization. Following the system
     /// default means resolving it once, here; `WebRTCManager` compares these with the current
-    /// defaults when they change and reconnects to move over.
+    /// defaults when they change and reconnects to move over. Set only once a unit is set up.
     private(set) var activeInputDeviceID: AudioDeviceID?
     private(set) var activeOutputDeviceID: AudioDeviceID?
     var isFollowingDefaultInput: Bool { inputDeviceUID == nil }
     var isFollowingDefaultOutput: Bool { outputDeviceUID == nil }
 
+    /// Stored only once `AudioUnitInitialize` has succeeded, so a stored unit always means a
+    /// working one: `initializePlayout`/`initializeRecording` treat a stored unit as done.
     fileprivate var inputUnit: AudioComponentInstance?
     fileprivate var outputUnit: AudioComponentInstance?
 
@@ -57,10 +154,18 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     private var inputLatencyValue: TimeInterval = 0
     private var outputLatencyValue: TimeInterval = 0
 
-    init(inputDeviceUID: String?, outputDeviceUID: String?, playoutTap: MediaCaptureHub? = nil) {
+    init(
+        inputDeviceUID: String?,
+        outputDeviceUID: String?,
+        playoutTap: MediaCaptureHub? = nil,
+        hardware: AudioUnitHardware = .live,
+        log: ConnectionLogging? = nil
+    ) {
         self.inputDeviceUID = inputDeviceUID?.isEmpty == true ? nil : inputDeviceUID
         self.outputDeviceUID = outputDeviceUID?.isEmpty == true ? nil : outputDeviceUID
         self.playoutTap = playoutTap
+        self.hardware = hardware
+        self.log = log
         super.init()
     }
 
@@ -80,6 +185,11 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
     var isRecordingInitialized: Bool { _isRecordingInitialized }
     var isRecording: Bool { _isRecording }
 
+    /// Whether a playout or recording unit is stored. For tests: the protocol's
+    /// `isPlayoutInitialized` is the flag libwebrtc reads, this is the unit behind it.
+    var hasPlayoutUnit: Bool { outputUnit != nil }
+    var hasRecordingUnit: Bool { inputUnit != nil }
+
     func initialize(with delegate: RTCAudioDeviceDelegate) -> Bool {
         self.delegate = delegate
         inputSampleRate = delegate.preferredInputSampleRate
@@ -95,24 +205,20 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
         _ = stopRecording()
 
         if let unit = outputUnit {
-            AudioUnitUninitialize(unit)
-            AudioComponentInstanceDispose(unit)
+            _ = hardware.uninitialize(unit)
+            _ = hardware.dispose(unit)
         }
         outputUnit = nil
         _isPlayoutInitialized = false
 
         if let unit = inputUnit {
-            AudioUnitUninitialize(unit)
-            AudioComponentInstanceDispose(unit)
+            _ = hardware.uninitialize(unit)
+            _ = hardware.dispose(unit)
         }
         inputUnit = nil
         _isRecordingInitialized = false
 
-        inputBufferList?.deallocate()
-        inputBufferList = nil
-        inputBufferData?.deallocate()
-        inputBufferData = nil
-        inputBufferCapacityFrames = 0
+        releaseInputBuffer()
 
         delegate = nil
         _isInitialized = false
@@ -126,53 +232,44 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return true
         }
 
-        let deviceID = resolveOutputDeviceID()
-        guard let unit = createHALOutputUnit(deviceID: deviceID) else { return false }
-        outputUnit = unit
-        activeOutputDeviceID = deviceID
+        let deviceID = hardware.resolveDevice(outputDeviceUID, false)
 
         // Run the client side of the HAL unit at the device's own rate and report that rate back:
         // WebRTC resamples to whatever we declare, while the HAL unit does not resample for us.
         // A 44.1 kHz DAC used to be asked for 48 kHz and fail to initialize.
-        if let rate = Self.nominalSampleRate(of: deviceID) {
-            outputSampleRate = rate
-        }
-        var format = makeLinearPCMFormat(sampleRate: outputSampleRate, channels: outputChannels)
-        var status = AudioUnitSetProperty(
-            unit,
-            kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Input,
-            0,
-            &format,
-            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        )
-        guard status == noErr else { return false }
-
-        var callback = AURenderCallbackStruct(
+        let sampleRate = hardware.nominalSampleRate(deviceID) ?? outputSampleRate
+        let format = makeLinearPCMFormat(sampleRate: sampleRate, channels: outputChannels)
+        let callback = AURenderCallbackStruct(
             inputProc: playoutRenderCallback,
             inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
         )
-        status = AudioUnitSetProperty(
-            unit,
-            kAudioUnitProperty_SetRenderCallback,
-            kAudioUnitScope_Input,
-            0,
-            &callback,
-            UInt32(MemoryLayout<AURenderCallbackStruct>.size)
-        )
-        guard status == noErr else { return false }
 
-        status = AudioUnitInitialize(unit)
-        guard status == noErr else { return false }
+        guard let unit = setUpUnit(
+            "playout",
+            deviceID: deviceID,
+            steps: [
+                ("enable output IO", { self.setProperty($0, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, UInt32(1)) }),
+                ("disable input IO", { self.setProperty($0, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, UInt32(0)) }),
+                ("set current device", { self.setProperty($0, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, deviceID) }),
+                ("set stream format", { self.setProperty($0, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, format) }),
+                ("set render callback", { self.setProperty($0, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, callback) }),
+            ]
+        ) else {
+            return false
+        }
 
+        outputUnit = unit
+        outputSampleRate = sampleRate
+        activeOutputDeviceID = deviceID
         _isPlayoutInitialized = true
+        log?.info(.stream, "Audio playout ready on \(describe(deviceID)) at \(Int(sampleRate)) Hz, \(outputChannels) ch")
         return true
     }
 
     func startPlayout() -> Bool {
         guard _isPlayoutInitialized, let unit = outputUnit else { return false }
         if _isPlaying { return true }
-        let status = AudioOutputUnitStart(unit)
+        let status = hardware.start(unit)
         guard status == noErr else { return false }
         _isPlaying = true
         return true
@@ -184,7 +281,7 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return true
         }
         if !_isPlaying { return true }
-        let status = AudioOutputUnitStop(unit)
+        let status = hardware.stop(unit)
         guard status == noErr else { return false }
         _isPlaying = false
         return true
@@ -197,56 +294,50 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return true
         }
 
-        let deviceID = resolveInputDeviceID()
-        guard let unit = createHALInputUnit(deviceID: deviceID) else { return false }
-        inputUnit = unit
-        activeInputDeviceID = deviceID
+        let deviceID = hardware.resolveDevice(inputDeviceUID, true)
 
         // Same as playout: capture at the device's native rate (Bluetooth headsets run at 16 or
         // 24 kHz, many USB microphones at 44.1) and let WebRTC resample.
-        if let rate = Self.nominalSampleRate(of: deviceID) {
-            inputSampleRate = rate
-        }
-        var format = makeLinearPCMFormat(sampleRate: inputSampleRate, channels: inputChannels)
-        var status = AudioUnitSetProperty(
-            unit,
-            kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Output,
-            1,
-            &format,
-            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        )
-        guard status == noErr else { return false }
-
-        var callback = AURenderCallbackStruct(
+        let sampleRate = hardware.nominalSampleRate(deviceID) ?? inputSampleRate
+        let format = makeLinearPCMFormat(sampleRate: sampleRate, channels: inputChannels)
+        let callback = AURenderCallbackStruct(
             inputProc: recordingInputCallback,
             inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
         )
-        status = AudioUnitSetProperty(
-            unit,
-            kAudioOutputUnitProperty_SetInputCallback,
-            kAudioUnitScope_Global,
-            0,
-            &callback,
-            UInt32(MemoryLayout<AURenderCallbackStruct>.size)
-        )
-        guard status == noErr else { return false }
 
+        // No unit is stored, so nothing is reading the capture buffer: (re)size it for this device.
         if inputBufferList == nil {
-            allocateInputBufferIfNeeded(sampleRate: inputSampleRate)
+            allocateInputBuffer(sampleRate: sampleRate, deviceID: deviceID)
         }
 
-        status = AudioUnitInitialize(unit)
-        guard status == noErr else { return false }
+        guard let unit = setUpUnit(
+            "recording",
+            deviceID: deviceID,
+            steps: [
+                ("enable input IO", { self.setProperty($0, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, UInt32(1)) }),
+                ("disable output IO", { self.setProperty($0, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, UInt32(0)) }),
+                ("set current device", { self.setProperty($0, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, deviceID) }),
+                ("set stream format", { self.setProperty($0, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, format) }),
+                ("set input callback", { self.setProperty($0, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, callback) }),
+            ]
+        ) else {
+            // The buffer was sized for a device that did not set up; a retry sizes it afresh.
+            releaseInputBuffer()
+            return false
+        }
 
+        inputUnit = unit
+        inputSampleRate = sampleRate
+        activeInputDeviceID = deviceID
         _isRecordingInitialized = true
+        log?.info(.stream, "Audio capture ready on \(describe(deviceID)) at \(Int(sampleRate)) Hz, \(inputChannels) ch")
         return true
     }
 
     func startRecording() -> Bool {
         guard _isRecordingInitialized, let unit = inputUnit else { return false }
         if _isRecording { return true }
-        let status = AudioOutputUnitStart(unit)
+        let status = hardware.start(unit)
         guard status == noErr else { return false }
         _isRecording = true
         return true
@@ -258,42 +349,83 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
             return true
         }
         if !_isRecording { return true }
-        let status = AudioOutputUnitStop(unit)
+        let status = hardware.stop(unit)
         guard status == noErr else { return false }
         _isRecording = false
         return true
     }
 
-    private func resolveInputDeviceID() -> AudioDeviceID {
-        if let uid = inputDeviceUID, let id = CoreAudioDevices.deviceID(forUID: uid) {
-            return id
+    // MARK: - Unit setup
+
+    /// Creates a HAL unit, runs `steps` on it in order, then `AudioUnitInitialize`. Returns the
+    /// unit only when every call succeeded. On any failure the unit is disposed, the step that
+    /// failed is logged, and nil comes back, so the caller stores nothing and a later call tries
+    /// again from scratch.
+    private func setUpUnit(
+        _ role: String,
+        deviceID: AudioDeviceID,
+        steps: [(name: String, run: (AudioComponentInstance) -> OSStatus)]
+    ) -> AudioComponentInstance? {
+        let created = hardware.newHALUnit()
+        guard created.status == noErr, let unit = created.unit else {
+            if created.status == noErr {
+                log?.error(.stream, "Audio \(role) setup failed: no HAL output audio component (\(describe(deviceID)))")
+            } else {
+                log?.error(.stream, "Audio \(role) setup failed: AudioComponentInstanceNew returned \(Self.describe(status: created.status)) (\(describe(deviceID)))")
+            }
+            return nil
         }
-        return defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice)
-    }
 
-    private func resolveOutputDeviceID() -> AudioDeviceID {
-        if let uid = outputDeviceUID, let id = CoreAudioDevices.deviceID(forUID: uid) {
-            return id
+        for step in steps {
+            let status = step.run(unit)
+            if status != noErr {
+                _ = hardware.dispose(unit)
+                log?.error(.stream, "Audio \(role) setup failed: \(step.name) returned \(Self.describe(status: status)) (\(describe(deviceID)))")
+                return nil
+            }
         }
-        return defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+
+        let status = hardware.initialize(unit)
+        guard status == noErr else {
+            _ = hardware.dispose(unit)
+            log?.error(.stream, "Audio \(role) setup failed: AudioUnitInitialize returned \(Self.describe(status: status)) (\(describe(deviceID)))")
+            return nil
+        }
+        return unit
     }
 
-    private static func nominalSampleRate(of deviceID: AudioDeviceID) -> Double? {
-        guard deviceID != 0 else { return nil }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var rate: Double = 0
-        var dataSize = UInt32(MemoryLayout<Double>.size)
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &rate)
-        guard status == noErr, rate > 0 else { return nil }
-        return rate
+    /// `AudioUnitSetProperty` with `value`'s bytes, `MemoryLayout<T>.size` of them.
+    private func setProperty<T>(
+        _ unit: AudioComponentInstance,
+        _ property: AudioUnitPropertyID,
+        _ scope: AudioUnitScope,
+        _ element: AudioUnitElement,
+        _ value: T
+    ) -> OSStatus {
+        var value = value
+        return withUnsafeBytes(of: &value) { bytes in
+            hardware.setProperty(unit, property, scope, element, bytes.baseAddress!, UInt32(bytes.count))
+        }
     }
 
-    private func defaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID {
-        Self.systemDefaultDeviceID(selector: selector)
+    /// `device 73 "MacBook Pro Speakers"`, or `no device` for 0.
+    private func describe(_ deviceID: AudioDeviceID) -> String {
+        guard deviceID != 0 else { return "no device" }
+        if let name = hardware.deviceName(deviceID) {
+            return "device \(deviceID) \"\(name)\""
+        }
+        return "device \(deviceID)"
+    }
+
+    /// An OSStatus as CoreAudio documents it: its four-character code when it has one, and the
+    /// number. `'!dev' (560227702)`, `-10851`.
+    static func describe(status: OSStatus) -> String {
+        let value = UInt32(bitPattern: status)
+        let bytes = [UInt8(value >> 24 & 0xFF), UInt8(value >> 16 & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value & 0xFF)]
+        if bytes.allSatisfy({ $0 >= 0x20 && $0 < 0x7F }), let code = String(bytes: bytes, encoding: .ascii) {
+            return "'\(code)' (\(status))"
+        }
+        return "\(status)"
     }
 
     /// The current system default device for `kAudioHardwarePropertyDefaultInputDevice` or
@@ -326,86 +458,14 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
         )
     }
 
-    private func createHALOutputUnit(deviceID: AudioDeviceID) -> AudioComponentInstance? {
-        var desc = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
-        guard let comp = AudioComponentFindNext(nil, &desc) else { return nil }
-
-        var unit: AudioComponentInstance?
-        var status = AudioComponentInstanceNew(comp, &unit)
-        guard status == noErr, let unit else { return nil }
-
-        var enableIO: UInt32 = 1
-        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &enableIO, UInt32(MemoryLayout<UInt32>.size))
-        guard status == noErr else { AudioComponentInstanceDispose(unit); return nil }
-
-        var disableInput: UInt32 = 0
-        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &disableInput, UInt32(MemoryLayout<UInt32>.size))
-        guard status == noErr else { AudioComponentInstanceDispose(unit); return nil }
-
-        var device = deviceID
-        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout<AudioDeviceID>.size))
-        guard status == noErr else { AudioComponentInstanceDispose(unit); return nil }
-
-        return unit
-    }
-
-    private func createHALInputUnit(deviceID: AudioDeviceID) -> AudioComponentInstance? {
-        var desc = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
-        guard let comp = AudioComponentFindNext(nil, &desc) else { return nil }
-
-        var unit: AudioComponentInstance?
-        var status = AudioComponentInstanceNew(comp, &unit)
-        guard status == noErr, let unit else { return nil }
-
-        var enableInput: UInt32 = 1
-        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &enableInput, UInt32(MemoryLayout<UInt32>.size))
-        guard status == noErr else { AudioComponentInstanceDispose(unit); return nil }
-
-        var disableOutput: UInt32 = 0
-        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &disableOutput, UInt32(MemoryLayout<UInt32>.size))
-        guard status == noErr else { AudioComponentInstanceDispose(unit); return nil }
-
-        var device = deviceID
-        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout<AudioDeviceID>.size))
-        guard status == noErr else { AudioComponentInstanceDispose(unit); return nil }
-
-        return unit
-    }
-
     fileprivate var inputBytesPerFrame: Int { inputChannels * MemoryLayout<Int16>.size }
     fileprivate var inputBufferCapacityBytes: Int { Int(inputBufferCapacityFrames) * inputBytesPerFrame }
 
-    /// The largest IO buffer the device can be configured for (Audio MIDI Setup, DAWs); the
-    /// capture buffer is sized to it so no callback ever has more frames than fit.
-    private static func maximumBufferFrames(of deviceID: AudioDeviceID) -> UInt32? {
-        guard deviceID != 0 else { return nil }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyBufferFrameSizeRange,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var range = AudioValueRange(mMinimum: 0, mMaximum: 0)
-        var dataSize = UInt32(MemoryLayout<AudioValueRange>.size)
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &range)
-        guard status == noErr, range.mMaximum > 0 else { return nil }
-        return UInt32(range.mMaximum)
-    }
-
-    private func allocateInputBufferIfNeeded(sampleRate: Double) {
+    /// Sizes the capture buffer to the largest IO buffer the device can be configured for (Audio
+    /// MIDI Setup, DAWs), so no callback ever has more frames than fit.
+    private func allocateInputBuffer(sampleRate: Double, deviceID: AudioDeviceID) {
         let framesPerBuffer = max(UInt32(sampleRate * inputIOBufferDurationValue), 256)
-        let deviceMaximum = Self.maximumBufferFrames(of: resolveInputDeviceID()) ?? 0
+        let deviceMaximum = hardware.maximumBufferFrames(deviceID) ?? 0
         inputBufferCapacityFrames = max(framesPerBuffer, deviceMaximum, 4096)
         let bytes = Int(inputBufferCapacityFrames) * inputChannels * MemoryLayout<Int16>.size
 
@@ -419,6 +479,17 @@ final class WebRTCAudioDevice: NSObject, RTCAudioDevice {
         inputBufferList?.pointee.mBuffers.mDataByteSize = UInt32(bytes)
         inputBufferList?.pointee.mBuffers.mData = inputBufferData
     }
+
+    private func releaseInputBuffer() {
+        inputBufferList?.deallocate()
+        inputBufferList = nil
+        inputBufferData?.deallocate()
+        inputBufferData = nil
+        inputBufferCapacityFrames = 0
+    }
+
+    /// Whether a capture buffer is allocated. For tests.
+    var hasInputBuffer: Bool { inputBufferList != nil }
 }
 
 private func playoutRenderCallback(

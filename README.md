@@ -322,6 +322,8 @@ Overlook includes a few “quality of life” shortcuts.
 
 All five are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+S (Snipping Tool), Win+Shift+R and Win+Q are not reachable through Overlook. `⇧⌘S` and `⇧⌘R` are also the **Capture** menu's shortcuts, so they work when keyboard capture is off as well.
 
+Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⌘V`, `⌥⌘C`, `⌥⇧⌘S`), or `⇧` added to `⌘C`, `⌘V` or `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
+
 ### Menu bar global shortcuts
 
 The menu bar agent listens for global shortcuts using `⌘⇧` modifiers:

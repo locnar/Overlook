@@ -3,6 +3,7 @@ import Cocoa
 import CoreGraphics
 import Combine
 import SwiftUI
+import Carbon.HIToolbox
 
 @MainActor
 class InputManager: ObservableObject {
@@ -18,6 +19,51 @@ class InputManager: ObservableObject {
     /// Where those chords go: this input manager's own session (`ConsoleSession` sets it), never
     /// another window's.
     var onLocalShortcut: ((LocalShortcut) -> Void)?
+
+    /// The chords keyboard capture keeps for Overlook instead of sending them to the target:
+    /// - ⌘C toggles OCR copy mode;
+    /// - ⌘V types the Mac's clipboard on the target;
+    /// - ⇧⌘S saves a screenshot and ⇧⌘R starts or stops a recording (the Capture menu's
+    ///   shortcuts, reproduced because capture swallows every key event before the menu sees it);
+    /// - ⌘Q quits Overlook, as in every other Mac app.
+    enum InterceptedChord: Equatable, CaseIterable {
+        case copyMode
+        case paste
+        case saveScreenshot
+        case toggleRecording
+        case quit
+
+        /// The Mac key code the chord is on (by position, as `NSEvent.keyCode` reports it).
+        var keyCode: UInt16 {
+            switch self {
+            case .copyMode: return 8
+            case .paste: return 9
+            case .saveScreenshot: return 1
+            case .toggleRecording: return 15
+            case .quit: return 12
+            }
+        }
+
+        /// The exact modifiers the chord needs; any other of ⌘ ⇧ ⌥ ⌃ held as well makes the
+        /// keystroke the target's.
+        var modifiers: NSEvent.ModifierFlags {
+            switch self {
+            case .copyMode, .paste, .quit: return [.command]
+            case .saveScreenshot, .toggleRecording: return [.command, .shift]
+            }
+        }
+    }
+
+    /// The modifiers a chord is matched on. Caps Lock, Fn and the keypad flag are left out, so
+    /// they never keep a chord from being Overlook's.
+    nonisolated static let chordModifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+
+    /// Which of Overlook's chords a key-down is, or nil when it goes to the target. A chord needs
+    /// exactly its own modifiers among ⌘ ⇧ ⌥ ⌃: ⌃⌘V, ⌥⌘C or ⇧⌘C, for example, are the target's.
+    nonisolated static func interceptedChord(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> InterceptedChord? {
+        let held = modifiers.intersection(chordModifiers)
+        return InterceptedChord.allCases.first { $0.keyCode == keyCode && $0.modifiers == held }
+    }
 
     /// What one input event became on its way to the target, before the transport.
     enum SentInput: Equatable {
@@ -673,37 +719,24 @@ class InputManager: ObservableObject {
             }
 
             if isKeyDown, modifiers.contains(.command) {
-                if keyCode == 8 {
+                // Overlook's own chords, kept rather than sent; see `InterceptedChord`.
+                if let chord = Self.interceptedChord(keyCode: keyCode, modifiers: modifiers) {
                     prepareForLocalCommandShortcut()
                     suppressedKeyUps.insert(keyCode)
-                    onLocalShortcut?(.toggleCopyMode)
-                    return
-                }
-                if keyCode == 9 {
-                    prepareForLocalCommandShortcut()
-                    suppressedKeyUps.insert(keyCode)
-                    pasteClipboardToRemote()
-                    return
-                }
-                // ⇧⌘S saves a screenshot, ⇧⌘R starts/stops a recording — the Capture menu's
-                // shortcuts, reproduced here because capture swallows every key event before the
-                // menu can see it. Key repeat is ignored so a held ⇧⌘R cannot toggle twice.
-                if modifiers.contains(.shift), keyCode == 1 || keyCode == 15 {
-                    prepareForLocalCommandShortcut()
-                    suppressedKeyUps.insert(keyCode)
-                    if !event.isARepeat {
-                        onLocalShortcut?(keyCode == 1 ? .saveScreenshot : .toggleRecording)
-                    }
-                    return
-                }
-                // ⌘Q quits Overlook, as it does every other Mac app; it used to go to the target
-                // as Meta+Q, which left no keyboard way to quit while connected. The termination
-                // path releases held keys and hangs up before the process exits.
-                if keyCode == 12, modifiers.intersection([.shift, .option, .control]).isEmpty {
-                    prepareForLocalCommandShortcut()
-                    suppressedKeyUps.insert(keyCode)
-                    if !event.isARepeat {
-                        NSApp.terminate(nil)
+                    switch chord {
+                    case .copyMode:
+                        onLocalShortcut?(.toggleCopyMode)
+                    case .paste:
+                        pasteClipboardToRemote()
+                    // Key repeat is ignored so a held ⇧⌘R cannot toggle twice.
+                    case .saveScreenshot:
+                        if !event.isARepeat { onLocalShortcut?(.saveScreenshot) }
+                    case .toggleRecording:
+                        if !event.isARepeat { onLocalShortcut?(.toggleRecording) }
+                    // The termination path releases held keys and hangs up before the process
+                    // exits.
+                    case .quit:
+                        if !event.isARepeat { NSApp.terminate(nil) }
                     }
                     return
                 }
@@ -1666,7 +1699,38 @@ class InputManager: ObservableObject {
         }
     }
 
+    /// The kvmd key name (a Web `KeyboardEvent.code`) for a Mac virtual key code, for the keyboard
+    /// that was typed on last.
     func glkvmKeyForMacKeyCode(_ keyCode: UInt16) -> String? {
+        Self.glkvmKey(forMacKeyCode: keyCode, isISOKeyboard: Self.lastKeyboardIsISO())
+    }
+
+    /// Whether the keyboard macOS saw last is an ISO one (the type macOS asked about, or was told,
+    /// when it was first plugged in).
+    nonisolated static func lastKeyboardIsISO() -> Bool {
+        KBGetLayoutType(Int16(LMGetKbdType())) == PhysicalKeyboardLayoutType(kKeyboardISO)
+    }
+
+    /// The kvmd key name for a Mac virtual key code, or nil for a key kvmd has no name for.
+    ///
+    /// The names are kvmd's `WEB_TO_EVDEV` keys (`kvmd/keyboard/mappings.py`), which are Web
+    /// `KeyboardEvent.code` values; a name kvmd does not know is dropped by the device.
+    ///
+    /// On an ISO keyboard macOS swaps two codes: the key left of 1 (§ on Apple's ISO layouts)
+    /// arrives as `kVK_ISO_Section` and the key between left Shift and Z as `kVK_ANSI_Grave`.
+    /// They are swapped back here, as browsers do for `KeyboardEvent.code`, so the target gets
+    /// the key at the same position: `Backquote` for the one left of 1, `IntlBackslash` for the
+    /// extra one by Shift.
+    nonisolated static func glkvmKey(forMacKeyCode keyCode: UInt16, isISOKeyboard: Bool) -> String? {
+        var keyCode = keyCode
+        if isISOKeyboard {
+            if keyCode == 10 {
+                keyCode = 50
+            } else if keyCode == 50 {
+                keyCode = 10
+            }
+        }
+
         switch keyCode {
         case 0: return "KeyA"
         case 11: return "KeyB"
@@ -1717,6 +1781,11 @@ class InputManager: ObservableObject {
         case 43: return "Comma"
         case 47: return "Period"
         case 44: return "Slash"
+        // kVK_ISO_Section: the extra ISO key (see above for the swap on ISO keyboards).
+        case 10: return "IntlBackslash"
+        // JIS: ¥ left of Backspace, and _ / ろ left of right Shift.
+        case 93: return "IntlYen"
+        case 94: return "IntlRo"
 
         case 49: return "Space"
         case 48: return "Tab"
@@ -1783,6 +1852,9 @@ class InputManager: ObservableObject {
         case 113: return "F15"
         case 106: return "F16"
         case 64: return "F17"
+        case 79: return "F18"
+        case 80: return "F19"
+        case 90: return "F20"
 
         default:
             return nil

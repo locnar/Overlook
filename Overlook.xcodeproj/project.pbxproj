@@ -91,6 +91,9 @@
 		0100011C /* MultiAddressCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011C /* MultiAddressCatalogTests.swift */; };
 		0100011B /* DeviceIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011B /* DeviceIdentityTests.swift */; };
 		01000121 /* TestHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000121 /* TestHostTests.swift */; };
+		01000124 /* InterceptedChordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000124 /* InterceptedChordTests.swift */; };
+		01000123 /* KeyCodeTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000123 /* KeyCodeTableTests.swift */; };
+		01000122 /* AudioDeviceSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000122 /* AudioDeviceSetupTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -195,6 +198,9 @@
 		0200011C /* MultiAddressCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiAddressCatalogTests.swift; sourceTree = "<group>"; };
 		0200011B /* DeviceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentityTests.swift; sourceTree = "<group>"; };
 		02000121 /* TestHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHostTests.swift; sourceTree = "<group>"; };
+		02000124 /* InterceptedChordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterceptedChordTests.swift; sourceTree = "<group>"; };
+		02000123 /* KeyCodeTableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCodeTableTests.swift; sourceTree = "<group>"; };
+		02000122 /* AudioDeviceSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceSetupTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -319,6 +325,9 @@
 				0200011C /* MultiAddressCatalogTests.swift */,
 				0200011B /* DeviceIdentityTests.swift */,
 				02000121 /* TestHostTests.swift */,
+				02000124 /* InterceptedChordTests.swift */,
+				02000123 /* KeyCodeTableTests.swift */,
+				02000122 /* AudioDeviceSetupTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
 				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
@@ -536,6 +545,9 @@
 				0100011C /* MultiAddressCatalogTests.swift in Sources */,
 				0100011B /* DeviceIdentityTests.swift in Sources */,
 				01000121 /* TestHostTests.swift in Sources */,
+				01000124 /* InterceptedChordTests.swift in Sources */,
+				01000123 /* KeyCodeTableTests.swift in Sources */,
+				01000122 /* AudioDeviceSetupTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
 				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,

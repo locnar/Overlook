@@ -101,4 +101,9 @@ enum CoreAudioDevices {
     static func deviceID(forUID uid: String) -> AudioDeviceID? {
         listDevices().first(where: { $0.uid == uid })?.id
     }
+
+    /// The device's name as Audio MIDI Setup shows it, for log lines.
+    static func name(of deviceID: AudioDeviceID) -> String? {
+        getStringProperty(objectID: deviceID, selector: kAudioObjectPropertyName)
+    }
 }

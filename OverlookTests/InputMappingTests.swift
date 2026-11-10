@@ -34,9 +34,10 @@ struct InputMappingTests {
     }
 
     @Test func leavesUnmappedKeyCodesUnmapped() {
-        // 10 is the ISO section key, 63 is Fn, 999 is not a key code at all.
-        #expect(input.glkvmKeyForMacKeyCode(10) == nil)
+        // 63 is Fn, 102 and 104 are the JIS Eisu and Kana keys, 999 is not a key code at all.
         #expect(input.glkvmKeyForMacKeyCode(63) == nil)
+        #expect(input.glkvmKeyForMacKeyCode(102) == nil)
+        #expect(input.glkvmKeyForMacKeyCode(104) == nil)
         #expect(input.glkvmKeyForMacKeyCode(999) == nil)
     }
 
@@ -47,7 +48,7 @@ struct InputMappingTests {
             #expect(seen[name] == nil, "\(name) from both \(seen[name] ?? 0) and \(code)")
             seen[name] = code
         }
-        #expect(seen.count == 105)
+        #expect(seen.count == 111)
     }
 
     @Test func typedLettersBecomeTheirKeys() {
