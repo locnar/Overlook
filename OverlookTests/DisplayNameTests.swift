@@ -23,6 +23,41 @@ struct DisplayNameTests {
         #expect(DeviceMenuTitle(Fixtures.device(nickname: nil, host: "kvm.example", port: 8443)) == DeviceMenuTitle(name: "kvm.example:8443", address: nil))
     }
 
+    /// A bare MagicDNS name and the full `.ts.net` name are different addresses, and can be
+    /// different devices; every place that names a device by its address keeps them apart.
+    @Test func aBareAndAFullTailscaleNameAreShownApart() {
+        let bare = DeviceAddress(host: "mdesktopkvm", port: 443)
+        let full = DeviceAddress(host: "mdesktopkvm.tail1234.ts.net", port: 443)
+
+        #expect(bare.label == "mdesktopkvm")
+        #expect(full.label == "mdesktopkvm.tail1234.ts.net")
+        #expect(bare.label != full.label)
+        #expect(bare.labelWithTag != full.labelWithTag)
+
+        // The device pop-up, for devices saved without a nickname.
+        let bareDevice = Fixtures.device(id: "saved-bare", nickname: nil, host: bare.host)
+        let fullDevice = Fixtures.device(id: "saved-full", nickname: nil, host: full.host)
+        #expect(DeviceMenuTitle(bareDevice).name == "mdesktopkvm")
+        #expect(DeviceMenuTitle(fullDevice).name == "mdesktopkvm.tail1234.ts.net")
+        // And after a nickname, as the address.
+        #expect(DeviceMenuTitle(Fixtures.device(nickname: "Desk", host: full.host)).address == "mdesktopkvm.tail1234.ts.net")
+
+        // The Connect menu of a device that has both.
+        let both = Fixtures.device(id: "saved-x", nickname: "Desk", host: bare.host, addresses: [bare, full])
+        let titles = ConnectVia.items(for: both).map(\.title)
+        #expect(titles.count == 2)
+        #expect(Set(titles).count == 2)
+        #expect(titles.contains { $0.hasPrefix("mdesktopkvm.tail1234.ts.net") })
+
+        // The status line and the log's device tag.
+        #expect(ConnectVia.statusText(connectedThrough: bare) != ConnectVia.statusText(connectedThrough: full))
+        #expect(SessionLog.label(host: bare.host, port: bare.port) != SessionLog.label(host: full.host, port: full.port))
+    }
+
+    @Test func aFullTailscaleNameStaysWholeInAFileName() {
+        #expect(CaptureManager.fileNameComponent("mdesktopkvm.tail1234.ts.net") == "mdesktopkvm.tail1234.ts.net")
+    }
+
     @Test func noGeneratedPrefixIsShown() {
         let manual = KVMDeviceManager.mergeListed([
             Fixtures.device(id: "manual-1", nickname: nil, host: "192.0.2.5"),
@@ -37,7 +72,7 @@ struct DisplayNameTests {
         var device = Fixtures.device(id: "saved-x", nickname: "Desk", host: Self.lan.host, addresses: [Self.lan, Self.tailnet])
         device.lastUsedAddress = Self.tailnet
         device = device.via(device.preferredAddress)
-        #expect(DeviceMenuTitle(device).address == "mdesktopkvm")
+        #expect(DeviceMenuTitle(device).address == "mdesktopkvm.tail1234.ts.net")
     }
 
     @Test func theAddressIsATabAwayInASecondaryMonospacedFont() throws {

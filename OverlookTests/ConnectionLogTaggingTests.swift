@@ -79,9 +79,10 @@ struct ConnectionLogTaggingTests {
     @Test func aDeviceIsNamedByItsHostWithTheOddPortOnly() {
         #expect(SessionLog.label(host: "192.168.0.131", port: 443) == "192.168.0.131")
         #expect(SessionLog.label(host: "mdesktopkvm", port: 443) == "mdesktopkvm")
-        // A Tailscale name by its machine name alone.
-        #expect(SessionLog.label(host: "mdesktopkvm.tail235926.ts.net", port: 443) == "mdesktopkvm")
-        #expect(SessionLog.label(host: "mdesktopkvm.tail235926.ts.net", port: 8443) == "mdesktopkvm:8443")
+        // A Tailscale name in full: the bare MagicDNS name is a different address.
+        #expect(SessionLog.label(host: "mdesktopkvm.tail235926.ts.net", port: 443) == "mdesktopkvm.tail235926.ts.net")
+        #expect(SessionLog.label(host: "mdesktopkvm.tail235926.ts.net", port: 80) == "mdesktopkvm.tail235926.ts.net")
+        #expect(SessionLog.label(host: "mdesktopkvm.tail235926.ts.net", port: 8443) == "mdesktopkvm.tail235926.ts.net:8443")
         #expect(SessionLog.label(host: "kvm.local", port: 80) == "kvm.local")
         #expect(SessionLog.label(host: "kvm.local", port: 8443) == "kvm.local:8443")
         #expect(SessionLog.label(host: "fe80::1", port: 8443) == "[fe80::1]:8443")

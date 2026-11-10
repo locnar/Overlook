@@ -44,7 +44,7 @@ struct DeviceIdentityTests {
 
     @Test func addressesAreWrittenShortWithTheirTag() {
         #expect(DeviceAddress(host: "192.168.0.131", port: 443).labelWithTag == "192.168.0.131 (LAN)")
-        #expect(DeviceAddress(host: "mdesktopkvm.tail1234.ts.net", port: 443).labelWithTag == "mdesktopkvm (Tailscale)")
+        #expect(DeviceAddress(host: "mdesktopkvm.tail1234.ts.net", port: 443).labelWithTag == "mdesktopkvm.tail1234.ts.net (Tailscale)")
         #expect(DeviceAddress(host: "mdesktopkvm", port: 443).labelWithTag == "mdesktopkvm")
         #expect(DeviceAddress(host: "kvm.example", port: 8443).labelWithTag == "kvm.example:8443")
         #expect(DeviceAddress(host: "192.168.0.131", port: 443).hostPort == "192.168.0.131:443")
@@ -120,7 +120,7 @@ struct DeviceIdentityTests {
         #expect(Fixtures.device(nickname: nil, host: "192.168.0.131").displayName == "192.168.0.131")
         #expect(Fixtures.device(nickname: "   ", host: "192.168.0.131").displayName == "192.168.0.131")
         #expect(Fixtures.device(nickname: nil, host: "kvm.example", port: 8443).displayName == "kvm.example:8443")
-        #expect(Fixtures.device(nickname: nil, host: "mdesktopkvm.tail1234.ts.net").displayName == "mdesktopkvm")
+        #expect(Fixtures.device(nickname: nil, host: "mdesktopkvm.tail1234.ts.net").displayName == "mdesktopkvm.tail1234.ts.net")
     }
 
     @Test func aNewDeviceHasItsOwnAddress() {

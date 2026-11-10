@@ -51,11 +51,12 @@ extension DeviceAddress {
     /// The network this address is on, if the address says.
     var tag: AddressTag? { AddressTag.classify(host: host) }
 
-    /// The short form shown wherever a device is named by its address: the host, without the
-    /// port when it is the scheme's own and without the tailnet suffix (`SessionLog.label`).
+    /// The form shown wherever a device is named by its address: the whole host, without the
+    /// port when it is the scheme's own (`SessionLog.label`).
     var label: String { SessionLog.label(host: host, port: port) }
 
-    /// The short form with its tag: `mdesktopkvm (Tailscale)`, `192.168.0.131 (LAN)`, `kvm.example`.
+    /// The label with its tag: `mdesktopkvm.tail1234.ts.net (Tailscale)`, `192.168.0.131 (LAN)`,
+    /// `kvm.example`.
     var labelWithTag: String {
         tag.map { "\(label) (\($0.rawValue))" } ?? label
     }

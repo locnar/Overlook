@@ -57,7 +57,7 @@ struct DeviceLinkTests {
 
         #expect(prompt.candidate.id == desk.id)
         #expect(prompt.title == "This is Desk")
-        #expect(prompt.message.contains("mdesktopkvm (Tailscale)"))
+        #expect(prompt.message.contains("mdesktopkvm.tail1234.ts.net (Tailscale)"))
         #expect(DeviceLinkPrompt.addTitle == "Add address")
         #expect(DeviceLinkPrompt.keepTitle == "Keep separate")
         #expect(DeviceLinkPrompt.escapeAnswer == .keepSeparate)
@@ -91,7 +91,7 @@ struct DeviceLinkTests {
         let prompt = try #require(DeviceLinkPrompt.after(connecting: connected, savedBefore: savedBefore, catalog: catalog))
         #expect(prompt.candidate.id == desk.id)
         #expect(prompt.wasSavedSeparately)
-        #expect(prompt.message.hasPrefix("mdesktopkvm (Tailscale) is saved as a device of its own"))
+        #expect(prompt.message.hasPrefix("mdesktopkvm.tail1234.ts.net (Tailscale) is saved as a device of its own"))
 
         prompt.answer(.addAddress, catalog: catalog)
         #expect(catalog.availableDevices.map(\.id) == [desk.id])

@@ -60,13 +60,13 @@ struct ConnectViaTests {
         var device = Fixtures.device(id: "saved-x", nickname: "Desk", host: Self.lan.host, addresses: [Self.lan, Self.tailnet])
         #expect(ConnectVia.items(for: device) == [
             .init(address: Self.lan, title: "192.168.0.131 (LAN)", isLastUsed: false),
-            .init(address: Self.tailnet, title: "mdesktopkvm (Tailscale)", isLastUsed: false),
+            .init(address: Self.tailnet, title: "mdesktopkvm.tail1234.ts.net (Tailscale)", isLastUsed: false),
         ])
 
         device.lastUsedAddress = Self.tailnet
         #expect(ConnectVia.items(for: device) == [
             .init(address: Self.lan, title: "192.168.0.131 (LAN)", isLastUsed: false),
-            .init(address: Self.tailnet, title: "mdesktopkvm (Tailscale) — last used", isLastUsed: true),
+            .init(address: Self.tailnet, title: "mdesktopkvm.tail1234.ts.net (Tailscale) — last used", isLastUsed: true),
         ])
     }
 
@@ -169,7 +169,7 @@ struct ConnectViaTests {
         #expect(ConnectVia.failureMessage(address: Self.lan, deviceHasOtherAddresses: false, error: KVMError.connectionFailed)
             == "Couldn't reach 192.168.0.131 (LAN).")
         let timeout = ConnectVia.failureMessage(address: Self.tailnet, deviceHasOtherAddresses: true, error: URLError(.timedOut))
-        #expect(timeout.hasPrefix("Couldn't reach mdesktopkvm (Tailscale). To use another address, choose it from the Connect menu.\n\n"))
+        #expect(timeout.hasPrefix("Couldn't reach mdesktopkvm.tail1234.ts.net (Tailscale). To use another address, choose it from the Connect menu.\n\n"))
         let other = ConnectVia.failureMessage(address: DeviceAddress(host: "kvm.example", port: 8443), deviceHasOtherAddresses: false, error: TestError(name: "boom"))
         #expect(other.hasPrefix("Couldn't connect to kvm.example:8443.\n\n"))
         #expect(other.contains("boom"))
@@ -186,13 +186,13 @@ struct ConnectViaTests {
         _ = await session.connect(to: ConnectVia.pick(Self.tailnet, of: try desk(in: catalog), in: catalog))
 
         let connected = try #require(session.connection.connectedDevice)
-        #expect(ConnectVia.statusText(connectedThrough: connected.address) == "Connected via mdesktopkvm (Tailscale)")
+        #expect(ConnectVia.statusText(connectedThrough: connected.address) == "Connected via mdesktopkvm.tail1234.ts.net (Tailscale)")
         #expect(ConnectVia.statusText(connectedThrough: Self.lan) == "Connected via 192.168.0.131 (LAN)")
-        #expect(await logged("Connecting via mdesktopkvm (Tailscale)"))
-        #expect(await logged("Connected via mdesktopkvm (Tailscale)"))
+        #expect(await logged("Connecting via mdesktopkvm.tail1234.ts.net (Tailscale)"))
+        #expect(await logged("Connected via mdesktopkvm.tail1234.ts.net (Tailscale)"))
         // The log's device tag stays the address, not the nickname.
-        let line = log.store.events.first { $0.message == "Connected via mdesktopkvm (Tailscale)" }
-        #expect(line?.source?.device == "mdesktopkvm")
+        let line = log.store.events.first { $0.message == "Connected via mdesktopkvm.tail1234.ts.net (Tailscale)" }
+        #expect(line?.source?.device == "mdesktopkvm.tail1234.ts.net")
     }
 
     @Test func aPasswordPromptIsNotLoggedAsAFailure() async throws {

@@ -394,15 +394,15 @@ final class SessionLog: ConnectionLogging, @unchecked Sendable {
     /// The ring this session's window shows.
     var store: ConnectionLogStore { destination.store }
 
-    /// A short name for a device: its host, with the port only when it is not the scheme's own
-    /// (443 for HTTPS, 80 for HTTP). `192.168.0.131`, `mdesktopkvm`, `kvm.local:8443`.
+    /// A short name for a device: its host as it was entered, with the port only when it is not
+    /// the scheme's own (443 for HTTPS, 80 for HTTP). `192.168.0.131`, `mdesktopkvm`,
+    /// `mdesktopkvm.tail1234.ts.net`, `kvm.local:8443`.
+    ///
+    /// A Tailscale name keeps its tailnet suffix: a bare MagicDNS name and the full `.ts.net` one
+    /// are different addresses (they can be saved as different devices), and a menu that showed
+    /// both as `mdesktopkvm` could not tell them apart.
     static func label(host: String, port: Int) -> String {
         var shownHost = host
-        // A Tailscale name is unique within its tailnet by its first label, and the rest
-        // (`tail1234.ts.net`) is the same for every device on it, so it only takes up room.
-        if host.lowercased().hasSuffix(".ts.net"), let machine = host.split(separator: ".").first {
-            shownHost = String(machine)
-        }
         if port == 443 || port == 80 {
             return shownHost
         }
