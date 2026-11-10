@@ -474,3 +474,30 @@ struct HIDRecoveryTests {
         #expect(socket.howClosed == "closed")
     }
 }
+
+// MARK: - Scrolling
+
+extension HIDSocketTests {
+    /// Scrolling reaches the device only as a wheel report on the HID socket (kvmd's binary
+    /// event 0x05: squash flag, then X and Y as signed bytes, clamped to -128...127). There is no
+    /// HTTP wheel call.
+    @Test func aWheelReportGoesOutOnTheHIDSocket() async throws {
+        let socket = FakeHIDSocket()
+        let ws = client(on: socket, timing: .testing(sendTimeout: .seconds(2), openTimeout: .seconds(2)))
+        await ws.connect()
+
+        try await ws.sendHidMouseWheel(deltaX: 0, deltaY: 3)
+        try await ws.sendHidMouseWheel(deltaX: -2, deltaY: -1)
+        try await ws.sendHidMouseWheel(deltaX: 300, deltaY: -300)
+
+        let wheels = socket.frames.filter {
+            if case .binary(let bytes) = $0 { return bytes.first == 0x05 }
+            return false
+        }
+        #expect(wheels == [
+            .binary([0x05, 0x00, 0x00, 0x03]),
+            .binary([0x05, 0x00, 0xFE, 0xFF]),
+            .binary([0x05, 0x00, 0x7F, 0x80]),
+        ])
+    }
+}

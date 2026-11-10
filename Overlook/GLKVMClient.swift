@@ -952,20 +952,6 @@ extension GLKVMClient {
             responseType: GLKVMResponse<GLKVMEmptyResult>.self
         )
     }
-
-    func sendHidMouseWheel(deltaX: Int, deltaY: Int) async throws {
-        _ = try await request(
-            method: "POST",
-            path: "api/hid/events/send_mouse_wheel",
-            query: [
-                URLQueryItem(name: "delta_x", value: String(deltaX)),
-                URLQueryItem(name: "delta_y", value: String(deltaY)),
-            ],
-            body: Data(),
-            contentType: "application/x-www-form-urlencoded",
-            responseType: GLKVMResponse<GLKVMEmptyResult>.self
-        )
-    }
 }
 
 extension GLKVMClient {
