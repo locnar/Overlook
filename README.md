@@ -322,7 +322,7 @@ For grabbing a few lines without turning OCR mode on: drag a box, and its text g
 ### Start it
 
 - Press `⇧⌘T` (also while keys are being sent to the target).
-- Click the toolbar button with the text-viewfinder icon, next to the screenshot and record buttons (also in the fullscreen hover controls).
+- Click the toolbar button with the text-viewfinder icon, next to the OCR selection button (also in the fullscreen hover controls).
 - Choose **Capture › Copy Text from Area**.
 
 It is available while connected with video showing, and greyed out otherwise. Starting it turns OCR mode off and cancels a capture-region selection; any open side panel closes.

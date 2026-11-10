@@ -221,8 +221,6 @@ struct ContentView: View {
 
                             ScreenshotButton(isConnected: isConnected)
 
-                            OCRSnippetButton()
-
                             RecordingButton(isConnected: isConnected)
 
                             RecordingModePicker()
@@ -237,6 +235,8 @@ struct ContentView: View {
                             }
                             .disabled(!isConnected)
                             .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+
+                            OCRSnippetButton()
 
                             Divider()
                                 .frame(height: 18)
@@ -574,9 +574,9 @@ struct ContentView: View {
         // tools (log, settings). On macOS 26 each group is one glass pill and a pop-up button
         // always gets a pill of its own, so the groups are fenced with fixed spacers — the
         // capture pills (buttons, mode pop-up, elapsed time) then sit closer to each other than
-        // to the neighbours. OCR is alone in the middle: it records nothing, so it does not
-        // belong with capture, and it acts on the video rather than the app, so it does not
-        // belong with tools.
+        // to the neighbours. OCR (OCR selection, then Copy Text from Area) is in the middle: it
+        // records nothing, so it does not belong with capture, and it acts on the video rather
+        // than the app, so it does not belong with tools.
         .toolbar {
             if isFullscreen == false {
                 ToolbarItemGroup(placement: .automatic) {
@@ -603,8 +603,6 @@ struct ContentView: View {
 
                     ScreenshotButton(isConnected: isConnected)
 
-                    OCRSnippetButton()
-
                     RecordingButton(isConnected: isConnected)
 
                     RecordingModePicker()
@@ -618,8 +616,9 @@ struct ContentView: View {
                     ToolbarSpacer(.fixed)
                 }
 
-                // OCR gets an island of its own. It belongs to neither neighbour: it records
-                // nothing, and it acts on the video rather than on the app.
+                // OCR gets an island of its own: OCR selection, then Copy Text from Area. It belongs
+                // to neither neighbour: it records nothing, and it acts on the video rather than on
+                // the app.
                 ToolbarItemGroup(placement: .automatic) {
                     Button(action: { toggleOCR() }) {
                         Image(systemName: session.isOCRModeEnabled
@@ -628,6 +627,8 @@ struct ContentView: View {
                     }
                     .disabled(!isConnected)
                     .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+
+                    OCRSnippetButton()
                 }
 
                 if #available(macOS 26.0, *) {
