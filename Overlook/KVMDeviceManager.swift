@@ -167,15 +167,17 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         var capabilities: Set<KVMCapability>
     }
     
-    private let defaults: UserDefaults
-    private let credentials: DeviceCredentialStore
-    private let trustStore: DeviceTrustStore
+    // Internal so a test can see which stores the app's catalog was built on.
+    let defaults: UserDefaults
+    let credentials: DeviceCredentialStore
+    let trustStore: DeviceTrustStore
 
     /// The parameters are for tests, which hand in a scratch defaults suite, an in-memory
-    /// credential store and a trust store of their own. The app takes the defaults.
+    /// credential store and a trust store of their own. The app takes the defaults: `.standard`
+    /// and the login keychain, or the test host's stand-ins (`AppEnvironment`).
     init(
-        defaults: UserDefaults = .standard,
-        credentials: DeviceCredentialStore = KeychainDeviceCredentials(),
+        defaults: UserDefaults = AppEnvironment.defaults,
+        credentials: DeviceCredentialStore = AppEnvironment.makeCredentialStore(),
         trustStore: DeviceTrustStore = .shared
     ) {
         self.defaults = defaults

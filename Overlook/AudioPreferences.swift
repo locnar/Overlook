@@ -58,12 +58,13 @@ final class AudioPreferences: ObservableObject {
         didSet { defaults.set(playbackScope.rawValue, forKey: Keys.playbackScope) }
     }
 
-    /// The app's, on this Mac's own defaults.
-    static let shared = AudioPreferences(defaults: .standard)
+    /// The app's, on this Mac's own defaults (the test host's suite when hosting the tests).
+    static let shared = AudioPreferences(defaults: AppEnvironment.defaults)
 
-    private let defaults: UserDefaults
+    /// Internal so a test can see which defaults the app's object was given.
+    let defaults: UserDefaults
 
-    /// `defaults` is `.standard` for the app's own object; tests pass a scratch suite.
+    /// `defaults` is `AppEnvironment.defaults` for the app's own object; tests pass a scratch suite.
     init(defaults: UserDefaults) {
         self.defaults = defaults
         audioEnabled = defaults.bool(forKey: Keys.audioEnabled)

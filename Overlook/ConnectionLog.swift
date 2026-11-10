@@ -143,7 +143,9 @@ extension ConnectionLogging {
 /// window and drops `.debug`/`.info` unless the process is being streamed live. A disconnect
 /// noticed twenty minutes later needs a record that was already on disk when it happened.
 final class ConnectionLog: ConnectionLogging, @unchecked Sendable {
-    static let shared = ConnectionLog(
+    /// The app's log. Under the test host it is kept in memory, like `inMemory()`, so a test run
+    /// never writes to the operator's file.
+    static let shared: ConnectionLog = AppEnvironment.isHostingTests ? .inMemory() : ConnectionLog(
         directory: FileManager.default
             .urls(for: .libraryDirectory, in: .userDomainMask)
             .first?
@@ -158,6 +160,9 @@ final class ConnectionLog: ConnectionLogging, @unchecked Sendable {
     static func inMemory() -> ConnectionLog {
         ConnectionLog(directory: nil, mirrorsToUnifiedLog: false, threshold: .info)
     }
+
+    /// Whether lines go to `connection.log`. False for a log kept in memory.
+    var writesFile: Bool { fileURL != nil }
 
     /// Rotate past this size; three generations are kept.
     private static let maxFileBytes: UInt64 = 4 * 1024 * 1024

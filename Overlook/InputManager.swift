@@ -156,10 +156,10 @@ class InputManager: ObservableObject {
     /// The session's handle on the connection log; every line from here names its device.
     let log: SessionLog
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`. `log` is
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`. `log` is
     /// the session's (tests pass one on a log kept in memory); an input manager on its own logs to
     /// the app's log under a session of its own.
-    init(defaults: UserDefaults = .standard, log: SessionLog? = nil) {
+    init(defaults: UserDefaults = AppEnvironment.defaults, log: SessionLog? = nil) {
         self.defaults = defaults
         self.log = log ?? SessionLog(destination: .shared)
         relativeSensitivity = (defaults.object(forKey: Self.relativeSensitivityDefaultsKey) as? Double) ?? 1.0

@@ -14,7 +14,12 @@ struct OverlookApp: App {
         // Every window is a console with a session of its own; File › New Window (⌘N) opens
         // another one, disconnected.
         WindowGroup(id: ConsoleWindowRoot.windowGroupID) {
-            ConsoleWindowRoot(registry: appDelegate.sessionRegistry)
+            if AppEnvironment.isHostingTests {
+                // No console, so no session: nothing that connects, scans or reads settings.
+                TestHostWindow()
+            } else {
+                ConsoleWindowRoot(registry: appDelegate.sessionRegistry)
+            }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact)
@@ -33,6 +38,10 @@ struct OverlookApp: App {
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
+    /// The app's delegate once it exists. `NSApp.delegate` is SwiftUI's own object, which forwards
+    /// to this one, so a test that checks what the app built at launch finds it here.
+    private(set) static weak var launched: AppDelegate?
+
     var menuBarAgent: MenuBarAgent?
 
     /// The devices every console chooses from.
@@ -54,12 +63,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // offers a tab bar nor opens a new window as a tab (as it does under "Prefer tabs").
         NSWindow.allowsAutomaticWindowTabbing = false
 
-        let kvmDeviceManager = KVMDeviceManager()
+        // `.standard` and the login keychain, or under the test host stand-ins that keep the
+        // operator's saved devices, tokens and pins out of reach (`AppEnvironment`).
+        let kvmDeviceManager = KVMDeviceManager(
+            defaults: AppEnvironment.defaults,
+            credentials: AppEnvironment.makeCredentialStore(),
+            trustStore: .shared
+        )
         self.kvmDeviceManager = kvmDeviceManager
         let sessionRegistry = SessionRegistry(catalog: kvmDeviceManager)
         self.sessionRegistry = sessionRegistry
         audioRouter = SessionAudioRouter(registry: sessionRegistry, preferences: .shared)
         super.init()
+        Self.launched = self
     }
 
     private var isTerminating = false
@@ -67,22 +83,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Longest the app waits for the HID release and socket close before quitting anyway.
     private static let terminationGraceNanoseconds: UInt64 = 3_000_000_000
 
-    /// True when this process is hosting the unit tests. The test bundle is loaded into the app,
-    /// so a test run launches it like any other; nothing in the tests needs the menu-bar agent, and
-    /// without this the run would add a status item and a system-wide key monitor (⇧⌘V opens a
-    /// modal Quick Connect) for its duration.
-    static let isHostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !Self.isHostingUnitTests {
-            menuBarAgent = MenuBarAgent(
-                registry: sessionRegistry,
-                showMainWindow: { [weak self] in
-                    self?.showMainWindow()
-                }
-            )
-            menuBarAgent?.setup()
-        }
+        // Hosting the tests, the app adds no status item and no system-wide key monitor (⇧⌘V
+        // opens a modal Quick Connect), and leaves Xcode in front.
+        guard !AppEnvironment.isHostingTests else { return }
+
+        menuBarAgent = MenuBarAgent(
+            registry: sessionRegistry,
+            showMainWindow: { [weak self] in
+                self?.showMainWindow()
+            }
+        )
+        menuBarAgent?.setup()
         
         // Configure app for KVM control
         NSApp.setActivationPolicy(.regular)
@@ -135,5 +147,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !hasRepliedToTermination else { return }
         hasRepliedToTermination = true
         app.reply(toApplicationShouldTerminate: true)
+    }
+}
+
+/// The one window the app shows while it hosts the tests, in place of a console. It has no
+/// session, and macOS neither restores it at the next launch nor saves its frame, so a test run
+/// leaves the operator's windows as they were.
+private struct TestHostWindow: View {
+    var body: some View {
+        Text("Overlook is hosting the unit tests.")
+            .foregroundStyle(.secondary)
+            .padding(40)
+            .background(NonRestorableWindow())
+    }
+
+    private struct NonRestorableWindow: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView()
+            DispatchQueue.main.async {
+                guard let window = view.window else { return }
+                window.isRestorable = false
+                window.setFrameAutosaveName("")
+            }
+            return view
+        }
+
+        func updateNSView(_ nsView: NSView, context: Context) {}
     }
 }

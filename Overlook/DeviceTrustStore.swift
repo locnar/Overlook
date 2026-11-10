@@ -29,12 +29,13 @@ final class DeviceTrustStore {
 
     private static let defaultsKey = "overlook.trusted_certificates.v1"
 
-    private let defaults: UserDefaults
+    /// Internal so a test can see which defaults the app's store was given.
+    let defaults: UserDefaults
     private let lock = NSLock()
     private var pins: [String: String]
     private var mismatches: [String: Mismatch] = [:]
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = AppEnvironment.defaults) {
         self.defaults = defaults
         pins = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: String]) ?? [:]
     }

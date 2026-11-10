@@ -160,8 +160,8 @@ final class CaptureManager: ObservableObject {
         return formatter
     }()
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
-    init(webRTCManager: WebRTCManager, connection: SessionConnection, defaults: UserDefaults = .standard) {
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`.
+    init(webRTCManager: WebRTCManager, connection: SessionConnection, defaults: UserDefaults = AppEnvironment.defaults) {
         self.webRTCManager = webRTCManager
         self.connection = connection
         self.defaults = defaults

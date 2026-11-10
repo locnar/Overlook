@@ -82,8 +82,8 @@ final class PanelPresentation: ObservableObject {
 
     private let defaults: UserDefaults
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`.
-    init(defaults: UserDefaults = .standard) {
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`.
+    init(defaults: UserDefaults = AppEnvironment.defaults) {
         self.defaults = defaults
         let stored = defaults.double(forKey: Self.widthKey)
         // `double(forKey:)` returns 0 for a key that was never written.

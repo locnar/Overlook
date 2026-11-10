@@ -49,13 +49,13 @@ final class ConsoleSession: ObservableObject {
     private let link: ConsoleSessionLink
     private var cancellables = Set<AnyCancellable>()
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `.standard`. `link` is
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`. `link` is
     /// for tests too: the app's reaches the device, the stream and the connection log. So are
     /// `audioPreferences` (the app's sessions all share `AudioPreferences.shared`) and
     /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file).
     init(
         catalog: KVMDeviceManager,
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppEnvironment.defaults,
         link: ConsoleSessionLink? = nil,
         audioPreferences: AudioPreferences? = nil,
         connectionLog: ConnectionLog? = nil
