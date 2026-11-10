@@ -94,6 +94,8 @@
 		01000124 /* InterceptedChordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000124 /* InterceptedChordTests.swift */; };
 		01000123 /* KeyCodeTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000123 /* KeyCodeTableTests.swift */; };
 		01000122 /* AudioDeviceSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000122 /* AudioDeviceSetupTests.swift */; };
+		01000041 /* DiscoveryRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000041 /* DiscoveryRules.swift */; };
+		01000125 /* DiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000125 /* DiscoveryTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -201,6 +203,9 @@
 		02000124 /* InterceptedChordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterceptedChordTests.swift; sourceTree = "<group>"; };
 		02000123 /* KeyCodeTableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCodeTableTests.swift; sourceTree = "<group>"; };
 		02000122 /* AudioDeviceSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceSetupTests.swift; sourceTree = "<group>"; };
+		02000041 /* DiscoveryRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryRules.swift; sourceTree = "<group>"; };
+		02000125 /* DiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryTests.swift; sourceTree = "<group>"; };
+		02000042 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -278,6 +283,8 @@
 				0200003F /* DeviceViews.swift */,
 				0200003E /* DeviceIdentity.swift */,
 				02000040 /* AppEnvironment.swift */,
+				02000042 /* Info.plist */,
+				02000041 /* DiscoveryRules.swift */,
 				0200003A /* AudioPreferences.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
@@ -326,6 +333,7 @@
 				0200011B /* DeviceIdentityTests.swift */,
 				02000121 /* TestHostTests.swift */,
 				02000124 /* InterceptedChordTests.swift */,
+				02000125 /* DiscoveryTests.swift */,
 				02000123 /* KeyCodeTableTests.swift */,
 				02000122 /* AudioDeviceSetupTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
@@ -500,6 +508,7 @@
 				0100003B /* DeviceViews.swift in Sources */,
 				0100003A /* DeviceIdentity.swift in Sources */,
 				01000040 /* AppEnvironment.swift in Sources */,
+				01000041 /* DiscoveryRules.swift in Sources */,
 				01000036 /* AudioPreferences.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
@@ -546,6 +555,7 @@
 				0100011B /* DeviceIdentityTests.swift in Sources */,
 				01000121 /* TestHostTests.swift in Sources */,
 				01000124 /* InterceptedChordTests.swift in Sources */,
+				01000125 /* DiscoveryTests.swift in Sources */,
 				01000123 /* KeyCodeTableTests.swift in Sources */,
 				01000122 /* AudioDeviceSetupTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
@@ -703,9 +713,11 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Overlook/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Overlook;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Overlook finds and connects to KVM devices on your local network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Overlook needs microphone access to send audio to the remote device.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -735,9 +747,11 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Overlook/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Overlook;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Overlook finds and connects to KVM devices on your local network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Overlook needs microphone access to send audio to the remote device.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

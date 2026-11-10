@@ -130,12 +130,6 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return URLSession(configuration: config, delegate: ProbeTLSDelegate(), delegateQueue: nil)
     }()
 
-    private let commonProbeTargets: [(host: String, port: Int)] = [
-        ("192.168.200.5", 443),
-        ("192.168.200.1", 443),
-        ("192.168.200.1", 80),
-    ]
-
     /// One record per host:port, written by versions before devices had several addresses.
     /// Read once to migrate, then left as it is, so going back to an earlier build still finds
     /// the devices that were saved then.
@@ -212,6 +206,11 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let pinnedDevices = availableDevices.filter { $0.id.hasPrefix("manual-") || $0.isSaved }
         availableDevices = pinnedDevices
 
+        let interfaces = Self.readIPv4Interfaces()
+        let sweepHosts = LocalSweep.hosts(for: interfaces)
+        logScanStart(interfaces: interfaces)
+        let started = Date()
+
         // Start multiple discovery methods
         scanTask = Task { [weak self] in
             guard let self else { return }
@@ -228,14 +227,9 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                 
                 // Network scan for known ports
                 group.addTask {
-                    await self.scanKnownPorts()
+                    await self.scanKnownPorts(hosts: sweepHosts)
                 }
 
-                // Quick probe for common/default KVM addresses
-                group.addTask {
-                    await self.probeCommonTargets()
-                }
-                
                 // Tailscale network discovery
                 group.addTask {
                     await self.discoverTailscaleDevices()
@@ -257,12 +251,16 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                     let found = allDevices
                     await MainActor.run {
                         guard self.scanGeneration == generation else { return }
-                        self.availableDevices = Self.mergeListed(pinnedDevices + found)
+                        self.availableDevices = Self.mergeListed(
+                            pinnedDevices + DiscoveredMerge.merge(found, shownAs: pinnedDevices)
+                        )
                     }
                 }
 
+                let found = allDevices
                 await MainActor.run {
                     guard self.scanGeneration == generation else { return }
+                    Self.logScanEnd(found: found, pinned: pinnedDevices, elapsed: Date().timeIntervalSince(started))
                     self.finishScan()
                 }
             }
@@ -280,9 +278,45 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     /// Stops a scan in progress. Probes already in flight finish on their own, but their results
     /// are discarded and the device list keeps whatever it showed at the time of the call.
     func cancelScan() {
+        if isScanning {
+            clog.info(.network, "Scan cancelled")
+        }
         scanGeneration += 1
         scanTask?.cancel()
         finishScan()
+    }
+
+    /// Logs what a scan is about to sweep, and at debug level the interfaces it leaves out.
+    private func logScanStart(interfaces: [IPv4Interface]) {
+        let ranges = LocalSweep.ranges(for: interfaces)
+        let bonjour = "browsing Bonjour \(Self.bonjourServiceTypes.joined(separator: ", "))"
+        if ranges.isEmpty {
+            clog.info(.network, "Scan started: no Ethernet or Wi-Fi interface with a private IPv4 address, so no subnet is swept; \(bonjour)")
+        } else {
+            let swept = ranges.map { "\($0.cidr) (\($0.interface))" }.joined(separator: ", ")
+            let ports = Self.sweptPorts.map(String.init).joined(separator: ", ")
+            clog.info(.network, "Scan started: sweeping \(swept) on ports \(ports); \(bonjour)")
+        }
+        let skipped = interfaces.filter { !LocalSweep.isSweepable($0) && !$0.isLoopback }
+        if !skipped.isEmpty {
+            clog.debug(.network, "Scan leaves out " + skipped.map { "\($0.name) \($0.address)" }.joined(separator: ", "))
+        }
+    }
+
+    /// Logs what a scan found, each host once, and which of them are already listed as a saved
+    /// or added device.
+    nonisolated private static func logScanEnd(found: [KVMDevice], pinned: [KVMDevice], elapsed: TimeInterval) {
+        let labels = DiscoveredMerge.merge(found).map { device -> String in
+            var label = device.nickname.map { "\($0) (\(device.address.label))" } ?? device.address.label
+            if let listedAs = DiscoveredMerge.listedAs(device, among: pinned) {
+                label += " [listed as \(listedAs.displayName)]"
+            }
+            return label
+        }
+        let seconds = String(format: "%.1f", elapsed)
+        clog.info(.network, labels.isEmpty
+            ? "Scan finished in \(seconds) s: nothing found"
+            : "Scan finished in \(seconds) s: found \(labels.joined(separator: ", "))")
     }
 
     private func finishScan() {
@@ -294,130 +328,186 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
 
     private func discoverGLiNetDevices() async -> [KVMDevice] {
-        actor DeviceCollector {
-            private var devices: [KVMDevice] = []
-            func add(_ device: KVMDevice) {
-                devices.append(device)
+        let endpoints = await Self.browseBonjour(type: Self.bonjourServiceTypes[0])
+        return await Self.resolveAll(endpoints).map { Self.createGLiNetDevice(from: $0.endpoint, resolved: $0.address) }
+    }
+
+    private func discoverGenericKVMDevices() async -> [KVMDevice] {
+        let endpoints = await Self.browseBonjour(type: Self.bonjourServiceTypes[1])
+        return await Self.resolveAll(endpoints).map { Self.createGenericKVMDevice(from: $0.endpoint, resolved: $0.address) }
+    }
+
+    /// Every service of `type` that Bonjour reports within `duration`, each once.
+    nonisolated private static func browseBonjour(type: String, duration: TimeInterval = 5) async -> [NWEndpoint] {
+        actor EndpointCollector {
+            private var endpoints: [NWEndpoint] = []
+            func add(_ found: [NWEndpoint]) {
+                for endpoint in found where !endpoints.contains(endpoint) {
+                    endpoints.append(endpoint)
+                }
             }
-            func all() -> [KVMDevice] {
-                devices
+            func all() -> [NWEndpoint] {
+                endpoints
             }
         }
 
-        let collector = DeviceCollector()
-        
-        // GL.iNet Comet uses mDNS/Bonjour discovery
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: "_comet._tcp", domain: nil), using: .tcp)
-        
+        let collector = EndpointCollector()
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: nil), using: .tcp)
+
         return await withCheckedContinuation { continuation in
-            browser.browseResultsChangedHandler = { results, changes in
-                for result in results {
-                    let device = Self.createGLiNetDevice(from: result.endpoint)
-                    Task {
-                        await collector.add(device)
-                    }
+            // Each call carries the whole current set, not just what changed.
+            browser.browseResultsChangedHandler = { results, _ in
+                let endpoints = results.map(\.endpoint)
+                Task {
+                    await collector.add(endpoints)
                 }
             }
-            
-            browser.start(queue: DispatchQueue(label: "com.overlook.glinet"))
-            
-            // Stop after 5 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+
+            browser.start(queue: DispatchQueue(label: "com.overlook.bonjour.\(type)"))
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
                 Task {
-                    let devices = await collector.all()
+                    let endpoints = await collector.all()
                     browser.cancel()
-                    continuation.resume(returning: devices)
+                    continuation.resume(returning: endpoints)
                 }
             }
         }
     }
-    
-    nonisolated private static func createGLiNetDevice(from endpoint: NWEndpoint) -> KVMDevice {
-        var name = "GL.iNet Comet"
-        var host = ""
-        let port = 443
-        
-        if case .service(let serviceName, let type, let domain, _) = endpoint {
-            name = serviceName
-            host = "\(serviceName).\(type).\(domain)"
+
+    /// Each Bonjour service with the IPv4 address and port it resolves to, or nil where it does
+    /// not resolve in time. In the order given.
+    nonisolated private static func resolveAll(
+        _ endpoints: [NWEndpoint]
+    ) async -> [(endpoint: NWEndpoint, address: DeviceAddress?)] {
+        await withTaskGroup(of: (Int, DeviceAddress?).self) { group in
+            for (index, endpoint) in endpoints.enumerated() {
+                group.addTask { (index, await resolve(endpoint)) }
+            }
+            var addresses = [DeviceAddress?](repeating: nil, count: endpoints.count)
+            for await (index, address) in group {
+                addresses[index] = address
+            }
+            return Array(zip(endpoints, addresses)).map { (endpoint: $0.0, address: $0.1) }
         }
-        
+    }
+
+    /// The IPv4 address and port a Bonjour service resolves to, read off a TCP connection to it,
+    /// which is closed as soon as it is up. Nil when it does not come up within `timeout`.
+    nonisolated private static func resolve(_ endpoint: NWEndpoint, timeout: TimeInterval = 2) async -> DeviceAddress? {
+        final class Flag {
+            var value = false
+        }
+
+        let parameters = NWParameters.tcp
+        if let ip = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ip.version = .v4
+        }
+        let queue = DispatchQueue(label: "com.overlook.bonjour.resolve")
+        let connection = NWConnection(to: endpoint, using: parameters)
+
+        return await withCheckedContinuation { continuation in
+            let finished = Flag()
+
+            // Runs on `queue` only.
+            let finish: (DeviceAddress?) -> Void = { address in
+                if finished.value { return }
+                finished.value = true
+                connection.stateUpdateHandler = nil
+                connection.cancel()
+                continuation.resume(returning: address)
+            }
+
+            queue.asyncAfter(deadline: .now() + timeout) { finish(nil) }
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    finish(address(of: connection.currentPath?.remoteEndpoint))
+                case .waiting, .failed, .cancelled:
+                    finish(nil)
+                default:
+                    break
+                }
+            }
+
+            connection.start(queue: queue)
+        }
+    }
+
+    /// The host and port of a resolved endpoint: the dotted quad for IPv4, the name for a host
+    /// name. Nil for IPv6 (resolution asks for IPv4) and for anything that is not a host and port.
+    nonisolated static func address(of endpoint: NWEndpoint?) -> DeviceAddress? {
+        guard case .hostPort(let host, let port)? = endpoint else { return nil }
+        switch host {
+        case .ipv4(let ipv4):
+            let bytes = Array(ipv4.rawValue)
+            guard bytes.count == 4 else { return nil }
+            return DeviceAddress(host: bytes.map(String.init).joined(separator: "."), port: Int(port.rawValue))
+        case .name(let name, _):
+            return DeviceAddress(host: name, port: Int(port.rawValue))
+        default:
+            return nil
+        }
+    }
+
+    /// A `_comet._tcp` service as a device: at the address it resolved to, named after the
+    /// service. Unresolved, it keeps the service's own name as its host and 443 as its port.
+    nonisolated static func createGLiNetDevice(from endpoint: NWEndpoint, resolved: DeviceAddress? = nil) -> KVMDevice {
+        let found = bonjourIdentity(of: endpoint, resolved: resolved, defaultPort: 443, fallbackName: "GL.iNet Comet")
         return KVMDevice(
-            id: "glinet-\(UUID().uuidString)",
-            nickname: name,
-            host: host,
-            port: port,
+            id: "glinet-\(found.host)-\(found.port)",
+            nickname: found.name,
+            host: found.host,
+            port: found.port,
             type: .glinetComet,
             authToken: "",
             capabilities: [.videoStreaming, .keyboardInput, .mouseInput, .virtualMedia, .powerManagement]
         )
     }
-    
-    private func discoverGenericKVMDevices() async -> [KVMDevice] {
-        actor DeviceCollector {
-            private var devices: [KVMDevice] = []
-            func add(_ device: KVMDevice) {
-                devices.append(device)
-            }
-            func all() -> [KVMDevice] {
-                devices
-            }
-        }
 
-        let collector = DeviceCollector()
-        
-        // Generic KVM discovery via mDNS
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: "_kvm._tcp", domain: nil), using: .tcp)
-        
-        return await withCheckedContinuation { continuation in
-            browser.browseResultsChangedHandler = { results, changes in
-                for result in results {
-                    let device = Self.createGenericKVMDevice(from: result.endpoint)
-                    Task {
-                        await collector.add(device)
-                    }
-                }
-            }
-            
-            browser.start(queue: DispatchQueue(label: "com.overlook.generic"))
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                Task {
-                    let devices = await collector.all()
-                    browser.cancel()
-                    continuation.resume(returning: devices)
-                }
-            }
-        }
-    }
-    
-    nonisolated private static func createGenericKVMDevice(from endpoint: NWEndpoint) -> KVMDevice {
-        var name = "Generic KVM"
-        var host = ""
-        let port = 8080
-        
-        if case .service(let serviceName, let type, let domain, _) = endpoint {
-            name = serviceName
-            host = "\(serviceName).\(type).\(domain)"
-        }
-        
+    /// A `_kvm._tcp` service as a device, as `createGLiNetDevice` does; unresolved, port 8080.
+    nonisolated static func createGenericKVMDevice(from endpoint: NWEndpoint, resolved: DeviceAddress? = nil) -> KVMDevice {
+        let found = bonjourIdentity(of: endpoint, resolved: resolved, defaultPort: 8080, fallbackName: "Generic KVM")
         return KVMDevice(
-            id: "generic-\(UUID().uuidString)",
-            nickname: name,
-            host: host,
-            port: port,
+            id: "generic-\(found.host)-\(found.port)",
+            nickname: found.name,
+            host: found.host,
+            port: found.port,
             type: .generic,
             authToken: "",
             capabilities: [.videoStreaming, .keyboardInput, .mouseInput]
         )
     }
-    
-    private func scanKnownPorts() async -> [KVMDevice] {
+
+    nonisolated private static func bonjourIdentity(
+        of endpoint: NWEndpoint,
+        resolved: DeviceAddress?,
+        defaultPort: Int,
+        fallbackName: String
+    ) -> (name: String, host: String, port: Int) {
+        var name = fallbackName
+        var host = ""
+        if case .service(let serviceName, let type, let domain, _) = endpoint {
+            name = serviceName
+            host = "\(serviceName).\(type).\(domain)"
+        }
+        if let resolved {
+            return (name, resolved.host, resolved.port)
+        }
+        return (name, host, defaultPort)
+    }
+
+    /// The ports probed on every swept host.
+    nonisolated static let sweptPorts = [443, 8443, 80, 8080]
+
+    /// The Bonjour service types Scan browses. Each must be listed under `NSBonjourServices` in
+    /// Info.plist, or macOS refuses the browse.
+    nonisolated static let bonjourServiceTypes = ["_comet._tcp", "_kvm._tcp"]
+
+    private func scanKnownPorts(hosts localNetwork: [String]) async -> [KVMDevice] {
         var devices: [KVMDevice] = []
-        
-        // Common KVM ports to scan
-        let knownPorts = [443, 8443, 80, 8080]
-        let localNetwork = getLocalNetworkRange()
+        let knownPorts = Self.sweptPorts
 
         let maxConcurrent = Self.maximumConcurrentProbes
         var targets: [(host: String, port: Int)] = []
@@ -458,94 +548,41 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return devices
     }
     
-    private func getLocalNetworkRange() -> [String] {
-        var prefixes: Set<String> = []
-        var hosts: [String] = []
-
+    /// Every IPv4 address on the Mac's interfaces, with the interface's name, netmask and flags.
+    nonisolated static func readIPv4Interfaces() -> [IPv4Interface] {
+        var interfaces: [IPv4Interface] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        if getifaddrs(&ifaddr) == 0, let first = ifaddr {
-            defer { freeifaddrs(ifaddr) }
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+        defer { freeifaddrs(ifaddr) }
 
-            var ptr: UnsafeMutablePointer<ifaddrs>? = first
-            while let p = ptr {
-                defer { ptr = p.pointee.ifa_next }
-                guard let addr = p.pointee.ifa_addr else { continue }
-                if addr.pointee.sa_family != UInt8(AF_INET) { continue }
-
-                let flags = Int32(p.pointee.ifa_flags)
-                if (flags & IFF_LOOPBACK) != 0 { continue }
-
-                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                let result = getnameinfo(
-                    addr,
-                    socklen_t(addr.pointee.sa_len),
-                    &hostname,
-                    socklen_t(hostname.count),
-                    nil,
-                    0,
-                    NI_NUMERICHOST
-                )
-                if result != 0 { continue }
-                let ip = String(cString: hostname)
-
-                let parts = ip.split(separator: ".")
-                guard parts.count == 4 else { continue }
-
-                // Only scan typical private IPv4 ranges.
-                let p0 = Int(parts[0]) ?? 0
-                let p1 = Int(parts[1]) ?? 0
-                let isPrivate = (p0 == 10) || (p0 == 192 && p1 == 168) || (p0 == 172 && (16...31).contains(p1))
-                guard isPrivate else { continue }
-
-                // Pragmatic /24 scan based on the interface IP.
-                prefixes.insert("\(parts[0]).\(parts[1]).\(parts[2])")
-            }
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = ptr {
+            defer { ptr = p.pointee.ifa_next }
+            guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
+                  let address = numericHost(addr) else { continue }
+            let netmask = p.pointee.ifa_netmask.flatMap(numericHost) ?? ""
+            let flags = Int32(p.pointee.ifa_flags)
+            interfaces.append(IPv4Interface(
+                name: String(cString: p.pointee.ifa_name),
+                address: address,
+                netmask: netmask,
+                isUp: (flags & IFF_UP) != 0,
+                isRunning: (flags & IFF_RUNNING) != 0,
+                isLoopback: (flags & IFF_LOOPBACK) != 0,
+                isPointToPoint: (flags & IFF_POINTOPOINT) != 0
+            ))
         }
-
-        if prefixes.isEmpty {
-            prefixes = [
-                "192.168.1",
-                "192.168.0",
-                "10.0.0",
-            ]
-        }
-
-        prefixes.insert("192.168.200")
-
-        for prefix in prefixes {
-            for i in 1...254 {
-                hosts.append("\(prefix).\(i)")
-            }
-        }
-
-        return hosts
+        return interfaces
     }
 
-    private func probeCommonTargets() async -> [KVMDevice] {
-        var devices: [KVMDevice] = []
-        for target in commonProbeTargets {
-            if let device = await checkKVMService(host: target.host, port: target.port) {
-                devices.append(device)
-                continue
-            }
-
-            // If the port is open but the HTTP probe didn't identify the service,
-            // still surface it for the common/default targets (helps with devices
-            // that redirect/behave oddly on probe endpoints).
-            if await probeTCPPortOpen(host: target.host, port: target.port) {
-                devices.append(
-                    KVMDevice(
-                        id: "scanned-\(target.host)-\(target.port)",
-                        host: target.host,
-                        port: target.port,
-                        type: .glinetComet,
-                        authToken: "",
-                        capabilities: [.videoStreaming, .keyboardInput, .mouseInput, .virtualMedia, .powerManagement]
-                    )
-                )
-            }
-        }
-        return devices
+    /// The dotted quad in an `AF_INET` sockaddr. A netmask's sockaddr may come back with
+    /// `sa_family` unset, so the family is not checked here.
+    nonisolated private static func numericHost(_ addr: UnsafeMutablePointer<sockaddr>) -> String? {
+        var sin = sockaddr_in()
+        memcpy(&sin, addr, min(Int(addr.pointee.sa_len), MemoryLayout<sockaddr_in>.size))
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &sin.sin_addr, &buffer, socklen_t(buffer.count)) != nil else { return nil }
+        return String(cString: buffer)
     }
 
     private func probeTCPPortOpen(host: String, port: Int, timeout: TimeInterval = 0.7) async -> Bool {
@@ -629,15 +666,8 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
 
     private func probeGLKVM(host: String, port: Int) async -> Bool {
-        let preferredSchemes: [String] = (port == 443 || port == 8443) ? ["https", "http"] : ["http", "https"]
-
-        let paths = [
-            "api/auth/check",
-            "api/init/is_inited",
-        ]
-
-        for scheme in preferredSchemes {
-            for path in paths {
+        for scheme in DiscoveryProbe.schemes(forPort: port) {
+            for path in DiscoveryProbe.apiPaths {
                 guard let url = URL(string: "\(scheme)://\(host):\(port)/\(path)") else { continue }
                 var request = URLRequest(url: url)
                 request.httpMethod = "GET"
@@ -646,12 +676,8 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                 do {
                     let (_, response) = try await probeSession.data(for: request)
                     guard let http = response as? HTTPURLResponse else { continue }
-
-                    switch http.statusCode {
-                    case 200, 401, 403, 301, 302, 307, 308:
+                    if DiscoveryProbe.apiStatusLooksLikeGLKVM(http.statusCode) {
                         return true
-                    default:
-                        continue
                     }
                 } catch {
                     continue
@@ -663,9 +689,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
 
     private func probeWebUIKeywords(host: String, port: Int) async -> Bool {
-        let preferredSchemes: [String] = (port == 443 || port == 8443) ? ["https", "http"] : ["http", "https"]
-
-        for scheme in preferredSchemes {
+        for scheme in DiscoveryProbe.schemes(forPort: port) {
             guard let url = URL(string: "\(scheme)://\(host):\(port)/") else { continue }
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
@@ -674,10 +698,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             do {
                 let (data, response) = try await probeSession.data(for: request)
                 guard let http = response as? HTTPURLResponse else { continue }
-                guard (200...399).contains(http.statusCode) else { continue }
-                let text = String(decoding: data.prefix(4096), as: UTF8.self).lowercased()
-
-                if text.contains("kvmd") || text.contains("glkvm") || text.contains("comet") || text.contains("kvm") {
+                if DiscoveryProbe.pageLooksLikeKVM(status: http.statusCode, body: data) {
                     return true
                 }
             } catch {

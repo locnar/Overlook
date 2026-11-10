@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated Info.plist (GENERATE_INFOPLIST_FILE stays on); only keys the
+	     INFOPLIST_KEY_* build settings cannot express belong here. Since macOS 15 a Bonjour
+	     browse for a service type not listed here is refused. Keep it in step with
+	     KVMDeviceManager.bonjourServiceTypes. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_comet._tcp</string>
+		<string>_kvm._tcp</string>
+	</array>
+</dict>
+</plist>
