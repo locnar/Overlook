@@ -86,6 +86,9 @@ struct KVMDeviceUpdate: Equatable {
 final class KVMDeviceManager: NSObject, ObservableObject {
     @Published var availableDevices: [KVMDevice] = []
     @Published var isScanning = false
+    /// The networks the running scan sweeps, in CIDR form (`192.168.0.0/24`), as its start is
+    /// logged. Empty when no scan is running, or when the Mac has no network to sweep.
+    @Published private(set) var scanRanges: [String] = []
     @Published var scanProgress: Double = 0.0
     @Published var autoScanEnabled: Bool = false
 
@@ -101,47 +104,11 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     
     private var networkMonitor: NWPathMonitor?
     private var scanTimer: Timer?
-    private var deviceDiscoverySessions: [NWBrowser] = []
 
     // The running scan and its generation. Results are only published when the generation still
     // matches, so a cancelled scan never overwrites the device list after the fact.
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = 0
-    /// Discovery probes accept any certificate: they hit arbitrary LAN hosts, send no credentials,
-    /// and must not pin whatever those hosts present. Real connections go through DeviceTrustStore.
-    /// They follow a redirect only to the host they asked (`DiscoveryProbe.followsRedirect`).
-    private final class ProbeTLSDelegate: NSObject, URLSessionTaskDelegate {
-        func urlSession(
-            _ session: URLSession,
-            task: URLSessionTask,
-            willPerformHTTPRedirection response: HTTPURLResponse,
-            newRequest request: URLRequest,
-            completionHandler: @escaping (URLRequest?) -> Void
-        ) {
-            let follows = DiscoveryProbe.followsRedirect(from: task.originalRequest?.url, to: request.url)
-            completionHandler(follows ? request : nil)
-        }
-
-        func urlSession(
-            _ session: URLSession,
-            didReceive challenge: URLAuthenticationChallenge,
-            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-        ) {
-            if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-               let trust = challenge.protectionSpace.serverTrust {
-                completionHandler(.useCredential, URLCredential(trust: trust))
-                return
-            }
-            completionHandler(.performDefaultHandling, nil)
-        }
-    }
-
-    private let probeSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 2
-        config.timeoutIntervalForResource = 3
-        return URLSession(configuration: config, delegate: ProbeTLSDelegate(), delegateQueue: nil)
-    }()
 
     /// One record per host:port, written by versions before devices had several addresses.
     /// Read once to migrate, then left as it is, so going back to an earlier build still finds
@@ -176,6 +143,10 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     
     // Internal so a test can see which stores the app's catalog was built on.
     let defaults: UserDefaults
+    /// Where a scan looks: the network in the app, a stand-in in tests.
+    private let discovery: ScanDiscovery
+    /// Where a scan's start, end and cancellation are logged.
+    private let scanLog: ConnectionLogging
     let credentials: DeviceCredentialStore
     let trustStore: DeviceTrustStore
 
@@ -185,11 +156,15 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     init(
         defaults: UserDefaults = AppEnvironment.defaults,
         credentials: DeviceCredentialStore = AppEnvironment.makeCredentialStore(),
-        trustStore: DeviceTrustStore = .shared
+        trustStore: DeviceTrustStore = .shared,
+        discovery: ScanDiscovery = LiveScanDiscovery(),
+        scanLog: ConnectionLogging = clog
     ) {
         self.defaults = defaults
         self.credentials = credentials
         self.trustStore = trustStore
+        self.discovery = discovery
+        self.scanLog = scanLog
         super.init()
         setupNetworkMonitoring()
         loadPersistedDevices()
@@ -219,41 +194,26 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let pinnedDevices = availableDevices.filter { $0.id.hasPrefix("manual-") || $0.isSaved }
         availableDevices = pinnedDevices
 
-        let interfaces = Self.readIPv4Interfaces()
+        let interfaces = discovery.interfaces()
         let sweepHosts = LocalSweep.hosts(for: interfaces)
+        scanRanges = LocalSweep.ranges(for: interfaces).map(\.cidr)
         logScanStart(interfaces: interfaces)
         let started = Date()
+        let discovery = discovery
+        let scanLog = scanLog
 
-        // Start multiple discovery methods
+        // Bonjour, the sweep and the tailnet side by side. Cancelling this task cancels each of
+        // them: the Bonjour browsers stop, the sweep starts no new connect or probe, and probes in
+        // flight are cancelled with their requests.
         scanTask = Task { [weak self] in
-            guard let self else { return }
             await withTaskGroup(of: [KVMDevice].self) { group in
-                // GL.iNet Comet discovery
-                group.addTask {
-                    await self.discoverGLiNetDevices()
+                for type in Self.bonjourServiceTypes {
+                    group.addTask { await discovery.bonjour(type: type) }
                 }
-                
-                // Generic KVM discovery
-                group.addTask {
-                    await self.discoverGenericKVMDevices()
-                }
-                
-                // Network scan for known ports
-                group.addTask {
-                    await self.scanKnownPorts(hosts: sweepHosts)
-                }
+                group.addTask { await discovery.sweep(hosts: sweepHosts) }
+                group.addTask { await discovery.tailnet() }
 
-                // Tailscale network discovery
-                group.addTask {
-                    await self.discoverTailscaleDevices()
-                }
-                
-                // Collect results
                 var allDevices: [KVMDevice] = []
-                let pinnedDevices = await MainActor.run {
-                    self.availableDevices.filter { $0.id.hasPrefix("manual-") || $0.isSaved }
-                }
-
                 for await devices in group {
                     if Task.isCancelled {
                         group.cancelAll()
@@ -263,15 +223,15 @@ final class KVMDeviceManager: NSObject, ObservableObject {
 
                     let found = allDevices
                     await MainActor.run {
-                        guard self.scanGeneration == generation else { return }
+                        guard let self, self.scanGeneration == generation else { return }
                         self.availableDevices = Self.scanListing(pinned: pinnedDevices, found: found)
                     }
                 }
 
                 let found = allDevices
                 await MainActor.run {
-                    guard self.scanGeneration == generation else { return }
-                    Self.logScanEnd(found: found, pinned: pinnedDevices, elapsed: Date().timeIntervalSince(started))
+                    guard let self, self.scanGeneration == generation else { return }
+                    Self.logScanEnd(found: found, pinned: pinnedDevices, elapsed: Date().timeIntervalSince(started), log: scanLog)
                     self.finishScan()
                 }
             }
@@ -286,15 +246,25 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         }
     }
 
-    /// Stops a scan in progress. Probes already in flight finish on their own, but their results
-    /// are discarded and the device list keeps whatever it showed at the time of the call.
+    /// Stops a scan in progress: the Bonjour browsers, the sweep and its HTTP probes are
+    /// cancelled, and nothing they still return reaches the device list, which keeps what it
+    /// showed at the time of the call. A Scan straight after starts a scan of its own.
     func cancelScan() {
         if isScanning {
-            clog.info(.network, "Scan cancelled")
+            scanLog.info(.network, "Scan cancelled")
         }
         scanGeneration += 1
         scanTask?.cancel()
         finishScan()
+    }
+
+    /// Scan when idle, Cancel scan while scanning: what the Connections panel's button does.
+    func toggleScan() {
+        if isScanning {
+            cancelScan()
+        } else {
+            scanForDevices()
+        }
     }
 
     /// Logs what a scan is about to sweep, and at debug level the interfaces it leaves out.
@@ -302,21 +272,21 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let ranges = LocalSweep.ranges(for: interfaces)
         let bonjour = "browsing Bonjour \(Self.bonjourServiceTypes.joined(separator: ", "))"
         if ranges.isEmpty {
-            clog.info(.network, "Scan started: no Ethernet or Wi-Fi interface with a private IPv4 address, so no subnet is swept; \(bonjour)")
+            scanLog.info(.network, "Scan started: no Ethernet or Wi-Fi interface with a private IPv4 address, so no subnet is swept; \(bonjour)")
         } else {
             let swept = ranges.map { "\($0.cidr) (\($0.interface))" }.joined(separator: ", ")
             let ports = Self.sweptPorts.map(String.init).joined(separator: ", ")
-            clog.info(.network, "Scan started: sweeping \(swept) on ports \(ports); \(bonjour)")
+            scanLog.info(.network, "Scan started: sweeping \(swept) on ports \(ports); \(bonjour)")
         }
         let skipped = interfaces.filter { !LocalSweep.isSweepable($0) && !$0.isLoopback }
         if !skipped.isEmpty {
-            clog.debug(.network, "Scan leaves out " + skipped.map { "\($0.name) \($0.address)" }.joined(separator: ", "))
+            scanLog.debug(.network, "Scan leaves out " + skipped.map { "\($0.name) \($0.address)" }.joined(separator: ", "))
         }
     }
 
     /// Logs what a scan found, each host once, and which of them are already listed as a saved
     /// or added device.
-    nonisolated private static func logScanEnd(found: [KVMDevice], pinned: [KVMDevice], elapsed: TimeInterval) {
+    nonisolated private static func logScanEnd(found: [KVMDevice], pinned: [KVMDevice], elapsed: TimeInterval, log: ConnectionLogging) {
         let labels = DiscoveredMerge.merge(found).map { device -> String in
             var label = device.nickname.map { "\($0) (\(device.address.label))" } ?? device.address.label
             if let listedAs = DiscoveredMerge.listedAs(device, among: pinned) {
@@ -325,7 +295,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             return label
         }
         let seconds = String(format: "%.1f", elapsed)
-        clog.info(.network, labels.isEmpty
+        log.info(.network, labels.isEmpty
             ? "Scan finished in \(seconds) s: nothing found"
             : "Scan finished in \(seconds) s: found \(labels.joined(separator: ", "))")
     }
@@ -333,31 +303,25 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     private func finishScan() {
         scanTask = nil
         isScanning = false
+        scanRanges = []
         scanProgress = 1.0
         scanTimer?.invalidate()
         scanTimer = nil
     }
 
-    private func discoverGLiNetDevices() async -> [KVMDevice] {
-        await discoverBonjour(type: Self.bonjourServiceTypes[0]) { Self.createGLiNetDevice(from: $0, resolved: $1) }
-    }
-
-    private func discoverGenericKVMDevices() async -> [KVMDevice] {
-        await discoverBonjour(type: Self.bonjourServiceTypes[1]) { Self.createGenericKVMDevice(from: $0, resolved: $1) }
-    }
-
     /// The services of `type` that resolve to an address and answer there as a GLKVM, the same
     /// check a swept host goes through (`DiscoveryProbe`). Anything can advertise a Bonjour
     /// service, so the service type alone does not list a host.
-    private func discoverBonjour(
-        type: String,
-        makeDevice: @escaping (NWEndpoint, DeviceAddress) -> KVMDevice
-    ) async -> [KVMDevice] {
-        let endpoints = await Self.browseBonjour(type: type)
+    nonisolated static func discoverBonjour(type: String, session: URLSession) async -> [KVMDevice] {
+        let makeDevice: (NWEndpoint, DeviceAddress) -> KVMDevice = type == bonjourServiceTypes[0]
+            ? { createGLiNetDevice(from: $0, resolved: $1) }
+            : { createGenericKVMDevice(from: $0, resolved: $1) }
+        let endpoints = await browseBonjour(type: type)
         guard !Task.isCancelled else { return [] }
-        let resolved = await Self.resolveAll(endpoints)
-        let probe = DiscoveryHTTPProbe(session: probeSession)
-        let checked = await Self.checkBonjourServices(resolved, makeDevice: makeDevice) { address in
+        let resolved = await resolveAll(endpoints)
+        guard !Task.isCancelled else { return [] }
+        let probe = DiscoveryHTTPProbe(session: session)
+        let checked = await checkBonjourServices(resolved, makeDevice: makeDevice) { address in
             await probe.isGLKVM(host: address.host, port: address.port)
         }
         guard !Task.isCancelled else { return checked.listed }
@@ -421,41 +385,76 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return check
     }
 
-    /// Every service of `type` that Bonjour reports within `duration`, each once.
+    /// Every service of `type` that Bonjour reports within `duration`, each once. Cancelling the
+    /// calling task stops the browser at once and returns what it had found.
     nonisolated private static func browseBonjour(type: String, duration: TimeInterval = 5) async -> [NWEndpoint] {
-        actor EndpointCollector {
+        /// The browse's results and its one ending, by the deadline or by cancellation. Touched
+        /// from the browser's queue, the main queue and the cancelling thread, hence the lock.
+        final class Browse: @unchecked Sendable {
+            private let lock = NSLock()
             private var endpoints: [NWEndpoint] = []
+            private var continuation: CheckedContinuation<[NWEndpoint], Never>?
+            private var isFinished = false
+            let browser: NWBrowser
+
+            init(browser: NWBrowser) {
+                self.browser = browser
+            }
+
             func add(_ found: [NWEndpoint]) {
-                for endpoint in found where !endpoints.contains(endpoint) {
-                    endpoints.append(endpoint)
+                lock.withLock {
+                    for endpoint in found where !endpoints.contains(endpoint) {
+                        endpoints.append(endpoint)
+                    }
                 }
             }
-            func all() -> [NWEndpoint] {
-                endpoints
+
+            /// Called once, before `finish` can do anything.
+            func start(_ continuation: CheckedContinuation<[NWEndpoint], Never>) {
+                let finishedEarly = lock.withLock { () -> Bool in
+                    self.continuation = continuation
+                    return isFinished
+                }
+                if finishedEarly {
+                    browser.browseResultsChangedHandler = nil
+                    browser.cancel()
+                    continuation.resume(returning: [])
+                }
+            }
+
+            /// Stops the browser and resumes the caller with what was found; only the first call
+            /// does anything.
+            func finish() {
+                let (continuation, found) = lock.withLock { () -> (CheckedContinuation<[NWEndpoint], Never>?, [NWEndpoint]) in
+                    guard !isFinished else { return (nil, []) }
+                    isFinished = true
+                    let continuation = self.continuation
+                    self.continuation = nil
+                    return (continuation, endpoints)
+                }
+                guard let continuation else { return }
+                browser.browseResultsChangedHandler = nil
+                browser.cancel()
+                continuation.resume(returning: found)
             }
         }
 
-        let collector = EndpointCollector()
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: nil), using: .tcp)
-
-        return await withCheckedContinuation { continuation in
-            // Each call carries the whole current set, not just what changed.
-            browser.browseResultsChangedHandler = { results, _ in
-                let endpoints = results.map(\.endpoint)
-                Task {
-                    await collector.add(endpoints)
+        let browse = Browse(browser: browser)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // Each call carries the whole current set, not just what changed.
+                browser.browseResultsChangedHandler = { results, _ in
+                    browse.add(results.map(\.endpoint))
+                }
+                browse.start(continuation)
+                browser.start(queue: DispatchQueue(label: "com.overlook.bonjour.\(type)"))
+                DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+                    browse.finish()
                 }
             }
-
-            browser.start(queue: DispatchQueue(label: "com.overlook.bonjour.\(type)"))
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                Task {
-                    let endpoints = await collector.all()
-                    browser.cancel()
-                    continuation.resume(returning: endpoints)
-                }
-            }
+        } onCancel: {
+            browse.finish()
         }
     }
 
@@ -466,7 +465,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     ) async -> [(endpoint: NWEndpoint, address: DeviceAddress?)] {
         await withTaskGroup(of: (Int, DeviceAddress?).self) { group in
             for (index, endpoint) in endpoints.enumerated() {
-                group.addTask { (index, await resolve(endpoint)) }
+                group.addTask { (index, Task.isCancelled ? nil : await resolve(endpoint)) }
             }
             var addresses = [DeviceAddress?](repeating: nil, count: endpoints.count)
             for await (index, address) in group {
@@ -591,11 +590,10 @@ final class KVMDeviceManager: NSObject, ObservableObject {
 
     /// The /24 sweep, in `DiscoverySweep`'s two stages: a TCP connect to every swept host's
     /// ports, then HTTP probes on the ports that accepted.
-    private func scanKnownPorts(hosts: [String]) async -> [KVMDevice] {
+    nonisolated static func scanKnownPorts(hosts: [String], session: URLSession) async -> [KVMDevice] {
         guard !hosts.isEmpty else { return [] }
         let started = Date()
         let targets = DiscoverySweep.targets(hosts: hosts, ports: Self.sweptPorts)
-        let session = probeSession
         let outcome = await DiscoverySweep.run(
             targets: targets,
             connect: { target in
@@ -711,21 +709,21 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         }
     }
 
-    private func checkKVMService(host: String, port: Int) async -> KVMDevice? {
+    nonisolated private static func checkKVMService(host: String, port: Int, session: URLSession) async -> KVMDevice? {
         // A closed or absent port is rejected by one TCP probe in about a second; the HTTP probes
         // below would each wait out their own timeouts on it, several times over per target.
         guard await Self.probeTCPPortOpen(host: host, port: port, timeout: 1.0) else { return nil }
-        return await DiscoveryHTTPProbe(session: probeSession).identify(host: host, port: port)
+        return await DiscoveryHTTPProbe(session: session).identify(host: host, port: port)
     }
 
-    private func discoverTailscaleDevices() async -> [KVMDevice] {
+    nonisolated static func discoverTailscaleDevices(session: URLSession) async -> [KVMDevice] {
         var devices: [KVMDevice] = []
         
         // Check if Tailscale is available and discover devices on Tailscale network
         let tailscaleHosts = await getTailscaleHosts()
         
         for host in tailscaleHosts {
-            if let device = await checkTailscaleKVM(host: host) {
+            if let device = await checkTailscaleKVM(host: host, session: session) {
                 devices.append(device)
             }
         }
@@ -733,18 +731,18 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return devices
     }
     
-    private func getTailscaleHosts() async -> [String] {
+    nonisolated private static func getTailscaleHosts() async -> [String] {
         // Get Tailscale network hosts
         // This would typically involve calling tailscale API or parsing status output
         return []
     }
     
-    private func checkTailscaleKVM(host: String) async -> KVMDevice? {
+    nonisolated private static func checkTailscaleKVM(host: String, session: URLSession) async -> KVMDevice? {
         // Check common KVM ports on Tailscale hosts
         let ports = [8443, 8080, 443]
         
         for port in ports {
-            if let device = await checkKVMService(host: host, port: port) {
+            if let device = await checkKVMService(host: host, port: port, session: session) {
                 var tailscaleDevice = device
                 tailscaleDevice.type = .tailscale
                 return tailscaleDevice
@@ -1261,7 +1259,75 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         scanTask?.cancel()
         networkMonitor?.cancel()
         scanTimer?.invalidate()
-        deviceDiscoverySessions.forEach { $0.cancel() }
+    }
+}
+
+/// Where a scan looks for devices. `KVMDeviceManager` runs a scan through one of these: the app
+/// uses `LiveScanDiscovery`, and tests hand in a stand-in, so a scan can be started, cancelled and
+/// started again without touching the network.
+protocol ScanDiscovery: Sendable {
+    /// The Mac's IPv4 interfaces, which decide which networks the sweep covers.
+    func interfaces() -> [IPv4Interface]
+    /// The GLKVMs among the Bonjour services of `type` (one of `bonjourServiceTypes`).
+    func bonjour(type: String) async -> [KVMDevice]
+    /// The GLKVMs among `hosts`, swept on `sweptPorts`.
+    func sweep(hosts: [String]) async -> [KVMDevice]
+    /// The GLKVMs on the tailnet.
+    func tailnet() async -> [KVMDevice]
+}
+
+/// The network: Bonjour, the /24 sweep and the tailnet, each probed with `DiscoveryHTTPProbe`.
+struct LiveScanDiscovery: ScanDiscovery {
+    /// Discovery probes accept any certificate: they hit arbitrary LAN hosts, send no credentials,
+    /// and must not pin whatever those hosts present. Real connections go through DeviceTrustStore.
+    /// They follow a redirect only to the host they asked (`DiscoveryProbe.followsRedirect`).
+    private final class ProbeTLSDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            let follows = DiscoveryProbe.followsRedirect(from: task.originalRequest?.url, to: request.url)
+            completionHandler(follows ? request : nil)
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+               let trust = challenge.protectionSpace.serverTrust {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
+    static let probeSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 2
+        config.timeoutIntervalForResource = 3
+        return URLSession(configuration: config, delegate: ProbeTLSDelegate(), delegateQueue: nil)
+    }()
+
+    func interfaces() -> [IPv4Interface] {
+        KVMDeviceManager.readIPv4Interfaces()
+    }
+
+    func bonjour(type: String) async -> [KVMDevice] {
+        await KVMDeviceManager.discoverBonjour(type: type, session: Self.probeSession)
+    }
+
+    func sweep(hosts: [String]) async -> [KVMDevice] {
+        await KVMDeviceManager.scanKnownPorts(hosts: hosts, session: Self.probeSession)
+    }
+
+    func tailnet() async -> [KVMDevice] {
+        await KVMDeviceManager.discoverTailscaleDevices(session: Self.probeSession)
     }
 }
 
@@ -1504,12 +1570,15 @@ struct DiscoveryHTTPProbe: Sendable {
         if await answersAsKVMD(host: host, port: port) {
             return true
         }
+        // A cancelled scan stops here rather than asking for the page as well.
+        guard !Task.isCancelled else { return false }
         return await servesGLKVMPage(host: host, port: port)
     }
 
     func answersAsKVMD(host: String, port: Int) async -> Bool {
         for scheme in DiscoveryProbe.schemes(forPort: port) {
             for path in DiscoveryProbe.apiPaths {
+                guard !Task.isCancelled else { return false }
                 guard let answer = await get("\(scheme)://\(host):\(port)/\(path)", timeout: 3) else { continue }
                 if DiscoveryProbe.isKVMDAnswer(status: answer.status, body: answer.body) {
                     return true
@@ -1521,6 +1590,7 @@ struct DiscoveryHTTPProbe: Sendable {
 
     func servesGLKVMPage(host: String, port: Int) async -> Bool {
         for scheme in DiscoveryProbe.schemes(forPort: port) {
+            guard !Task.isCancelled else { return false }
             guard let answer = await get("\(scheme)://\(host):\(port)/", timeout: 2) else { continue }
             if DiscoveryProbe.isGLKVMPage(status: answer.status, body: answer.body) {
                 return true

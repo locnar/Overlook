@@ -1123,3 +1123,209 @@ struct BonjourCheckTests {
         var all: [DeviceAddress] { lock.withLock { addresses } }
     }
 }
+
+/// Stands in for the network under a scan: each source answers as the test says, and a source
+/// told to hang waits until the scan is cancelled, noting that it was.
+final class FakeScanDiscovery: ScanDiscovery, @unchecked Sendable {
+    typealias Source = @Sendable () async -> [KVMDevice]
+
+    private let lock = NSLock()
+    private var sources: [String: Source] = [:]
+    private var _cancelled: [String] = []
+    private var _sweptHosts: [[String]] = []
+    private var _entered: [String] = []
+    let interfaceList: [IPv4Interface]
+
+    init(interfaces: [IPv4Interface]) {
+        interfaceList = interfaces
+    }
+
+    /// What the source named `name` ("_comet._tcp", "_kvm._tcp", "sweep", "tailnet") returns;
+    /// nothing until set.
+    func answer(_ name: String, with source: @escaping Source) {
+        lock.withLock { sources[name] = source }
+    }
+
+    /// The source waits for the scan to be cancelled, notes it, and then returns `late`, which
+    /// must never reach the list.
+    func hang(_ name: String, thenReturn late: [KVMDevice] = []) {
+        answer(name) { [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            if Task.isCancelled {
+                self?.lock.withLock { self?._cancelled.append(name) }
+            }
+            return late
+        }
+    }
+
+    var cancelled: [String] { lock.withLock { _cancelled } }
+    var sweptHosts: [[String]] { lock.withLock { _sweptHosts } }
+    /// The sources a scan has called, in the order it called them.
+    var entered: [String] { lock.withLock { _entered } }
+
+    private func run(_ name: String) async -> [KVMDevice] {
+        let source = lock.withLock {
+            _entered.append(name)
+            return sources[name]
+        }
+        return await source?() ?? []
+    }
+
+    func interfaces() -> [IPv4Interface] { interfaceList }
+    func bonjour(type: String) async -> [KVMDevice] { await run(type) }
+    func sweep(hosts: [String]) async -> [KVMDevice] {
+        lock.withLock { _sweptHosts.append(hosts) }
+        return await run("sweep")
+    }
+    func tailnet() async -> [KVMDevice] { await run("tailnet") }
+}
+
+/// The Connections panel's Scan / Cancel scan button and its caption.
+@Suite("Scan row")
+struct ScanRowStateTests {
+    @Test func idleShowsScanAndNoCaption() {
+        let row = ScanRowState(isScanning: false, ranges: [])
+        #expect(row.buttonTitle == "Scan")
+        #expect(row.isButtonEnabled)
+        #expect(row.caption == nil)
+        // Ranges left over from anywhere never show while idle.
+        #expect(ScanRowState(isScanning: false, ranges: ["192.168.0.0/24"]).caption == nil)
+    }
+
+    @Test func scanningShowsCancelScanAndTheSweptRange() {
+        let row = ScanRowState(isScanning: true, ranges: ["192.168.0.0/24"])
+        #expect(row.buttonTitle == "Cancel scan")
+        #expect(row.isButtonEnabled)
+        #expect(row.caption == "Scanning 192.168.0.0/24…")
+    }
+
+    @Test func everySweptRangeIsNamed() {
+        let row = ScanRowState(isScanning: true, ranges: ["192.168.0.0/24", "10.0.5.0/24"])
+        #expect(row.caption == "Scanning 192.168.0.0/24, 10.0.5.0/24…")
+    }
+
+    @Test func withNoNetworkToSweepTheCaptionSaysBonjourOnly() {
+        #expect(ScanRowState(isScanning: true, ranges: []).caption == "Scanning Bonjour services only…")
+    }
+
+    @Test func theButtonIsSizedForTheWiderLabel() {
+        // The view lays out both labels at once; the wider must be the one shown while scanning.
+        #expect(ScanRowState.cancelTitle.count > ScanRowState.scanTitle.count)
+        #expect([ScanRowState.scanTitle, ScanRowState.cancelTitle] == ["Scan", "Cancel scan"])
+    }
+}
+
+/// Starting, cancelling and restarting a scan through the catalog, with the network stood in for.
+@MainActor
+@Suite("Scan cancel")
+struct ScanCancelTests {
+    let scratch = ScratchDefaults()
+    let log = RecordingConnectionLog()
+    let discovery = FakeScanDiscovery(interfaces: [
+        IPv4Interface(name: "en0", address: "192.168.0.42", netmask: "255.255.255.0"),
+        IPv4Interface(name: "utun3", address: "100.101.102.103", netmask: "255.255.255.255", isPointToPoint: true),
+    ])
+    let catalog: KVMDeviceManager
+
+    nonisolated static let linux = Fixtures.device(id: "scanned-192.168.0.131-443", nickname: nil, host: "192.168.0.131")
+    nonisolated static let surface = Fixtures.device(id: "scanned-192.168.0.114-443", nickname: nil, host: "192.168.0.114")
+    nonisolated static let late = Fixtures.device(id: "scanned-192.168.0.99-443", nickname: nil, host: "192.168.0.99")
+
+    init() {
+        catalog = KVMDeviceManager(
+            defaults: scratch.defaults,
+            credentials: FakeCredentialStore(),
+            trustStore: Fixtures.trustStore(scratch),
+            discovery: discovery,
+            scanLog: log
+        )
+    }
+
+    private var listedHosts: Set<String> { Set(catalog.availableDevices.map(\.host)) }
+
+    @Test func aScanShowsTheRangeItSweeps() async {
+        discovery.hang("sweep")
+        catalog.scanForDevices()
+
+        #expect(catalog.isScanning)
+        #expect(catalog.scanRanges == ["192.168.0.0/24"])
+        let row = ScanRowState(isScanning: catalog.isScanning, ranges: catalog.scanRanges)
+        #expect(row.buttonTitle == "Cancel scan")
+        #expect(row.caption == "Scanning 192.168.0.0/24…")
+        #expect(log.messages.contains { $0.hasPrefix("Scan started: sweeping 192.168.0.0/24 (en0)") })
+        // The caption names what the sweep is given: the /24 around en0, less the Mac's own address.
+        #expect(await waitUntil { discovery.sweptHosts.count == 1 })
+        #expect(discovery.sweptHosts.first?.count == 253)
+        #expect(discovery.sweptHosts.first?.contains("192.168.0.42") == false)
+
+        catalog.cancelScan()
+    }
+
+    @Test func cancelStopsEverySourceAndKeepsWhatWasFound() async {
+        discovery.answer("_comet._tcp") { [Self.linux] }
+        discovery.hang("_kvm._tcp", thenReturn: [Self.late])
+        discovery.hang("sweep", thenReturn: [Self.late])
+        discovery.hang("tailnet", thenReturn: [Self.late])
+
+        catalog.toggleScan()
+        #expect(await waitUntil { listedHosts.contains("192.168.0.131") })
+
+        catalog.toggleScan()
+
+        #expect(catalog.isScanning == false)
+        #expect(catalog.scanRanges.isEmpty)
+        #expect(ScanRowState(isScanning: catalog.isScanning, ranges: catalog.scanRanges) == ScanRowState(isScanning: false, ranges: []))
+        #expect(listedHosts == ["192.168.0.131"])
+        #expect(log.messages.filter { $0 == "Scan cancelled" }.count == 1)
+        // The Bonjour browse still running, the sweep and the tailnet all see the cancellation.
+        #expect(await waitUntil { Set(discovery.cancelled) == ["_kvm._tcp", "sweep", "tailnet"] })
+        // What they return after it never reaches the list, and the scan never logs an end.
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(listedHosts == ["192.168.0.131"])
+        #expect(!log.messages.contains { $0.hasPrefix("Scan finished") })
+    }
+
+    @Test func scanAfterACancelStartsACleanScan() async {
+        discovery.hang("_comet._tcp", thenReturn: [Self.late])
+        discovery.hang("_kvm._tcp", thenReturn: [Self.late])
+        discovery.hang("sweep", thenReturn: [Self.late])
+        discovery.hang("tailnet", thenReturn: [Self.late])
+        catalog.scanForDevices()
+        #expect(await waitUntil { discovery.entered.count == 4 })
+        catalog.cancelScan()
+
+        discovery.answer("_comet._tcp") { [Self.linux] }
+        discovery.answer("_kvm._tcp") { [] }
+        discovery.answer("sweep") { [Self.linux, Self.surface] }
+        discovery.answer("tailnet") { [] }
+        catalog.toggleScan()
+
+        #expect(catalog.isScanning)
+        #expect(catalog.scanRanges == ["192.168.0.0/24"])
+        #expect(await waitUntil { catalog.isScanning == false })
+        #expect(listedHosts == ["192.168.0.131", "192.168.0.114"])
+        #expect(catalog.scanRanges.isEmpty)
+        #expect(discovery.sweptHosts.count == 2)
+        #expect(log.messages.filter { $0.hasPrefix("Scan started") }.count == 2)
+        #expect(log.messages.filter { $0 == "Scan cancelled" }.count == 1)
+        #expect(log.messages.contains { $0.hasPrefix("Scan finished") && $0.contains("192.168.0.131") && $0.contains("192.168.0.114") })
+        // The first scan's sources return their late results once cancelled; none lands.
+        #expect(await waitUntil { discovery.cancelled.count == 4 })
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(!listedHosts.contains("192.168.0.99"))
+    }
+
+    @Test func savedDevicesStayListedThroughACancel() async {
+        let saved = catalog.persistDevice(Fixtures.device(id: "manual-x", nickname: "Linux KVM", host: "192.168.0.131"))
+        discovery.hang("sweep")
+        catalog.scanForDevices()
+        catalog.cancelScan()
+        #expect(catalog.availableDevices.map(\.id) == [saved.id])
+    }
+
+    @Test func cancelWithNoScanRunningLogsNothing() {
+        catalog.cancelScan()
+        #expect(catalog.isScanning == false)
+        #expect(log.messages.isEmpty)
+    }
+}

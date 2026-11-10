@@ -328,13 +328,13 @@ struct ContentView: View {
                         selection: $selectedAddress,
                         selectedDevice: selectedDevice,
                         isConnected: isConnected,
-                        isScanning: kvmDeviceManager.isScanning,
+                        scanRow: ScanRowState(isScanning: kvmDeviceManager.isScanning, ranges: kvmDeviceManager.scanRanges),
                         devices: kvmDeviceManager.availableDevices,
                         connectedDeviceName: connection.connectedDevice?.displayName,
                         connectedVia: connection.connectedDevice?.address,
                         videoSize: webRTCManager.videoSize,
                         onScan: {
-                            kvmDeviceManager.scanForDevices()
+                            kvmDeviceManager.toggleScan()
                         },
                         onManualConnect: {
                             showingManualConnect = true
@@ -1093,6 +1093,30 @@ private struct WindowTitleSetter: NSViewRepresentable {
     }
 }
 
+/// The Connections panel's scan row, worked out from the catalog's scan state: the button's label
+/// and whether it can be pressed, and the caption under the row.
+struct ScanRowState: Equatable {
+    static let scanTitle = "Scan"
+    static let cancelTitle = "Cancel scan"
+
+    let isScanning: Bool
+    /// The networks the scan sweeps, as its start is logged (`KVMDeviceManager.scanRanges`).
+    let ranges: [String]
+
+    /// Scan while idle; Cancel scan while scanning, which stops the scan.
+    var buttonTitle: String { isScanning ? Self.cancelTitle : Self.scanTitle }
+
+    /// Pressable in both states: Scan starts a scan, Cancel scan stops it.
+    var isButtonEnabled: Bool { true }
+
+    /// What is being scanned, while a scan runs; nil when idle.
+    var caption: String? {
+        guard isScanning else { return nil }
+        guard !ranges.isEmpty else { return "Scanning Bonjour services only…" }
+        return "Scanning \(ranges.joined(separator: ", "))…"
+    }
+}
+
 struct ConnectionsPopoverView: View {
     /// The chosen device, by address rather than as the list entry itself. Connecting saves a
     /// device under a new id (`manual-…` or `scanned-…` becomes `saved-…`) and re-sorts the list;
@@ -1103,7 +1127,8 @@ struct ConnectionsPopoverView: View {
     let selectedDevice: KVMDevice?
 
     let isConnected: Bool
-    let isScanning: Bool
+    /// The Scan / Cancel scan button and the caption under it.
+    let scanRow: ScanRowState
     let devices: [KVMDevice]
     let connectedDeviceName: String?
     /// The address the session is connected through.
@@ -1114,6 +1139,7 @@ struct ConnectionsPopoverView: View {
     /// does not re-evaluate on every tick.
     let videoSize: CGSize?
 
+    /// Scan when idle, Cancel scan while scanning.
     let onScan: () -> Void
     let onManualConnect: () -> Void
     let onToggleConnection: () -> Void
@@ -1184,17 +1210,38 @@ struct ConnectionsPopoverView: View {
             Divider()
 
             // Ways to add devices to the list.
-            HStack {
-                Button("Scan") { onScan() }
-                    .disabled(isScanning)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Button { onScan() } label: {
+                        // Both labels are always laid out, so the button is as wide as the wider
+                        // one ("Cancel scan") in both states and nothing beside it moves; only
+                        // the active one is visible, and only it is read out.
+                        ZStack {
+                            Text(ScanRowState.scanTitle)
+                                .opacity(scanRow.isScanning ? 0 : 1)
+                                .accessibilityHidden(scanRow.isScanning)
+                            Text(ScanRowState.cancelTitle)
+                                .opacity(scanRow.isScanning ? 1 : 0)
+                                .accessibilityHidden(!scanRow.isScanning)
+                        }
+                    }
+                    .accessibilityLabel(scanRow.buttonTitle)
+                    .disabled(!scanRow.isButtonEnabled)
 
-                Button("Manual Connect…") { onManualConnect() }
+                    Button("Manual Connect…") { onManualConnect() }
 
-                Spacer()
+                    Spacer()
 
-                if isScanning {
-                    ProgressView()
-                        .controlSize(.small)
+                    if scanRow.isScanning {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                if let caption = scanRow.caption {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
 
