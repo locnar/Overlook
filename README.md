@@ -52,7 +52,7 @@ These stats are surfaced in the window title, which makes diagnosing latency iss
 
 The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it matters:
 
-- **Video quality presets** (Low/Medium/High/Ultra-high/Insane/Custom).
+- **Video quality presets** (Low/Medium/High/Ultra-high/Lossless/Custom).
 - **EDID** selection and custom EDID entry.
 - Audio + microphone toggles (reconnect required).
 
@@ -409,8 +409,10 @@ Overlook’s settings UI lives in `Overlook/WebUISettingsPanel.swift` and is des
   - Medium: `h264_bitrate=2000`, `h264_gop=30`, `stream_quality=1`
   - High: `h264_bitrate=5000`, `h264_gop=60`, `stream_quality=2`
   - Ultra-high: `h264_bitrate=8000`, `h264_gop=60`, `stream_quality=3`
-  - Insane: `quality=100`, `h264_bitrate=20000`, `h264_gop=60`, `stream_quality=3`
+  - Lossless: `h264_bitrate=20000`, `h264_gop=60`, `stream_quality=4`
   - Custom: unlocks the advanced streamer controls
+  - When the device's current EDID is the 4K preset, every preset sends half the GOP (30 → 15, 60 → 30), as the GLKVM web UI does. The bitrate is unchanged.
+  - A device whose stored `stream_quality` is the web UI's Auto (5) shows Custom; Overlook does not offer Auto.
 
 - **EDID**:
   - Pick from known-good EDID presets.
@@ -464,7 +466,7 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
 
 - Increase stream quality (higher bitrate helps OCR).
 - Make the text larger on the remote side.
-- Avoid heavy compression artifacts (try High/Ultra-high/Insane).
+- Avoid heavy compression artifacts (try High/Ultra-high/Lossless).
 
 ### “In relative mode the cursor drifts, stalls, or moves the wrong way”
 

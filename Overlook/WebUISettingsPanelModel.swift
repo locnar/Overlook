@@ -31,9 +31,9 @@ final class WebUISettingsPanelModel: ObservableObject {
     }
 
     /// Tag of the "Custom" entry in the video quality picker (i.e. "use the streamer fields").
-    static let videoQualityCustomTag: Int = -1
-    /// Tag of the "Insane" preset, which is a preset the device config itself cannot represent.
-    static let videoQualityInsaneTag: Int = 4
+    nonisolated static let videoQualityCustomTag: Int = -1
+    /// Tag of the "Lossless" preset: its `stream_quality` value, 4.
+    nonisolated static let videoQualityLosslessTag: Int = QualityPreset.lossless.rawValue
 
     // Loaded remote state.
     @Published var config: GLKVMSystemConfig?

@@ -45,11 +45,9 @@ struct VideoSettingsSection: View {
                 }
 
                 Picker("Quality", selection: $model.selectedVideoQualityPreset) {
-                    Text("Low").tag(0)
-                    Text("Medium").tag(1)
-                    Text("High").tag(2)
-                    Text("Ultra-high").tag(3)
-                    Text("Insane").tag(WebUISettingsPanelModel.videoQualityInsaneTag)
+                    ForEach(QualityPreset.allCases, id: \.rawValue) { preset in
+                        Text(preset.label).tag(preset.rawValue)
+                    }
                     Text("Custom").tag(WebUISettingsPanelModel.videoQualityCustomTag)
                 }
                 .disabled(connection.glkvmClient == nil || model.isLoading || model.isApplying || model.isApplyingStreamer || model.isApplyingEdid)

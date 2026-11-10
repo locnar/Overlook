@@ -33,6 +33,7 @@
 		01000023 /* StreamTelemetryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000025 /* StreamTelemetryViews.swift */; };
 		01000024 /* EDIDCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000026 /* EDIDCatalog.swift */; };
 		01000025 /* WebUISettingsPanelModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000027 /* WebUISettingsPanelModel.swift */; };
+		01000130 /* QualityPreset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000130 /* QualityPreset.swift */; };
 		01000026 /* WebUISettingsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000028 /* WebUISettingsSections.swift */; };
 		01000027 /* WebUISettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000029 /* WebUISettingsActions.swift */; };
 		01000028 /* DevicePasswordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200002A /* DevicePasswordStore.swift */; };
@@ -92,6 +93,7 @@
 		01000124 /* InterceptedChordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000124 /* InterceptedChordTests.swift */; };
 		01000123 /* KeyCodeTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000123 /* KeyCodeTableTests.swift */; };
 		01000122 /* AudioDeviceSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000122 /* AudioDeviceSetupTests.swift */; };
+		01000131 /* QualityPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000131 /* QualityPresetTests.swift */; };
 		01000041 /* DiscoveryRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000041 /* DiscoveryRules.swift */; };
 		01000042 /* JanusSignaling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000043 /* JanusSignaling.swift */; };
 		01000043 /* VideoFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000044 /* VideoFrames.swift */; };
@@ -153,6 +155,7 @@
 		02000025 /* StreamTelemetryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamTelemetryViews.swift; sourceTree = "<group>"; };
 		02000026 /* EDIDCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EDIDCatalog.swift; sourceTree = "<group>"; };
 		02000027 /* WebUISettingsPanelModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsPanelModel.swift; sourceTree = "<group>"; };
+		02000130 /* QualityPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QualityPreset.swift; sourceTree = "<group>"; };
 		02000028 /* WebUISettingsSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsSections.swift; sourceTree = "<group>"; };
 		02000029 /* WebUISettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsActions.swift; sourceTree = "<group>"; };
 		0200002A /* DevicePasswordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePasswordStore.swift; sourceTree = "<group>"; };
@@ -216,6 +219,7 @@
 		02000124 /* InterceptedChordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterceptedChordTests.swift; sourceTree = "<group>"; };
 		02000123 /* KeyCodeTableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCodeTableTests.swift; sourceTree = "<group>"; };
 		02000122 /* AudioDeviceSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceSetupTests.swift; sourceTree = "<group>"; };
+		02000131 /* QualityPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QualityPresetTests.swift; sourceTree = "<group>"; };
 		02000041 /* DiscoveryRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryRules.swift; sourceTree = "<group>"; };
 		02000043 /* JanusSignaling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignaling.swift; sourceTree = "<group>"; };
 		02000044 /* VideoFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrames.swift; sourceTree = "<group>"; };
@@ -281,6 +285,7 @@
 				02000025 /* StreamTelemetryViews.swift */,
 				02000026 /* EDIDCatalog.swift */,
 				02000027 /* WebUISettingsPanelModel.swift */,
+				02000130 /* QualityPreset.swift */,
 				02000028 /* WebUISettingsSections.swift */,
 				02000029 /* WebUISettingsActions.swift */,
 				02000015 /* GLKVMClient.swift */,
@@ -381,6 +386,7 @@
 				0200012C /* MacPreferencesTests.swift */,
 				02000123 /* KeyCodeTableTests.swift */,
 				02000122 /* AudioDeviceSetupTests.swift */,
+				02000131 /* QualityPresetTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
 				02000110 /* StatusMenuTests.swift */,
 				0200010F /* ConnectionLogTaggingTests.swift */,
@@ -522,6 +528,7 @@
 				01000023 /* StreamTelemetryViews.swift in Sources */,
 				01000024 /* EDIDCatalog.swift in Sources */,
 				01000025 /* WebUISettingsPanelModel.swift in Sources */,
+				01000130 /* QualityPreset.swift in Sources */,
 				01000026 /* WebUISettingsSections.swift in Sources */,
 				01000027 /* WebUISettingsActions.swift in Sources */,
 				01000018 /* OCRViews.swift in Sources */,
@@ -618,6 +625,7 @@
 				0100012C /* MacPreferencesTests.swift in Sources */,
 				01000123 /* KeyCodeTableTests.swift in Sources */,
 				01000122 /* AudioDeviceSetupTests.swift in Sources */,
+				01000131 /* QualityPresetTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,
 				01000110 /* StatusMenuTests.swift in Sources */,
 				0100010F /* ConnectionLogTaggingTests.swift in Sources */,

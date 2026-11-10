@@ -77,16 +77,7 @@ extension WebUISettingsActions {
                 model.streamerState = st
                 model.currentEdid = edidValue
                 syncEdidSelectionFromCurrent()
-                if let params = st.params,
-                   params.h264Bitrate == 20000,
-                   params.h264Gop == 60,
-                   params.quality == 100 {
-                    model.selectedVideoQualityPreset = WebUISettingsPanelModel.videoQualityInsaneTag
-                } else if (0...3).contains(loadedConfig.streamQuality) {
-                    model.selectedVideoQualityPreset = loadedConfig.streamQuality
-                } else {
-                    model.selectedVideoQualityPreset = WebUISettingsPanelModel.videoQualityCustomTag
-                }
+                model.selectedVideoQualityPreset = Self.videoQualityPresetTag(forStreamQuality: loadedConfig.streamQuality)
                 syncStreamerDraft(from: st)
                 model.isLoading = false
             }
@@ -162,32 +153,24 @@ extension WebUISettingsActions {
 
     // MARK: - Video quality presets
 
-    func applyVideoQualityPreset(_ preset: Int) async {
-        guard preset != WebUISettingsPanelModel.videoQualityCustomTag else { return }
+    /// The Quality picker entry for a stored `stream_quality`: the preset with that value, or
+    /// Custom for any other value (Auto, 5, among them).
+    nonisolated static func videoQualityPresetTag(forStreamQuality streamQuality: Int) -> Int {
+        QualityPreset(rawValue: streamQuality)?.rawValue ?? WebUISettingsPanelModel.videoQualityCustomTag
+    }
+
+    /// Whether the device's current EDID, as last read from it, is a 4K catalog entry. False
+    /// while the EDID is not loaded yet.
+    var isCurrentEdid4K: Bool {
+        QualityPreset.is4K(edidCatalogID: currentEdidCatalogID)
+    }
+
+    func applyVideoQualityPreset(_ tag: Int) async {
+        guard tag != WebUISettingsPanelModel.videoQualityCustomTag else { return }
         guard let client = connection.glkvmClient else { return }
+        guard let preset = QualityPreset(rawValue: tag) else { return }
 
-        var params: [String: String] = [:]
-        var streamQuality: Int? = nil
-
-        switch preset {
-        case 0:
-            params = ["h264_bitrate": "500", "h264_gop": "30"]
-            streamQuality = 0
-        case 1:
-            params = ["h264_bitrate": "2000", "h264_gop": "30"]
-            streamQuality = 1
-        case 2:
-            params = ["h264_bitrate": "5000", "h264_gop": "60"]
-            streamQuality = 2
-        case 3:
-            params = ["h264_bitrate": "8000", "h264_gop": "60"]
-            streamQuality = 3
-        case WebUISettingsPanelModel.videoQualityInsaneTag:
-            params = ["quality": "100", "h264_bitrate": "20000", "h264_gop": "60"]
-            streamQuality = 3
-        default:
-            return
-        }
+        let params = QualityPreset.params(for: preset, is4K: isCurrentEdid4K)
 
         await MainActor.run {
             model.isApplyingStreamer = true
@@ -209,9 +192,7 @@ extension WebUISettingsActions {
 
         await MainActor.run {
             model.isApplyingStreamer = false
-            if let streamQuality {
-                updateConfig { $0.streamQuality = streamQuality }
-            }
+            updateConfig { $0.streamQuality = preset.streamQuality }
         }
     }
 
@@ -222,6 +203,17 @@ extension WebUISettingsActions {
             .components(separatedBy: .whitespacesAndNewlines)
             .joined()
             .lowercased()
+    }
+
+    /// The catalog id of the entry whose bytes are the device's current EDID (`currentEdid`, as
+    /// last read from the device); nil when that is not loaded yet or matches no entry.
+    var currentEdidCatalogID: String? {
+        let normalizedCurrent = normalizedEdid(model.currentEdid)
+        guard !normalizedCurrent.isEmpty else { return nil }
+        return EDIDCatalog.options.first(where: { opt in
+            guard let edid = EDIDCatalog.resolvedEdid(for: opt) else { return false }
+            return normalizedEdid(edid) == normalizedCurrent
+        })?.id
     }
 
     func syncEdidSelectionFromCurrent() {
@@ -240,11 +232,8 @@ extension WebUISettingsActions {
             return
         }
 
-        if let match = EDIDCatalog.options.first(where: { opt in
-            guard let edid = EDIDCatalog.resolvedEdid(for: opt) else { return false }
-            return normalizedEdid(edid) == normalizedCurrent
-        }) {
-            model.selectedEdidOption = match.id
+        if let matchID = currentEdidCatalogID {
+            model.selectedEdidOption = matchID
             model.customEdidDraft = model.currentEdid
             return
         }
