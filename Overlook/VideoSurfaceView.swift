@@ -12,6 +12,7 @@ struct VideoSurfaceView: View {
     @EnvironmentObject var inputManager: InputManager
     @EnvironmentObject var ocrManager: OCRManager
     @EnvironmentObject var captureManager: CaptureManager
+    @EnvironmentObject var ocrSnippet: OCRSnippet
 
     @Binding var isOCRModeEnabled: Bool
     @Binding var selectedText: String
@@ -25,6 +26,27 @@ struct VideoSurfaceView: View {
 
     @State private var regionDragStart: CGPoint?
     @State private var regionDragCurrent: CGPoint?
+
+    /// What a drag on the video is for while one of the two box-drawing tools is up. Both use the
+    /// same overlay, rubber band and Esc handling, and both pause input to the target.
+    private enum BoxSelection: Hashable {
+        /// The capture region for screenshots and recordings.
+        case captureRegion
+        /// The OCR snippet: the text in the box goes on the clipboard.
+        case textSnippet
+    }
+
+    private var boxSelection: BoxSelection? {
+        if ocrSnippet.isSelecting { return .textSnippet }
+        if captureManager.isSelectingRegion { return .captureRegion }
+        return nil
+    }
+
+    /// Mouse, buttons and scrolling over the video go to the target only while nothing else
+    /// has the pointer: not in OCR mode, and not while a box is being drawn.
+    private var isPointerForTarget: Bool {
+        !isOCRModeEnabled && boxSelection == nil
+    }
 
     private var ocrSelectionRect: CGRect? {
         guard let start = ocrDragStart, let current = ocrDragCurrent else { return nil }
@@ -45,7 +67,7 @@ struct VideoSurfaceView: View {
                     VideoViewRepresentable(
                         videoView: videoView,
                         onMouseMove: { pointInView, deltaInView in
-                            guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
+                            guard isPointerForTarget else { return }
                             inputManager.handleVideoMouseMove(
                                 pointInView: pointInView,
                                 deltaInView: deltaInView,
@@ -54,7 +76,7 @@ struct VideoSurfaceView: View {
                             )
                         },
                         onMouseButton: { button, isDown, pointInView in
-                            guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
+                            guard isPointerForTarget else { return }
                             inputManager.handleVideoMouseButton(
                                 button: button,
                                 isDown: isDown,
@@ -64,7 +86,7 @@ struct VideoSurfaceView: View {
                             )
                         },
                         onScrollWheel: { input in
-                            guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
+                            guard isPointerForTarget else { return }
                             inputManager.handleVideoMouseScroll(input)
                         }
                     )
@@ -80,7 +102,7 @@ struct VideoSurfaceView: View {
 
                 if let region = captureManager.captureRegion,
                    captureManager.showsRegionOutline,
-                   !captureManager.isSelectingRegion {
+                   boxSelection == nil {
                     CaptureRegionOutline(rectInView: regionRectInView(region, viewSize: geometry.size))
                 }
 
@@ -93,23 +115,28 @@ struct VideoSurfaceView: View {
                     )
                 }
 
-                if captureManager.isSelectingRegion {
+                if let selection = boxSelection {
                     let selectionRect = regionSelectionRectInView(viewSize: geometry.size)
                     CaptureRegionSelectionOverlay(
                         selectionRectInView: selectionRect,
-                        sizeText: selectionRect.flatMap { rect -> String? in
+                        sizeText: selection == .captureRegion ? selectionRect.flatMap { rect -> String? in
                             guard let videoSize = currentVideoSize() else { return nil }
                             return CaptureRegionGeometry.sizeText(
                                 for: normalizedRegion(forViewRect: rect, viewSize: geometry.size),
                                 in: videoSize
                             )
-                        },
+                        } : nil,
                         viewSize: geometry.size,
-                        onCancel: { captureManager.cancelRegionSelection() }
+                        hint: selection == .captureRegion
+                            ? .captureRegion
+                            : .textSnippet,
+                        onCancel: { cancelBoxSelection(selection) }
                     )
+                    // A new overlay per tool, so its Esc monitor cancels the tool that is up.
+                    .id(selection)
 
                     // Same arrangement as OCR mode below: a clear layer over the video view takes
-                    // the drag. Input capture is paused by ContentView while this is up, so the
+                    // the drag. Input capture is paused by the session while this is up, so the
                     // target sees none of it.
                     Color.clear
                         .contentShape(Rectangle())
@@ -127,19 +154,32 @@ struct VideoSurfaceView: View {
                                     }
                                     regionDragCurrent = value.location
                                     NSCursor.crosshair.set()
+                                    if selection == .textSnippet {
+                                        ocrSnippet.dragDidChange()
+                                    }
                                 }
                                 .onEnded { _ in
                                     defer {
                                         regionDragStart = nil
                                         regionDragCurrent = nil
                                     }
-                                    // A click or a tiny drag is not a region; stay in selection mode.
-                                    guard let rect = regionSelectionRectInView(viewSize: geometry.size),
-                                          rect.width >= 4, rect.height >= 4 else { return }
-                                    captureManager.setCaptureRegion(
-                                        normalizedRegion(forViewRect: rect, viewSize: geometry.size),
-                                        videoSize: currentVideoSize()
-                                    )
+                                    let rect = regionSelectionRectInView(viewSize: geometry.size)
+                                    switch selection {
+                                    case .captureRegion:
+                                        // A click or a tiny drag is not a region; stay in selection mode.
+                                        guard let rect, rect.width >= 4, rect.height >= 4 else { return }
+                                        captureManager.setCaptureRegion(
+                                            normalizedRegion(forViewRect: rect, viewSize: geometry.size),
+                                            videoSize: currentVideoSize()
+                                        )
+                                    case .textSnippet:
+                                        // The snippet ends here either way: a box too small to
+                                        // read (a click included) ends it quietly.
+                                        ocrSnippet.release(
+                                            region: rect.map { normalizedRegion(forViewRect: $0, viewSize: geometry.size) },
+                                            videoSize: currentVideoSize()
+                                        )
+                                    }
                                 }
                         )
                 }
@@ -221,11 +261,12 @@ struct VideoSurfaceView: View {
         .onChange(of: isOCRModeEnabled) { _, enabled in
             setOCRMode(enabled)
         }
-        .onChange(of: captureManager.isSelectingRegion) { _, selecting in
-            guard !selecting else { return }
+        .onChange(of: boxSelection) { _, selection in
             regionDragStart = nil
             regionDragCurrent = nil
-            NSCursor.arrow.set()
+            if selection == nil {
+                NSCursor.arrow.set()
+            }
         }
         .onAppear {
             setOCRMode(isOCRModeEnabled)
@@ -274,39 +315,27 @@ struct VideoSurfaceView: View {
 
     // MARK: Capture region geometry
 
+    private func cancelBoxSelection(_ selection: BoxSelection) {
+        switch selection {
+        case .captureRegion: captureManager.cancelRegionSelection()
+        case .textSnippet: ocrSnippet.cancel()
+        }
+    }
+
     /// The letterboxed rect the video occupies; the whole view until the stream's size is known.
     private func videoContentRect(viewSize: CGSize) -> CGRect {
-        guard viewSize.width > 0, viewSize.height > 0 else { return .zero }
-        guard let videoSize = currentVideoSize() else { return CGRect(origin: .zero, size: viewSize) }
-        return inputManager.videoContentRect(viewSize: viewSize, videoSize: videoSize)
+        VideoSelectionGeometry.contentRect(viewSize: viewSize, videoSize: currentVideoSize())
     }
 
     /// The rubber band in view points, clamped to the video so the black bars cannot be selected.
     private func regionSelectionRectInView(viewSize: CGSize) -> CGRect? {
         guard let start = regionDragStart, let current = regionDragCurrent else { return nil }
-        let content = videoContentRect(viewSize: viewSize)
-        guard content.width > 0, content.height > 0 else { return nil }
-        func clamp(_ point: CGPoint) -> CGPoint {
-            CGPoint(
-                x: min(max(point.x, content.minX), content.maxX),
-                y: min(max(point.y, content.minY), content.maxY)
-            )
-        }
-        let a = clamp(start)
-        let b = clamp(current)
-        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+        return VideoSelectionGeometry.selectionRect(from: start, to: current, viewSize: viewSize, videoSize: currentVideoSize())
     }
 
     /// View points → frame fractions (origin top-left, the frame's own orientation).
     private func normalizedRegion(forViewRect rect: CGRect, viewSize: CGSize) -> CGRect {
-        let content = videoContentRect(viewSize: viewSize)
-        guard content.width > 0, content.height > 0 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
-        return CGRect(
-            x: (rect.minX - content.minX) / content.width,
-            y: (rect.minY - content.minY) / content.height,
-            width: rect.width / content.width,
-            height: rect.height / content.height
-        )
+        VideoSelectionGeometry.normalizedRegion(forViewRect: rect, viewSize: viewSize, videoSize: currentVideoSize())
     }
 
     /// Frame fractions → view points, showing the region as it is actually cut (snapped to even

@@ -426,6 +426,7 @@ extension InputManager.InterceptedChord {
         case .paste: return "⇧⌘V"
         case .saveScreenshot: return "⇧⌘S"
         case .toggleRecording: return "⇧⌘R"
+        case .copyTextFromArea: return "⇧⌘T"
         case .quit: return "⌘Q"
         }
     }
@@ -437,6 +438,7 @@ extension InputManager.InterceptedChord {
         case .paste: return "Paste the Mac clipboard to the target"
         case .saveScreenshot: return "Save a screenshot"
         case .toggleRecording: return "Start or stop a recording"
+        case .copyTextFromArea: return "Copy text from an area of the screen"
         case .quit: return "Quit Overlook"
         }
     }
@@ -446,7 +448,7 @@ private struct InputSettingsPane: View {
     @ObservedObject var preferences: InputPreferences
 
     var body: some View {
-        SettingsPane(height: 500) {
+        SettingsPane(height: 530) {
             Section {
                 LabeledContent("Local sensitivity") {
                     HStack {

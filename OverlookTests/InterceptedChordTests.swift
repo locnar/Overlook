@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import Overlook
 
-/// Which ⌘ chords keyboard capture keeps for Overlook: ⇧⌘C, ⇧⌘V, ⇧⌘S, ⇧⌘R and ⌘Q. Each needs
+/// Which ⌘ chords keyboard capture keeps for Overlook: ⇧⌘C, ⇧⌘V, ⇧⌘S, ⇧⌘R, ⇧⌘T and ⌘Q. Each needs
 /// exactly its own modifiers: with ⌥ or ⌃ held too, or ⇧ added to ⌘Q or missing from a ⇧⌘ chord,
 /// the keystroke is the target's. Plain ⌘C and ⌘V are the target's. Caps Lock and Fn never count.
 @MainActor
@@ -11,7 +11,7 @@ import Testing
 struct InterceptedChordTests {
     typealias Chord = InputManager.InterceptedChord
 
-    /// Every chord, with its key: ⇧⌘C, ⇧⌘V, ⇧⌘S, ⇧⌘R, ⌘Q.
+    /// Every chord, with its key: ⇧⌘C, ⇧⌘V, ⇧⌘S, ⇧⌘R, ⇧⌘T, ⌘Q.
     static let chords: [Chord] = Chord.allCases
 
     /// Modifier combinations to add to a chord's own, and whether the chord should still fire.
@@ -29,7 +29,7 @@ struct InterceptedChordTests {
 
     @Test func theChordsAreTheOnesOverlookDocuments() {
         let table = Self.chords.map { "\($0.modifiers == [.command, .shift] ? "⇧⌘" : "⌘")\($0.keyCode)" }
-        #expect(table == ["⇧⌘8", "⇧⌘9", "⇧⌘1", "⇧⌘15", "⌘12"])
+        #expect(table == ["⇧⌘8", "⇧⌘9", "⇧⌘1", "⇧⌘15", "⇧⌘17", "⌘12"])
     }
 
     @Test(arguments: Chord.allCases)
@@ -210,6 +210,35 @@ struct InterceptedChordTests {
         #expect(capture.sent.isEmpty)
     }
 
+    @Test func shiftCommandTIsKeptForTheOCRSnippet() {
+        let capture = Capture()
+        capture.press(17, [.command, .shift])
+        #expect(capture.shortcuts == [.copyTextFromArea])
+        #expect(capture.sent.isEmpty)
+    }
+
+    @Test func optionShiftCommandTGoesToTheTarget() {
+        let capture = Capture()
+        capture.press(17, [.command, .shift, .option])
+        #expect(capture.shortcuts.isEmpty)
+        #expect(capture.sent == [.key(17, isDown: true), .key(17, isDown: false)])
+    }
+
+    @Test func controlShiftCommandTGoesToTheTarget() {
+        let capture = Capture()
+        capture.press(17, [.command, .shift, .control])
+        #expect(capture.shortcuts.isEmpty)
+        #expect(capture.sent == [.key(17, isDown: true), .key(17, isDown: false)])
+    }
+
+    /// ⌘T (no ⇧) is the target's: a new tab in the target's browser, say.
+    @Test func commandTGoesToTheTarget() {
+        let capture = Capture()
+        capture.press(17, .command)
+        #expect(capture.shortcuts.isEmpty)
+        #expect(capture.sent == [.key(17, isDown: true), .key(17, isDown: false)])
+    }
+
     @Test func optionShiftCommandRGoesToTheTarget() {
         let capture = Capture()
         capture.press(15, [.command, .shift, .option])
@@ -295,6 +324,13 @@ struct InterceptedChordTests {
         let capture = Capture()
         capture.hold(15, [.command, .shift], repeats: 5)
         #expect(capture.shortcuts == [.toggleRecording])
+        #expect(capture.sent.isEmpty)
+    }
+
+    @Test func aHeldShiftCommandTStartsOneSnippet() {
+        let capture = Capture()
+        capture.hold(17, [.command, .shift], repeats: 5)
+        #expect(capture.shortcuts == [.copyTextFromArea])
         #expect(capture.sent.isEmpty)
     }
 

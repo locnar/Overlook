@@ -14,6 +14,8 @@ final class ConsoleSession: ObservableObject {
     let inputManager: InputManager
     let ocrManager: OCRManager
     let captureManager: CaptureManager
+    /// The one-shot OCR snippet (⇧⌘T): drag a box, its text goes on the clipboard.
+    let ocrSnippet: OCRSnippet
     /// Owned by the session rather than by `ContentView`: the View menu is built in the `App`
     /// scope, where a view's `@State` is out of reach. The key window hands its session's to the
     /// menu (`focusedSceneObject`).
@@ -26,6 +28,15 @@ final class ConsoleSession: ObservableObject {
     /// Asks this session's window to toggle OCR copy mode. OCR mode is that window's view state;
     /// the chord that toggles it, and the menu-bar item, reach it through here.
     let copyModeRequests = PassthroughSubject<Void, Never>()
+
+    /// Whether OCR mode is on: text boxes drawn over the video, and a click or drag shows what is
+    /// in it. The window's view state once, kept here now so that starting the OCR snippet can
+    /// end it, as the two must not be on together.
+    @Published var isOCRModeEnabled = false
+
+    /// Asks this session's window to open the OCR results sheet with a text: the copied-text
+    /// notice's Show text.
+    let recognizedTextRequests = PassthroughSubject<String, Never>()
 
     /// The registry listing this session, which a connect asks whether another window already
     /// shows the device.
@@ -55,7 +66,7 @@ final class ConsoleSession: ObservableObject {
     /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file). The input,
     /// capture and connection settings are the app's shared objects when `defaults` is the app's, and objects of
     /// their own on a test's scratch suite otherwise; a test that wants two sessions on one
-    /// settings object passes it.
+    /// settings object passes it. `ocrManager` is for tests as well: the app's reads with Vision.
     init(
         catalog: KVMDeviceManager,
         defaults: UserDefaults = AppEnvironment.defaults,
@@ -64,7 +75,8 @@ final class ConsoleSession: ObservableObject {
         inputPreferences: InputPreferences? = nil,
         capturePreferences: CapturePreferences? = nil,
         connectionPreferences: ConnectionPreferences? = nil,
-        connectionLog: ConnectionLog? = nil
+        connectionLog: ConnectionLog? = nil,
+        ocrManager: OCRManager? = nil
     ) {
         // Made here rather than as the default argument, which is evaluated outside the main actor.
         self.link = link ?? LiveSessionLink()
@@ -80,7 +92,8 @@ final class ConsoleSession: ObservableObject {
             connectionPreferences: connectionPreferences,
             log: log
         )
-        ocrManager = OCRManager()
+        // Tests pass one that reads with a stub instead of Vision.
+        self.ocrManager = ocrManager ?? OCRManager()
         captureManager = CaptureManager(
             webRTCManager: webRTCManager,
             connection: connection,
@@ -88,6 +101,11 @@ final class ConsoleSession: ObservableObject {
             preferences: capturePreferences
         )
         panels = PanelPresentation(defaults: defaults)
+        // The newest decoded frame at full resolution, as a screenshot saves it — not the scaled,
+        // throttled frames OCR mode keeps, which are only there while OCR mode is on.
+        ocrSnippet = OCRSnippet(ocrManager: self.ocrManager, captureManager: captureManager) { [weak webRTCManager] in
+            webRTCManager?.captureHub.latestFrame.flatMap { VideoFrameConversion.pixelBuffer(for: $0) }
+        }
         // Here rather than in the window's `onAppear`: the menu-bar agent can connect a session
         // before its window has appeared.
         inputManager.setup(with: webRTCManager)
@@ -111,6 +129,37 @@ final class ConsoleSession: ObservableObject {
         inputManager.onLocalShortcut = { [weak self] shortcut in
             self?.perform(shortcut)
         }
+
+        // The snippet is there while a device is connected and its video is on screen; losing
+        // either ends a snippet in progress.
+        let snippet = ocrSnippet
+        Publishers.CombineLatest3(
+            connection.$connectedDevice.map { $0 != nil },
+            webRTCManager.$isConnected,
+            webRTCManager.$videoSize.map { size in size.map { $0.width > 0 && $0.height > 0 } ?? false }
+        )
+        .map { $0 && $1 && $2 }
+        .removeDuplicates()
+        .sink { [weak snippet] available in
+            snippet?.isAvailable = available
+        }
+        .store(in: &cancellables)
+
+        // The snippet's overlay pauses input to the target like a panel or the capture region's
+        // overlay does, from the moment it comes up until it goes.
+        ocrSnippet.onSelectingChanged = { [weak self] in
+            self?.syncInputCaptureWithOverlays()
+        }
+        // Only one drag tool at a time: OCR mode or a capture-region selection starting ends a
+        // snippet in progress (and starting a snippet ends them; see `startOCRSnippet`).
+        $isOCRModeEnabled
+            .filter { $0 }
+            .sink { [weak snippet] _ in snippet?.cancel() }
+            .store(in: &cancellables)
+        captureManager.$isSelectingRegion
+            .filter { $0 }
+            .sink { [weak snippet] _ in snippet?.cancel() }
+            .store(in: &cancellables)
     }
 
     /// Runs one of the app's own shortcuts on this session: from its keyboard capture, or from
@@ -123,7 +172,79 @@ final class ConsoleSession: ObservableObject {
             captureManager.toggleRecording()
         case .toggleCopyMode:
             copyModeRequests.send()
+        case .copyTextFromArea:
+            toggleOCRSnippet()
         }
+    }
+
+    // MARK: - OCR snippet
+
+    /// Starts the OCR snippet: OCR mode and a capture-region selection end first, an open panel
+    /// closes (the drag needs the video), and the overlay comes up with input to the target
+    /// paused. Does nothing while no video is showing.
+    func startOCRSnippet() {
+        guard ocrSnippet.isAvailable else { return }
+        isOCRModeEnabled = false
+        captureManager.cancelRegionSelection()
+        panels.close()
+        ocrSnippet.begin()
+    }
+
+    /// ⇧⌘T, the toolbar button and the menu item: start a snippet, or cancel the one whose
+    /// overlay is up.
+    func toggleOCRSnippet() {
+        if ocrSnippet.isSelecting {
+            ocrSnippet.cancel()
+        } else {
+            startOCRSnippet()
+        }
+    }
+
+    /// The copied-text notice's Show text: the window opens the results sheet with `text`.
+    func showRecognizedText(_ text: String) {
+        recognizedTextRequests.send(text)
+    }
+
+    // MARK: - Input paused behind overlays
+
+    /// Pauses keyboard and mouse capture while something covers the video — a panel, the capture
+    /// region's overlay or the OCR snippet's — and restores what was on once nothing does. Called
+    /// whenever one of them comes or goes. While paused nothing is sent to the target: keys reach
+    /// the app (so Esc can cancel a drag), and clicks, drags and scrolls stay on the overlay.
+    func syncInputCaptureWithOverlays() {
+        let overlayOpen = panels.isAnyOpen || captureManager.isSelectingRegion || ocrSnippet.isSelecting
+
+        if overlayOpen {
+            if panels.isInputCapturePaused == false {
+                panels.pausedCaptureKeyboardWasEnabled = inputManager.isKeyboardCaptureEnabled
+                panels.pausedCaptureMouseWasEnabled = inputManager.isMouseCaptureEnabled
+
+                if inputManager.isKeyboardCaptureEnabled {
+                    inputManager.stopKeyboardCapture()
+                }
+                if inputManager.isMouseCaptureEnabled {
+                    inputManager.stopMouseCapture()
+                }
+
+                panels.isInputCapturePaused = true
+            }
+            return
+        }
+
+        guard panels.isInputCapturePaused else { return }
+
+        if connection.connectedDevice != nil {
+            if panels.pausedCaptureKeyboardWasEnabled == true {
+                inputManager.startKeyboardCapture()
+            }
+            if panels.pausedCaptureMouseWasEnabled == true {
+                inputManager.startMouseCapture()
+            }
+        }
+
+        panels.pausedCaptureKeyboardWasEnabled = nil
+        panels.pausedCaptureMouseWasEnabled = nil
+        panels.isInputCapturePaused = false
     }
 
     // MARK: - Connecting
@@ -433,6 +554,7 @@ extension View {
             .environmentObject(session.inputManager)
             .environmentObject(session.ocrManager)
             .environmentObject(session.captureManager)
+            .environmentObject(session.ocrSnippet)
             .environmentObject(session.panels)
             .environmentObject(session.webRTCManager.audioPreferences)
             // The log every window shares, and which session's lines are this window's.
@@ -442,6 +564,7 @@ extension View {
             // are that window's, and nil while no console window is key.
             .focusedSceneObject(session.panels)
             .focusedSceneObject(session.captureManager)
+            .focusedSceneObject(session.ocrSnippet)
             .focusedSceneObject(session)
             .focusedSceneObject(session.connection)
     }

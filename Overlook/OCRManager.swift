@@ -74,10 +74,17 @@ class OCRManager: ObservableObject {
         return text
     }
 
-    /// Runs `read` on the OCR queue and joins the lines it found with spaces. Every way out —
-    /// text, no text, an error, the caller's task cancelled — clears `isProcessing` on the main
-    /// actor (once no other recognition is still running).
+    /// Runs `read` on the OCR queue and joins the lines it found with spaces.
     private func recognize(_ read: @escaping @Sendable () throws -> [String]) async throws -> String {
+        let text = try await recognizeLines(read).joined(separator: " ")
+        lastRecognizedText = text
+        return text
+    }
+
+    /// Runs `read` on the OCR queue and returns the lines it found. Every way out — lines, none,
+    /// an error, the caller's task cancelled — clears `isProcessing` on the main actor (once no
+    /// other recognition is still running).
+    private func recognizeLines(_ read: @escaping @Sendable () throws -> [String]) async throws -> [String] {
         try Task.checkCancellation()
         recognitionsInFlight += 1
         isProcessing = true
@@ -92,10 +99,7 @@ class OCRManager: ObservableObject {
             }
         }
         try Task.checkCancellation()
-
-        let text = lines.joined(separator: " ")
-        lastRecognizedText = text
-        return text
+        return lines
     }
 
     /// The lines of text in `pixelBuffer`, best candidate each, top to bottom.
@@ -242,6 +246,33 @@ class OCRManager: ObservableObject {
         }
     }
     
+    /// The lines of text in `region` of the frame, best candidate each, in the order Vision reads
+    /// them (top to bottom). `region` is in frame fractions with the origin top-left, as the
+    /// capture region and the OCR snippet's box are; it is cut from the frame at the frame's own
+    /// resolution. Lines may be empty or whitespace only; the caller decides what counts as text.
+    func recognizeLines(inTopLeftRegion region: CGRect, of pixelBuffer: CVPixelBuffer?) async throws -> [String] {
+        guard let pixelBuffer = pixelBuffer else {
+            throw OCRError.noVideoFrame
+        }
+
+        let frame = PixelBufferBox(pixelBuffer)
+        let lines = try await recognizeLines { [self] in
+            let buffer = frame.pixelBuffer
+            let width = CGFloat(CVPixelBufferGetWidth(buffer))
+            let height = CGFloat(CVPixelBufferGetHeight(buffer))
+            // Core Image's origin is bottom-left; the region's is top-left.
+            let pixelRegion = CGRect(
+                x: region.minX * width,
+                y: (1 - region.maxY) * height,
+                width: region.width * width,
+                height: region.height * height
+            )
+            return try readLines(in: cropPixelBuffer(buffer, to: pixelRegion))
+        }
+        lastRecognizedText = lines.joined(separator: "\n")
+        return lines
+    }
+
     func copyTextToClipboard(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()

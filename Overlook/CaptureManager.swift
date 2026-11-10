@@ -68,6 +68,11 @@ final class CaptureManager: ObservableObject {
         let isError: Bool
         /// Replaces the success/failure symbol, for a notice that is neither.
         var systemImage: String? = nil
+        /// Draws `systemImage` in the success green rather than grey.
+        var tintsSymbol = false
+        /// The whole text an OCR snippet copied. The notice then offers Show text, which opens
+        /// the results sheet with it.
+        var copiedText: String? = nil
     }
 
     enum Folder {
@@ -440,15 +445,63 @@ final class CaptureManager: ObservableObject {
         }
     }
 
+    /// The notice after an OCR snippet put `text` on the clipboard: "Copied 3 lines", the first
+    /// line in quotes, and Show text for the rest.
+    func showCopiedTextNotice(_ text: String) {
+        let summary = Self.copiedTextSummary(text)
+        showNotice(
+            title: summary.title,
+            detail: summary.detail,
+            fileURL: nil,
+            isError: false,
+            systemImage: OCRSnippet.copiedSymbolName,
+            tintsSymbol: true,
+            copiedText: text
+        )
+    }
+
+    /// The longest first line the copied-text notice quotes whole; a longer one is cut short with
+    /// "…" so the notice keeps to its two lines.
+    static let copiedLinePreviewLength = 48
+
+    /// "Copied 1 line" or "Copied N lines", and the first line in quotes, cut short with "…" when
+    /// it is longer than `copiedLinePreviewLength`.
+    static func copiedTextSummary(_ text: String) -> (title: String, detail: String) {
+        let lines = text.split(whereSeparator: \.isNewline)
+        let count = max(lines.count, 1)
+        let title = count == 1 ? "Copied 1 line" : "Copied \(count) lines"
+        var first = String(lines.first ?? "")
+        if first.count > copiedLinePreviewLength {
+            first = String(first.prefix(copiedLinePreviewLength - 1)).trimmingCharacters(in: .whitespaces) + "…"
+        }
+        return (title, "“\(first)”")
+    }
+
     func dismissNotice() {
         noticeDismissTask?.cancel()
         noticeDismissTask = nil
         notice = nil
     }
 
-    private func showNotice(title: String, detail: String?, fileURL: URL?, isError: Bool, systemImage: String? = nil) {
+    private func showNotice(
+        title: String,
+        detail: String?,
+        fileURL: URL?,
+        isError: Bool,
+        systemImage: String? = nil,
+        tintsSymbol: Bool = false,
+        copiedText: String? = nil
+    ) {
         noticeDismissTask?.cancel()
-        let shown = Notice(title: title, detail: detail, fileURL: fileURL, isError: isError, systemImage: systemImage)
+        let shown = Notice(
+            title: title,
+            detail: detail,
+            fileURL: fileURL,
+            isError: isError,
+            systemImage: systemImage,
+            tintsSymbol: tintsSymbol,
+            copiedText: copiedText
+        )
         notice = shown
         noticeDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: isError ? 8_000_000_000 : 5_000_000_000)

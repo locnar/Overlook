@@ -14,7 +14,6 @@ struct ContentView: View {
     /// The device chosen in the Connections panel, held by address: see `ConnectionsPopoverView`.
     @State private var selectedAddress: DeviceAddress?
     @State private var isConnected = false
-    @State private var isOCRModeEnabled = false
     @State private var isShowingOCRResult = false
     @State private var selectedText = ""
 
@@ -151,7 +150,7 @@ struct ContentView: View {
         ZStack(alignment: .trailing) {
             if isFullscreen {
                 VideoSurfaceView(
-                    isOCRModeEnabled: $isOCRModeEnabled,
+                    isOCRModeEnabled: $session.isOCRModeEnabled,
                     selectedText: $selectedText,
                     isShowingOCRResult: $isShowingOCRResult,
                     onReconnect: {
@@ -165,7 +164,7 @@ struct ContentView: View {
                 .allowsHitTesting(!panels.isAnyOpen)
             } else {
                 VideoSurfaceView(
-                    isOCRModeEnabled: $isOCRModeEnabled,
+                    isOCRModeEnabled: $session.isOCRModeEnabled,
                     selectedText: $selectedText,
                     isShowingOCRResult: $isShowingOCRResult,
                     onReconnect: {
@@ -222,6 +221,8 @@ struct ContentView: View {
 
                             ScreenshotButton(isConnected: isConnected)
 
+                            OCRSnippetButton()
+
                             RecordingButton(isConnected: isConnected)
 
                             RecordingModePicker()
@@ -230,12 +231,12 @@ struct ContentView: View {
                                 .frame(height: 18)
 
                             Button(action: { toggleOCR() }) {
-                                Image(systemName: isOCRModeEnabled
+                                Image(systemName: session.isOCRModeEnabled
                                       ? "text.viewfinder"
                                       : "rectangle.and.text.magnifyingglass")
                             }
                             .disabled(!isConnected)
-                            .help(isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+                            .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
 
                             Divider()
                                 .frame(height: 18)
@@ -280,6 +281,7 @@ struct ContentView: View {
                 CaptureNoticeView(
                     notice: notice,
                     onShow: { url in captureManager.revealInFinder(url) },
+                    onShowText: { text in session.showRecognizedText(text) },
                     onDismiss: { captureManager.dismissNotice() }
                 )
                 .padding(14)
@@ -412,14 +414,14 @@ struct ContentView: View {
         .onChange(of: captureManager.isSelectingRegion) { _, selecting in
             if selecting {
                 // The drag needs the video: close anything covering it and leave OCR mode.
-                isOCRModeEnabled = false
+                session.isOCRModeEnabled = false
                 withAnimation(.easeInOut(duration: 0.2)) {
                     panels.close()
                 }
             }
             updateInputCaptureForUIOverlays()
         }
-        .onChange(of: isOCRModeEnabled) { _, enabled in
+        .onChange(of: session.isOCRModeEnabled) { _, enabled in
             if enabled {
                 captureManager.cancelRegionSelection()
             }
@@ -455,8 +457,13 @@ struct ContentView: View {
         }
         .onReceive(session.copyModeRequests) { _ in
             Task { @MainActor in
-                isOCRModeEnabled.toggle()
+                session.isOCRModeEnabled.toggle()
             }
+        }
+        .onReceive(session.recognizedTextRequests) { text in
+            captureManager.dismissNotice()
+            selectedText = text
+            isShowingOCRResult = true
         }
         .onChange(of: appAppearance) { _, _ in
             applyAppAppearance()
@@ -596,6 +603,8 @@ struct ContentView: View {
 
                     ScreenshotButton(isConnected: isConnected)
 
+                    OCRSnippetButton()
+
                     RecordingButton(isConnected: isConnected)
 
                     RecordingModePicker()
@@ -613,12 +622,12 @@ struct ContentView: View {
                 // nothing, and it acts on the video rather than on the app.
                 ToolbarItemGroup(placement: .automatic) {
                     Button(action: { toggleOCR() }) {
-                        Image(systemName: isOCRModeEnabled
+                        Image(systemName: session.isOCRModeEnabled
                               ? "text.viewfinder"
                               : "rectangle.and.text.magnifyingglass")
                     }
                     .disabled(!isConnected)
-                    .help(isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+                    .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
                 }
 
                 if #available(macOS 26.0, *) {
@@ -719,7 +728,7 @@ struct ContentView: View {
     
     @MainActor
     private func toggleOCR() {
-        isOCRModeEnabled.toggle()
+        session.isOCRModeEnabled.toggle()
     }
 
     /// Only one panel can be open at a time — `PanelPresentation` holds a single optional, so
@@ -761,43 +770,11 @@ struct ContentView: View {
         window.setFrame(newFrame, display: true, animate: true)
     }
 
+    /// Pauses input to the target while a panel or a drag overlay covers the video; the rules are
+    /// the session's (`ConsoleSession.syncInputCaptureWithOverlays`), so they can be tested.
     @MainActor
     private func updateInputCaptureForUIOverlays() {
-        // Drawing a capture region counts as an overlay: the drag must not reach the target, and
-        // Esc has to reach the app.
-        let overlayOpen = panels.isAnyOpen || captureManager.isSelectingRegion
-
-        if overlayOpen {
-            if panels.isInputCapturePaused == false {
-                panels.pausedCaptureKeyboardWasEnabled = inputManager.isKeyboardCaptureEnabled
-                panels.pausedCaptureMouseWasEnabled = inputManager.isMouseCaptureEnabled
-
-                if inputManager.isKeyboardCaptureEnabled {
-                    inputManager.stopKeyboardCapture()
-                }
-                if inputManager.isMouseCaptureEnabled {
-                    inputManager.stopMouseCapture()
-                }
-
-                panels.isInputCapturePaused = true
-            }
-            return
-        }
-
-        guard panels.isInputCapturePaused else { return }
-
-        if isConnected {
-            if panels.pausedCaptureKeyboardWasEnabled == true {
-                inputManager.startKeyboardCapture()
-            }
-            if panels.pausedCaptureMouseWasEnabled == true {
-                inputManager.startMouseCapture()
-            }
-        }
-
-        panels.pausedCaptureKeyboardWasEnabled = nil
-        panels.pausedCaptureMouseWasEnabled = nil
-        panels.isInputCapturePaused = false
+        session.syncInputCaptureWithOverlays()
     }
 }
 

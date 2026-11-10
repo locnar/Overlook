@@ -120,6 +120,7 @@ struct SettingsWindowTests {
         #expect(OverlookShortcut.all[1].action == "Paste the Mac clipboard to the target")
         #expect(keys.last == "⌃⌥")
         #expect(Set(keys).count == keys.count)
+        #expect(OverlookShortcut.all.contains(OverlookShortcut(keys: "⇧⌘T", action: "Copy text from an area of the screen")))
     }
 
     // MARK: - What the window knows about the console windows

@@ -12,7 +12,7 @@ It focuses on *fast*, *low-friction* day-to-day “reach over and fix it” work
 - Full keyboard + mouse input capture.
 - **Clipboard bridging**:
   - **Local → Remote paste** with `⇧⌘V` (types the clipboard into the remote machine).
-  - **Remote → Local copy via ML OCR**: select text directly from the live video stream using Apple Vision and copy it to your Mac clipboard.
+  - **Remote → Local copy via ML OCR**: select text directly from the live video stream using Apple Vision and copy it to your Mac clipboard — or press `⇧⌘T`, drag a box over the text, and it is on your clipboard.
 
 If you spend time in BIOS/UEFI, bootloaders, headless servers, or “the machine that’s *just* out of reach”, Overlook aims to make the remote console feel like a first-class Mac app.
 
@@ -315,6 +315,32 @@ If the area holds no text, a “No text found” notice appears in the bottom-ri
 - OCR is currently tuned for English but uses automatic language detection.
 - OCR works even when the remote machine has no clipboard support.
 
+## Copy Text from Area (one-shot OCR snippet)
+
+For grabbing a few lines without turning OCR mode on: drag a box, and its text goes straight to your Mac clipboard.
+
+### Start it
+
+- Press `⇧⌘T` (also while keys are being sent to the target).
+- Click the toolbar button with the text-viewfinder icon, next to the screenshot and record buttons (also in the fullscreen hover controls).
+- Choose **Capture › Copy Text from Area**.
+
+It is available while connected with video showing, and greyed out otherwise. Starting it turns OCR mode off and cancels a capture-region selection; any open side panel closes.
+
+### Drag a box
+
+- The video dims slightly and a hint at the top says “Drag over text to copy it · Esc to cancel”.
+- Keyboard, mouse and scroll input to the target are paused from the moment it starts until you let go of the mouse button (or cancel), so the drag never reaches the remote machine.
+- **Esc** cancels with no notice. So does starting it again (`⇧⌘T`, the toolbar button or the menu item) while the box is up.
+- A click without a drag, or a box smaller than 8 × 8 video pixels, cancels quietly too.
+
+### When you let go
+
+- The dimming goes and input to the target resumes at once; the text is read from the newest video frame at the stream's full resolution.
+- The text goes on your Mac clipboard as plain text, one line per line read (blank lines dropped).
+- A notice in the bottom-right corner says **Copied N lines**, quotes the first line (cut short with “…” if it is long), and has a **Show text** link that opens the Recognized Text sheet with everything that was copied.
+- If the box holds no text, the notice says **No text found** and your clipboard is left as it was. If recognition fails, the notice says **Text recognition failed** with the reason, and the clipboard is left as it was too.
+
 ---
 
 ## Clipboard Paste (Local → Remote)
@@ -352,15 +378,16 @@ Overlook includes a few “quality of life” shortcuts.
 - `⇧⌘V`: pastes macOS clipboard to the remote.
 - `⇧⌘S`: saves a screenshot.
 - `⇧⌘R`: starts or stops a recording.
+- `⇧⌘T`: copies the text in an area of the screen (drag a box; see “Copy Text from Area” above).
 - `⌘Q`: quits Overlook (releases any held keys and hangs up first).
 
 Plain `⌘C` and `⌘V` are not on this list: they go to the target, so copy and paste work inside the remote machine.
 
-All five are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+C, Win+Shift+V, Win+Shift+S (Snipping Tool), Win+Shift+R and Win+Q are not reachable through Overlook. `⇧⌘C` and `⇧⌘V` are also the **Edit** menu's **Toggle OCR Selection** and **Paste Clipboard to Target**, and `⇧⌘S` and `⇧⌘R` the **Capture** menu's shortcuts, so all four work when keyboard capture is off as well. With keyboard capture off, `⌘C` and `⌘V` copy and paste in Overlook's own text fields as usual.
+All six are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+C, Win+Shift+V, Win+Shift+S (Snipping Tool), Win+Shift+R, Win+Shift+T and Win+Q are not reachable through Overlook. `⇧⌘C` and `⇧⌘V` are also the **Edit** menu's **Toggle OCR Selection** and **Paste Clipboard to Target**, and `⇧⌘S`, `⇧⌘R` and `⇧⌘T` the **Capture** menu's shortcuts, so all five work when keyboard capture is off as well. With keyboard capture off, `⌘C` and `⌘V` copy and paste in Overlook's own text fields as usual.
 
 Each acts once per press: holding the keys down does not repeat it.
 
-Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⇧⌘V`, `⌥⇧⌘C`, `⌥⇧⌘S`), or `⇧` dropped from a `⇧⌘` chord (`⌘C`, `⌘V`, `⌘S`), or added to `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
+Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⇧⌘V`, `⌥⇧⌘C`, `⌥⇧⌘S`, `⌥⇧⌘T`), or `⇧` dropped from a `⇧⌘` chord (`⌘C`, `⌘V`, `⌘S`, `⌘T`), or added to `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
 
 ### Menu bar global shortcuts
 

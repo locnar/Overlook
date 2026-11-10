@@ -98,10 +98,12 @@
 		01000044 /* ScrollAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000045 /* ScrollAccumulator.swift */; };
 		01000045 /* MediaNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000046 /* MediaNetwork.swift */; };
 		01000048 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000048 /* SettingsWindow.swift */; };
+		01000049 /* OCRSnippet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000049 /* OCRSnippet.swift */; };
 		01000047 /* MacPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000047 /* MacPreferences.swift */; };
 		0100012B /* MediaNetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012B /* MediaNetworkTests.swift */; };
 		0100012E /* WakeDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012E /* WakeDisplayTests.swift */; };
 		0100012D /* SettingsWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012D /* SettingsWindowTests.swift */; };
+		0100012F /* OCRSnippetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012F /* OCRSnippetTests.swift */; };
 		0100012C /* MacPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012C /* MacPreferencesTests.swift */; };
 		01000125 /* DiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000125 /* DiscoveryTests.swift */; };
 		01000126 /* JanusSignalingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000126 /* JanusSignalingTests.swift */; };
@@ -220,10 +222,12 @@
 		02000045 /* ScrollAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollAccumulator.swift; sourceTree = "<group>"; };
 		02000046 /* MediaNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNetwork.swift; sourceTree = "<group>"; };
 		02000048 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
+		02000049 /* OCRSnippet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRSnippet.swift; sourceTree = "<group>"; };
 		02000047 /* MacPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPreferences.swift; sourceTree = "<group>"; };
 		0200012B /* MediaNetworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNetworkTests.swift; sourceTree = "<group>"; };
 		0200012E /* WakeDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeDisplayTests.swift; sourceTree = "<group>"; };
 		0200012D /* SettingsWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowTests.swift; sourceTree = "<group>"; };
+		0200012F /* OCRSnippetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRSnippetTests.swift; sourceTree = "<group>"; };
 		0200012C /* MacPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPreferencesTests.swift; sourceTree = "<group>"; };
 		02000125 /* DiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryTests.swift; sourceTree = "<group>"; };
 		02000126 /* JanusSignalingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignalingTests.swift; sourceTree = "<group>"; };
@@ -297,6 +301,7 @@
 				0200001F /* Overlook-Bridging-Header.h */,
 				02000007 /* InputManager.swift */,
 				02000008 /* OCRManager.swift */,
+				02000049 /* OCRSnippet.swift */,
 				02000035 /* ConsoleSession.swift */,
 				02000036 /* SessionConnection.swift */,
 				02000039 /* ConsoleWindow.swift */,
@@ -368,6 +373,7 @@
 				02000127 /* JanusSenderTests.swift */,
 				02000128 /* VideoTrackTeardownTests.swift */,
 				02000129 /* OCRManagerTests.swift */,
+				0200012F /* OCRSnippetTests.swift */,
 				0200012A /* ScrollScalingTests.swift */,
 				0200012B /* MediaNetworkTests.swift */,
 				0200012E /* WakeDisplayTests.swift */,
@@ -535,6 +541,7 @@
 				0100001F /* WebRTCFactoryBuilder.m in Sources */,
 				01000007 /* InputManager.swift in Sources */,
 				01000008 /* OCRManager.swift in Sources */,
+				01000049 /* OCRSnippet.swift in Sources */,
 				01000031 /* ConsoleSession.swift in Sources */,
 				01000032 /* SessionConnection.swift in Sources */,
 				01000035 /* ConsoleWindow.swift in Sources */,
@@ -603,6 +610,7 @@
 				01000127 /* JanusSenderTests.swift in Sources */,
 				01000128 /* VideoTrackTeardownTests.swift in Sources */,
 				01000129 /* OCRManagerTests.swift in Sources */,
+				0100012F /* OCRSnippetTests.swift in Sources */,
 				0100012A /* ScrollScalingTests.swift in Sources */,
 				0100012B /* MediaNetworkTests.swift in Sources */,
 				0100012E /* WakeDisplayTests.swift in Sources */,

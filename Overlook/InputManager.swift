@@ -7,13 +7,14 @@ import Carbon.HIToolbox
 
 @MainActor
 class InputManager: ObservableObject {
-    /// The app's own chords that keyboard capture keeps rather than sends: ⇧⌘S, ⇧⌘R, and ⇧⌘C for
-    /// OCR copy mode. Capture swallows every key before the menus can see it, so it reproduces
-    /// them itself.
+    /// The app's own chords that keyboard capture keeps rather than sends: ⇧⌘S, ⇧⌘R, ⇧⌘C for
+    /// OCR copy mode, and ⇧⌘T for copying the text in an area of the screen. Capture swallows
+    /// every key before the menus can see it, so it reproduces them itself.
     enum LocalShortcut: Equatable {
         case saveScreenshot
         case toggleRecording
         case toggleCopyMode
+        case copyTextFromArea
     }
 
     /// Where those chords go: this input manager's own session (`ConsoleSession` sets it), never
@@ -24,9 +25,10 @@ class InputManager: ObservableObject {
     /// - ⇧⌘C toggles OCR copy mode;
     /// - ⇧⌘V types the Mac's clipboard on the target;
     /// - ⇧⌘S saves a screenshot and ⇧⌘R starts or stops a recording.
+    /// - ⇧⌘T copies the text in an area of the screen (the OCR snippet).
     /// - ⌘Q quits Overlook, as in every other Mac app.
     ///
-    /// The first four are also menu shortcuts (Edit and Capture), reproduced here because capture
+    /// The first five are also menu shortcuts (Edit and Capture), reproduced here because capture
     /// swallows every key event before the menus see it. Plain ⌘C and ⌘V are the target's, like
     /// any other ⌘ keystroke, so copy and paste work inside the target's own apps.
     enum InterceptedChord: Equatable, CaseIterable {
@@ -34,6 +36,7 @@ class InputManager: ObservableObject {
         case paste
         case saveScreenshot
         case toggleRecording
+        case copyTextFromArea
         case quit
 
         /// The Mac key code the chord is on (by position, as `NSEvent.keyCode` reports it).
@@ -43,6 +46,7 @@ class InputManager: ObservableObject {
             case .paste: return 9
             case .saveScreenshot: return 1
             case .toggleRecording: return 15
+            case .copyTextFromArea: return 17
             case .quit: return 12
             }
         }
@@ -52,7 +56,7 @@ class InputManager: ObservableObject {
         var modifiers: NSEvent.ModifierFlags {
             switch self {
             case .quit: return [.command]
-            case .copyMode, .paste, .saveScreenshot, .toggleRecording: return [.command, .shift]
+            case .copyMode, .paste, .saveScreenshot, .toggleRecording, .copyTextFromArea: return [.command, .shift]
             }
         }
     }
@@ -794,6 +798,8 @@ class InputManager: ObservableObject {
                         onLocalShortcut?(.saveScreenshot)
                     case .toggleRecording:
                         onLocalShortcut?(.toggleRecording)
+                    case .copyTextFromArea:
+                        onLocalShortcut?(.copyTextFromArea)
                     // The termination path releases held keys and hangs up before the process
                     // exits.
                     case .quit:
@@ -1803,18 +1809,7 @@ class InputManager: ObservableObject {
 
     /// The letterboxed rect the video occupies inside a view of `viewSize`.
     func videoContentRect(viewSize: CGSize, videoSize: CGSize) -> CGRect {
-        let viewAspect = viewSize.width / viewSize.height
-        let videoAspect = videoSize.width / videoSize.height
-
-        if viewAspect > videoAspect {
-            let contentWidth = viewSize.height * videoAspect
-            let xOffset = (viewSize.width - contentWidth) / 2.0
-            return CGRect(x: xOffset, y: 0, width: contentWidth, height: viewSize.height)
-        } else {
-            let contentHeight = viewSize.width / videoAspect
-            let yOffset = (viewSize.height - contentHeight) / 2.0
-            return CGRect(x: 0, y: yOffset, width: viewSize.width, height: contentHeight)
-        }
+        VideoSelectionGeometry.letterboxedRect(viewSize: viewSize, videoSize: videoSize)
     }
 
     private func glkvmMouseButtonName(_ button: MouseButton) -> String? {
