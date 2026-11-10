@@ -595,3 +595,27 @@ struct ManagerMediaRouteTests {
         #expect(manager.mediaAddressesInEffect == nil)
     }
 }
+
+// MARK: - Settings › Network
+
+@Suite("Settings › Network caption")
+struct NetworkSettingsCaptionTests {
+    private let explanation = [
+        "Chosen network only: video and audio use the same network as the address you connected through (LAN or Tailscale).",
+        "All addresses: the KVM may pick any network both sides share.",
+    ]
+
+    @Test func explainsBothChoicesWhileDisconnected() {
+        for choice in MediaAddresses.allCases {
+            #expect(NetworkSettingsSection.mediaAddressesCaption(selected: choice, inEffect: nil) == explanation)
+        }
+    }
+
+    @Test func saysWhenAChangeAppliesOnlyWhileItDiffersFromTheConnection() {
+        #expect(NetworkSettingsSection.mediaAddressesCaption(selected: .all, inEffect: .chosenNetwork)
+            == explanation + ["Takes effect the next time you connect."])
+        #expect(NetworkSettingsSection.mediaAddressesCaption(selected: .chosenNetwork, inEffect: .all)
+            == explanation + ["Takes effect the next time you connect."])
+        #expect(NetworkSettingsSection.mediaAddressesCaption(selected: .chosenNetwork, inEffect: .chosenNetwork) == explanation)
+    }
+}

@@ -632,10 +632,45 @@ struct SystemSettingsSection: View {
 
 struct NetworkSettingsSection: View {
     @Binding var isExpanded: Bool
+    /// The app's network settings, shared by every window.
+    @ObservedObject var preferences: NetworkPreferences
+    /// The "Video and audio addresses" setting this window's connection was made with; nil while
+    /// not connected.
+    let inEffect: MediaAddresses?
+
+    /// The lines under the "Video and audio addresses" pop-up: what each choice does, and, when
+    /// the choice differs from the one this window's connection was made with, when it applies.
+    nonisolated static func mediaAddressesCaption(selected: MediaAddresses, inEffect: MediaAddresses?) -> [String] {
+        var lines = [
+            "Chosen network only: video and audio use the same network as the address you connected through (LAN or Tailscale).",
+            "All addresses: the KVM may pick any network both sides share.",
+        ]
+        if let inEffect, inEffect != selected {
+            lines.append("Takes effect the next time you connect.")
+        }
+        return lines
+    }
 
     var body: some View {
         DisclosureGroup("Network", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Video and audio addresses", selection: $preferences.mediaAddresses) {
+                        ForEach(MediaAddresses.allCases) { choice in
+                            Text(choice.title).tag(choice)
+                        }
+                    }
+                    ForEach(
+                        Self.mediaAddressesCaption(selected: preferences.mediaAddresses, inEffect: inEffect),
+                        id: \.self
+                    ) { line in
+                        Text(line)
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 NotImplementedRow(title: "Modify")
                 NotImplementedRow(title: "Wi-Fi")
                 NotImplementedRow(title: "Ethernet")

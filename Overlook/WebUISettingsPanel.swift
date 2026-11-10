@@ -98,7 +98,11 @@ struct WebUISettingsPanel: View {
                         actions: actions
                     )
 
-                    NetworkSettingsSection(isExpanded: $model.isNetworkExpanded)
+                    NetworkSettingsSection(
+                        isExpanded: $model.isNetworkExpanded,
+                        preferences: webRTCManager.networkPreferences,
+                        inEffect: webRTCManager.mediaAddressesInEffect
+                    )
 
                     AdvancedSettingsSection(
                         isExpanded: $model.isAdvancedExpanded,
