@@ -96,6 +96,8 @@
 		01000042 /* JanusSignaling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000043 /* JanusSignaling.swift */; };
 		01000043 /* VideoFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000044 /* VideoFrames.swift */; };
 		01000044 /* ScrollAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000045 /* ScrollAccumulator.swift */; };
+		01000045 /* MediaNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000046 /* MediaNetwork.swift */; };
+		0100012B /* MediaNetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012B /* MediaNetworkTests.swift */; };
 		01000125 /* DiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000125 /* DiscoveryTests.swift */; };
 		01000126 /* JanusSignalingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000126 /* JanusSignalingTests.swift */; };
 		01000127 /* JanusSenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000127 /* JanusSenderTests.swift */; };
@@ -211,6 +213,8 @@
 		02000043 /* JanusSignaling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignaling.swift; sourceTree = "<group>"; };
 		02000044 /* VideoFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrames.swift; sourceTree = "<group>"; };
 		02000045 /* ScrollAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollAccumulator.swift; sourceTree = "<group>"; };
+		02000046 /* MediaNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNetwork.swift; sourceTree = "<group>"; };
+		0200012B /* MediaNetworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNetworkTests.swift; sourceTree = "<group>"; };
 		02000125 /* DiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryTests.swift; sourceTree = "<group>"; };
 		02000126 /* JanusSignalingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignalingTests.swift; sourceTree = "<group>"; };
 		02000127 /* JanusSenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSenderTests.swift; sourceTree = "<group>"; };
@@ -299,6 +303,7 @@
 				02000043 /* JanusSignaling.swift */,
 				02000044 /* VideoFrames.swift */,
 				02000045 /* ScrollAccumulator.swift */,
+				02000046 /* MediaNetwork.swift */,
 				0200003A /* AudioPreferences.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
@@ -352,6 +357,7 @@
 				02000128 /* VideoTrackTeardownTests.swift */,
 				02000129 /* OCRManagerTests.swift */,
 				0200012A /* ScrollScalingTests.swift */,
+				0200012B /* MediaNetworkTests.swift */,
 				02000123 /* KeyCodeTableTests.swift */,
 				02000122 /* AudioDeviceSetupTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
@@ -529,6 +535,7 @@
 				01000042 /* JanusSignaling.swift in Sources */,
 				01000043 /* VideoFrames.swift in Sources */,
 				01000044 /* ScrollAccumulator.swift in Sources */,
+				01000045 /* MediaNetwork.swift in Sources */,
 				01000036 /* AudioPreferences.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
@@ -580,6 +587,7 @@
 				01000128 /* VideoTrackTeardownTests.swift in Sources */,
 				01000129 /* OCRManagerTests.swift in Sources */,
 				0100012A /* ScrollScalingTests.swift in Sources */,
+				0100012B /* MediaNetworkTests.swift in Sources */,
 				01000123 /* KeyCodeTableTests.swift in Sources */,
 				01000122 /* AudioDeviceSetupTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,

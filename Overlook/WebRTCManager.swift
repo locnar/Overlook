@@ -672,39 +672,17 @@ class WebRTCManager: NSObject, ObservableObject {
     // MARK: - Session environment
 
     /// Reflexive candidates are worth gathering only when the peer is somewhere a host candidate
-    /// cannot reach. A KVM on the LAN, on a Tailscale address, or on link-local is always
-    /// reachable directly, so a public STUN server adds a round trip to every connect and a
-    /// stall to every connect on a network that filters UDP/3478 outbound.
+    /// cannot reach. A KVM on the LAN, on Tailscale (by address, `*.ts.net` or a bare MagicDNS
+    /// name), or on link-local is always reachable directly, so a public STUN server adds a round
+    /// trip to every connect and a stall to every connect on a network that filters UDP/3478
+    /// outbound (`MediaNetworkRules.isDirectlyReachable`).
     private static func iceServers(for device: KVMDevice, log: SessionLog) -> [RTCIceServer] {
-        if isDirectlyReachable(host: device.host) {
+        if MediaNetworkRules.isDirectlyReachable(host: device.host) {
             log.info(.ice, "Local peer \(device.host): gathering host candidates only")
             return []
         }
         log.info(.ice, "Remote peer \(device.host): adding public STUN")
         return [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
-    }
-
-    /// RFC1918, CGNAT (which is where Tailscale lives: 100.64.0.0/10), loopback, link-local, and
-    /// anything that resolves through mDNS.
-    private static func isDirectlyReachable(host: String) -> Bool {
-        let lowered = host.lowercased()
-        if lowered.hasSuffix(".local") || lowered == "localhost" { return true }
-
-        let parts = lowered.split(separator: ".").compactMap { UInt8($0) }
-        guard parts.count == 4 else { return false }
-        switch (parts[0], parts[1]) {
-        case (10, _), (127, _), (192, 168):
-            return true
-        case (172, 16...31):
-            return true
-        case (169, 254):
-            return true
-        case (100, 64...127):
-            // Tailscale / CGNAT.
-            return true
-        default:
-            return false
-        }
     }
 
     /// Taken when a session starts, released when it ends. Three things live here, all of them
