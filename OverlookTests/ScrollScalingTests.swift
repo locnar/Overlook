@@ -54,11 +54,38 @@ struct ScrollScalingTests {
 
     // MARK: - Through the input manager
 
-    @Test func aScrollGoesOutWithTheDeltasItArrivedWith() {
+    @Test func aNotchedScrollGoesOutAsWholeSteps() {
         let c = Capture()
         c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 1.5, deltaY: -2.25))
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0.4, deltaY: -1.3, lineDeltaX: 1, lineDeltaY: -2))
 
-        #expect(c.sent == [.scroll(deltaX: 1.5, deltaY: -2.25)])
+        #expect(c.sent == [.scroll(deltaX: 2, deltaY: -2), .scroll(deltaX: 1, deltaY: -2)])
+    }
+
+    @Test func aSlowNotchReachesTheTarget() {
+        // Rounded as it arrives, a slow notch's fraction of a line was a report of nothing.
+        #expect(wheel(0, 0.1) == [0, 0])
+        #expect(wheel(0, -0.4) == [0, 0])
+
+        let c = Capture()
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: 0.1, lineDeltaX: 0, lineDeltaY: 1))
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: -0.4, lineDeltaX: 0, lineDeltaY: -1))
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: 0.2, lineDeltaX: 0, lineDeltaY: 0))
+
+        #expect(c.sent == [
+            .scroll(deltaX: 0, deltaY: 1),
+            .scroll(deltaX: 0, deltaY: -1),
+            .scroll(deltaX: 0, deltaY: 1),
+        ])
+        #expect(reports(c.sent) == [[0, 1], [0, -1], [0, 1]])
+    }
+
+    @Test func aHugeLineDeltaIsClampedInTheReport() {
+        let c = Capture()
+        c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: -90, deltaY: 90, lineDeltaX: -500, lineDeltaY: 500))
+
+        #expect(c.sent == [.scroll(deltaX: -500, deltaY: 500)])
+        #expect(reports(c.sent) == [[-127, 127]])
     }
 
     @Test func nothingIsSentWithoutMouseCapture() {
@@ -269,13 +296,84 @@ struct ScrollScalingTests {
         #expect(accumulator.pendingY == 0)
     }
 
-    @Test func notchedWheelDeltasPassThroughUnchanged() {
+    @Test func withoutLineDeltasANotchRoundsButNeverToNothing() {
         #expect(steps([
             ScrollWheelInput(deltaX: 0, deltaY: 1),
             ScrollWheelInput(deltaX: 0, deltaY: -1),
             ScrollWheelInput(deltaX: 0.4, deltaY: 7.5),
+            ScrollWheelInput(deltaX: -0.1, deltaY: 2.4),
             ScrollWheelInput(deltaX: 0, deltaY: 300),
-        ]) == [[0, 1], [0, -1], [0.4, 7.5], [0, 300]])
+        ]) == [[0, 1], [0, -1], [1, 8], [-1, 2], [0, 300]])
+    }
+
+    // MARK: - Notched wheel steps
+
+    private func notched(
+        _ deltaX: CGFloat, _ deltaY: CGFloat, lines lineX: Int?, _ lineY: Int?
+    ) -> [Int] {
+        let out = ScrollAccumulator.notchedSteps(
+            ScrollWheelInput(deltaX: deltaX, deltaY: deltaY, lineDeltaX: lineX, lineDeltaY: lineY)
+        )
+        return [out.x, out.y]
+    }
+
+    @Test func aSlowNotchIsOneStepFromItsWholeLine() {
+        #expect(notched(0, 0.1, lines: 0, 1) == [0, 1])
+        #expect(notched(0, 0.4, lines: 0, 1) == [0, 1])
+    }
+
+    @Test func aSlowNotchWithNoWholeLineIsStillOneStep() {
+        #expect(notched(0, 0.2, lines: 0, 0) == [0, 1])
+        #expect(notched(0, -0.2, lines: 0, 0) == [0, -1])
+        #expect(notched(0, 0.2, lines: nil, nil) == [0, 1])
+    }
+
+    @Test func aSlowNotchDownIsOneStepDown() {
+        #expect(notched(0, -0.1, lines: 0, -1) == [0, -1])
+        #expect(notched(0, -0.35, lines: 0, -1) == [0, -1])
+    }
+
+    @Test func aFastSpinSendsItsWholeLines() {
+        #expect(notched(0, 4.7, lines: 0, 6) == [0, 6])
+        #expect(notched(0, -4.7, lines: 0, -6) == [0, -6])
+        // The whole lines win even when the fraction would round higher.
+        #expect(notched(0, 2.6, lines: 0, 2) == [0, 2])
+    }
+
+    @Test func aHorizontalNotchStepsX() {
+        #expect(notched(0.15, 0, lines: 1, 0) == [1, 0])
+        #expect(notched(-0.4, 0, lines: 0, 0) == [-1, 0])
+        #expect(notched(-3.2, 0, lines: -4, 0) == [-4, 0])
+    }
+
+    @Test func bothAxesStepTogether() {
+        #expect(notched(-0.1, 0.3, lines: -1, 2) == [-1, 2])
+        #expect(notched(0.2, -0.2, lines: 0, 0) == [1, -1])
+    }
+
+    @Test func aZeroNotchedEventSendsNothing() {
+        #expect(notched(0, 0, lines: 0, 0) == [0, 0])
+        #expect(notched(0, 0, lines: nil, nil) == [0, 0])
+        #expect(steps([ScrollWheelInput(deltaX: 0, deltaY: 0, lineDeltaX: 0, lineDeltaY: 0)]) == [[0, 0]])
+        #expect(notched(.nan, .infinity, lines: nil, nil) == [0, 0])
+    }
+
+    @Test func wholeLinesWithNoFractionStillStep() {
+        #expect(notched(0, 0, lines: 0, 3) == [0, 3])
+    }
+
+    @Test func aDisagreeingSignFollowsTheScrollingDelta() {
+        #expect(notched(0, -0.3, lines: 0, 2) == [0, -2])
+        #expect(notched(0.3, 0, lines: -1, 0) == [1, 0])
+    }
+
+    @Test func aPreciseEventIgnoresLineDeltas() {
+        let precise = ScrollWheelInput(
+            deltaX: 0, deltaY: 2.5, hasPreciseDeltas: true, phase: .began, lineDeltaX: 0, lineDeltaY: 5
+        )
+        var accumulator = ScrollAccumulator()
+        #expect(accumulator.add(precise) == nil)
+        #expect(accumulator.pendingY == 0.25)
     }
 
     @Test func aNotchedWheelEventClearsPreciseLeftovers() {
@@ -413,5 +511,44 @@ struct ScrollScalingTests {
         // way. Only the sign is pinned here.
         #expect(lineY == 0 || (lineY < 0) == (pixels < 0))
         #expect(lineX == 0 || (lineX < 0) == (pixels < 0))
+    }
+
+    @Test func aLineEventCarriesItsWholeLines() throws {
+        let event = try #require(NSEvent(cgEvent: try lineEvent(vertical: 1, horizontal: -2)))
+
+        let input = ScrollWheelInput(event: event)
+
+        #expect(input.hasPreciseDeltas == false)
+        #expect(input.lineDeltaY == 1)
+        #expect(input.lineDeltaX == -2)
+        #expect(steps([input]) == [[-2, 1]])
+    }
+
+    @Test func aPixelEventCarriesItsWholeLinesButStillScalesByPoints() throws {
+        let cg = try #require(CGEvent(
+            scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -12, wheel2: 25, wheel3: 0
+        ))
+        let event = try #require(NSEvent(cgEvent: cg))
+
+        let input = ScrollWheelInput(event: event)
+
+        #expect(input.hasPreciseDeltas)
+        #expect(input.lineDeltaY == Int(cg.getIntegerValueField(.scrollWheelEventDeltaAxis1)))
+        #expect(input.lineDeltaX == Int(cg.getIntegerValueField(.scrollWheelEventDeltaAxis2)))
+        // -12 and 25 points: one step down and two to the side, from the points alone.
+        #expect(steps([input]) == [[2, -1]])
+    }
+
+    @Test func aSlowNotchFromTheEventIsOneStep() throws {
+        // One notch that acceleration scaled to a tenth of a line.
+        let cg = try lineEvent(vertical: 1)
+        cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: 0.1)
+        let event = try #require(NSEvent(cgEvent: cg))
+
+        let input = ScrollWheelInput(event: event)
+
+        #expect(abs(input.deltaY - 0.1) < 0.001)
+        #expect(input.lineDeltaY == Int(cg.getIntegerValueField(.scrollWheelEventDeltaAxis1)))
+        #expect(steps([input]) == [[0, 1]])
     }
 }

@@ -3,9 +3,15 @@ import AppKit
 /// One scroll-wheel event as the video view received it.
 struct ScrollWheelInput: Equatable {
     /// `NSEvent.scrollingDeltaX/Y`: lines for a notched wheel, points for a trackpad or Magic
-    /// Mouse. The user's natural-scrolling choice is already applied.
+    /// Mouse. The user's natural-scrolling choice is already applied. A notched wheel's lines are
+    /// scaled by macOS's wheel acceleration, so one slow notch is often a fraction of a line.
     var deltaX: CGFloat
     var deltaY: CGFloat
+    /// The event's whole-line deltas (`scrollWheelEventDeltaAxis2` and `Axis1`). For a notched
+    /// wheel this is at least one line per notch, and more when a fast spin is accelerated. Nil
+    /// when the event did not carry them.
+    var lineDeltaX: Int?
+    var lineDeltaY: Int?
     /// True for a trackpad or Magic Mouse (many small point deltas, then momentum); false for a
     /// notched wheel (one line delta per notch).
     var hasPreciseDeltas: Bool
@@ -22,10 +28,14 @@ struct ScrollWheelInput: Equatable {
         hasPreciseDeltas: Bool = false,
         phase: NSEvent.Phase = [],
         momentumPhase: NSEvent.Phase = [],
-        timestamp: TimeInterval = 0
+        timestamp: TimeInterval = 0,
+        lineDeltaX: Int? = nil,
+        lineDeltaY: Int? = nil
     ) {
         self.deltaX = deltaX
         self.deltaY = deltaY
+        self.lineDeltaX = lineDeltaX
+        self.lineDeltaY = lineDeltaY
         self.hasPreciseDeltas = hasPreciseDeltas
         self.phase = phase
         self.momentumPhase = momentumPhase
@@ -33,20 +43,27 @@ struct ScrollWheelInput: Equatable {
     }
 
     init(event: NSEvent) {
+        let cgEvent = event.cgEvent
+        // Kept within 32 bits so flipping the sign can never overflow.
+        func lines(_ field: CGEventField) -> Int? {
+            cgEvent.map { Int(Int32(clamping: $0.getIntegerValueField(field))) }
+        }
         self.init(
             deltaX: event.scrollingDeltaX,
             deltaY: event.scrollingDeltaY,
             hasPreciseDeltas: event.hasPreciseScrollingDeltas,
             phase: event.phase,
             momentumPhase: event.momentumPhase,
-            timestamp: event.timestamp
+            timestamp: event.timestamp,
+            lineDeltaX: lines(.scrollWheelEventDeltaAxis2),
+            lineDeltaY: lines(.scrollWheelEventDeltaAxis1)
         )
     }
 }
 
 /// Turns scroll events into wheel steps for the target.
 ///
-/// A notched wheel passes through as it always has: its line deltas are already wheel steps.
+/// A notched wheel sends one wheel step per whole line the event reports; see `notchedSteps`.
 /// A trackpad or Magic Mouse reports points, many per gesture; sent as they are, every point
 /// became a whole wheel step on the target. Its deltas are summed per axis and sent as one wheel
 /// step per `pointsPerStep` points, keeping what is left over for the next event.
@@ -70,8 +87,9 @@ struct ScrollAccumulator {
     mutating func add(_ input: ScrollWheelInput) -> (deltaX: CGFloat, deltaY: CGFloat)? {
         guard input.hasPreciseDeltas else {
             reset()
-            guard input.deltaX != 0 || input.deltaY != 0 else { return nil }
-            return (input.deltaX, input.deltaY)
+            let steps = Self.notchedSteps(input)
+            guard steps.x != 0 || steps.y != 0 else { return nil }
+            return (CGFloat(steps.x), CGFloat(steps.y))
         }
 
         if let last = lastPreciseTimestamp, input.timestamp - last > Self.idleReset {
@@ -94,6 +112,31 @@ struct ScrollAccumulator {
 
         guard stepsX != 0 || stepsY != 0 else { return nil }
         return (CGFloat(stepsX), CGFloat(stepsY))
+    }
+
+    /// The wheel steps a notched wheel's event sends on each axis.
+    ///
+    /// `scrollingDelta` is scaled by wheel acceleration: one slow notch is often 0.1 to 0.4 of a
+    /// line, which rounded to nothing and lost the notch. The event's whole-line delta is at
+    /// least one per notch and grows on a fast spin, so it is what is sent. Should it be zero
+    /// or missing while `scrollingDelta` is not, the notch still sends at least one step.
+    static func notchedSteps(_ input: ScrollWheelInput) -> (x: Int, y: Int) {
+        (notchedSteps(lines: input.lineDeltaX, delta: input.deltaX),
+         notchedSteps(lines: input.lineDeltaY, delta: input.deltaY))
+    }
+
+    /// One axis of `notchedSteps(_:)`.
+    static func notchedSteps(lines: Int?, delta: CGFloat) -> Int {
+        let delta = delta.isFinite ? delta : 0
+        if let lines, lines != 0 {
+            // The two have the same sign. Should they ever differ, follow `scrollingDelta`: it is
+            // the one documented to carry the user's natural-scrolling choice.
+            if delta != 0, (delta < 0) != (lines < 0) { return -lines }
+            return lines
+        }
+        guard delta != 0 else { return 0 }
+        let whole = Int(min(max(abs(delta).rounded(), 1), 1_000_000))
+        return delta < 0 ? -whole : whole
     }
 
     mutating func reset() {
