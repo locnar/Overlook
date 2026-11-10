@@ -69,6 +69,7 @@ class InputManager: ObservableObject {
     enum SentInput: Equatable {
         case key(UInt16, isDown: Bool)
         case button(MouseButton, isDown: Bool)
+        /// In the target's direction: positive X pans right, positive Y scrolls up.
         case scroll(deltaX: CGFloat, deltaY: CGFloat)
     }
 
@@ -498,8 +499,26 @@ class InputManager: ObservableObject {
         guard isMouseCaptureEnabled, focusGate.admitsPointerMotion else { return }
         if isRelativeMouseMode, !isPointerLocked { return }
         guard let steps = scrollAccumulator.add(input) else { return }
-        let scrollEvent = MouseScrollEvent(deltaX: steps.deltaX, deltaY: steps.deltaY, timestamp: CACurrentMediaTime())
+        // From here on the steps are in the target's direction, not the Mac's.
+        let target = Self.targetScrollSteps(macDeltaX: steps.deltaX, macDeltaY: steps.deltaY)
+        let scrollEvent = MouseScrollEvent(deltaX: target.deltaX, deltaY: target.deltaY, timestamp: CACurrentMediaTime())
         sendMouseScrollEvent(scrollEvent)
+    }
+
+    /// Turns wheel steps in the Mac's direction into the target's, the one place this happens.
+    ///
+    /// Vertically the two agree: a positive `scrollingDeltaY` scrolls up on the Mac, and a
+    /// positive USB HID Wheel value scrolls up on the target. Horizontally they are opposite: a
+    /// positive `scrollingDeltaX` scrolls left on the Mac, but a positive HID AC Pan value scrolls
+    /// right (Windows `WM_MOUSEHWHEEL` and Linux `REL_HWHEEL` are positive-right too). kvmd puts
+    /// the wheel numbers into the USB report unchanged, so X is negated here and Y is not.
+    ///
+    /// Natural Scrolling needs nothing extra: macOS flips both signs before Overlook sees the
+    /// event, so the target scrolls the way the Mac's own apps do, on both axes. This runs after
+    /// `ScrollAccumulator` has turned lines or points into steps, so it applies once to every
+    /// path: notched wheel and trackpad, absolute mode and locked relative mode.
+    nonisolated static func targetScrollSteps(macDeltaX: CGFloat, macDeltaY: CGFloat) -> (deltaX: CGFloat, deltaY: CGFloat) {
+        (-macDeltaX, macDeltaY)
     }
 
     func setTransportMode(_ mode: TransportMode) {
@@ -1152,7 +1171,8 @@ class InputManager: ObservableObject {
     }
     
     /// The wheel report the HID socket sends for a scroll event: each axis rounded to a whole
-    /// step and clamped to the report's signed byte.
+    /// step and clamped to the report's signed byte. The deltas are already in the target's
+    /// direction (`targetScrollSteps`): positive X pans right, positive Y scrolls up.
     nonisolated static func glkvmWheelDeltas(deltaX: CGFloat, deltaY: CGFloat) -> (x: Int, y: Int) {
         func wheel(_ delta: CGFloat) -> Int {
             min(max(Int(delta.rounded()), -127), 127)
@@ -1172,6 +1192,8 @@ class InputManager: ObservableObject {
             return
         }
 
+        // The data-channel event carries the same values as the HID report, in the target's
+        // direction: positive deltaX pans right, positive deltaY scrolls up.
         let inputEvent = InputEvent(
             type: "mouse-scroll",
             data: [
@@ -1929,6 +1951,8 @@ struct MouseMoveEvent {
     let timestamp: CFTimeInterval
 }
 
+/// Whole wheel steps in the target's direction (see `InputManager.targetScrollSteps`):
+/// positive X pans right and positive Y scrolls up, as in a USB HID mouse report.
 struct MouseScrollEvent {
     let deltaX: CGFloat
     let deltaY: CGFloat

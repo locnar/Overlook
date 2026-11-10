@@ -5,6 +5,8 @@ struct ScrollWheelInput: Equatable {
     /// `NSEvent.scrollingDeltaX/Y`: lines for a notched wheel, points for a trackpad or Magic
     /// Mouse. The user's natural-scrolling choice is already applied. A notched wheel's lines are
     /// scaled by macOS's wheel acceleration, so one slow notch is often a fraction of a line.
+    /// In the Mac's direction: positive Y scrolls up and positive X scrolls left.
+    /// `InputManager.targetScrollSteps` turns X around for the target.
     var deltaX: CGFloat
     var deltaY: CGFloat
     /// The event's whole-line deltas (`scrollWheelEventDeltaAxis2` and `Axis1`). For a notched

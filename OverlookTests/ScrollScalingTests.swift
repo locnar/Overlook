@@ -8,6 +8,10 @@ import Testing
 /// No manager here has a device: what it would send is read from `sentInputObserver`, and the
 /// HID socket's wheel report is checked through `InputManager.glkvmWheelDeltas`. Trackpad
 /// scaling is checked on `ScrollAccumulator` alone, then through the manager.
+///
+/// `ScrollAccumulator` works in the Mac's direction (positive X scrolls left); what the manager
+/// sends is in the target's (positive X pans right), so X changes sign on the way through and Y
+/// does not. See `InputManager.targetScrollSteps`.
 @MainActor
 @Suite("Scroll scaling")
 struct ScrollScalingTests {
@@ -59,7 +63,8 @@ struct ScrollScalingTests {
         c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 1.5, deltaY: -2.25))
         c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0.4, deltaY: -1.3, lineDeltaX: 1, lineDeltaY: -2))
 
-        #expect(c.sent == [.scroll(deltaX: 2, deltaY: -2), .scroll(deltaX: 1, deltaY: -2)])
+        // X goes out with the target's sign: two and one steps left on the Mac, -2 and -1 pan.
+        #expect(c.sent == [.scroll(deltaX: -2, deltaY: -2), .scroll(deltaX: -1, deltaY: -2)])
     }
 
     @Test func aSlowNotchReachesTheTarget() {
@@ -84,8 +89,9 @@ struct ScrollScalingTests {
         let c = Capture()
         c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: -90, deltaY: 90, lineDeltaX: -500, lineDeltaY: 500))
 
-        #expect(c.sent == [.scroll(deltaX: -500, deltaY: 500)])
-        #expect(reports(c.sent) == [[-127, 127]])
+        // 500 lines right on the Mac is a pan of +500 on the target, clamped to +127.
+        #expect(c.sent == [.scroll(deltaX: 500, deltaY: 500)])
+        #expect(reports(c.sent) == [[127, 127]])
     }
 
     @Test func nothingIsSentWithoutMouseCapture() {
@@ -113,10 +119,11 @@ struct ScrollScalingTests {
         c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: -3))
         c.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 2, deltaY: 0))
 
+        // Unscaled: the same number of steps, with X in the target's direction.
         #expect(c.sent == [
             .scroll(deltaX: 0, deltaY: 1),
             .scroll(deltaX: 0, deltaY: -3),
-            .scroll(deltaX: 2, deltaY: 0),
+            .scroll(deltaX: -2, deltaY: 0),
         ])
     }
 
@@ -136,7 +143,8 @@ struct ScrollScalingTests {
         c.input.handleVideoMouseScroll(precise(-400, 300, at: 0, phase: .began))
 
         let cap = CGFloat(ScrollAccumulator.maxStepsPerEvent)
-        #expect(c.sent == [.scroll(deltaX: -cap, deltaY: cap)])
+        // 400 points right on the Mac, capped, is a pan of +cap on the target.
+        #expect(c.sent == [.scroll(deltaX: cap, deltaY: cap)])
     }
 
     // MARK: - ScrollAccumulator
@@ -466,7 +474,7 @@ struct ScrollScalingTests {
         }
     }
 
-    @Test func aLineEventScrollsTheTargetTheWayItArrived() throws {
+    @Test func aLineEventScrollsTheTargetTheWayTheMacWould() throws {
         let c = Capture()
         let lines: [(vertical: Int32, horizontal: Int32)] = [(1, 0), (-1, 0), (0, 1), (0, -1), (2, -3)]
         for line in lines {
@@ -474,8 +482,81 @@ struct ScrollScalingTests {
             c.input.handleVideoMouseScroll(ScrollWheelInput(event: event))
         }
 
-        // The vertical line goes out as Y and the horizontal one as X, each with its own sign.
-        #expect(reports(c.sent) == [[0, 1], [0, -1], [1, 0], [-1, 0], [-3, 2]])
+        // The vertical line goes out as Y with its own sign: up on the Mac (positive) is up in
+        // HID (positive). The horizontal line goes out as X with its sign flipped: positive
+        // `scrollingDeltaX` is left on the Mac, but positive HID AC Pan is right. Sent unflipped,
+        // as this test once pinned, the target scrolled sideways backwards.
+        #expect(reports(c.sent) == [[0, 1], [0, -1], [-1, 0], [1, 0], [3, 2]])
+    }
+
+    // MARK: - Horizontal direction
+
+    /// The wheel report for each line event fed through a fresh manager, in order.
+    private func reportsForLineEvents(_ lines: [(vertical: Int32, horizontal: Int32)]) throws -> [[Int]] {
+        let c = Capture()
+        for line in lines {
+            let event = try #require(NSEvent(cgEvent: try lineEvent(vertical: line.vertical, horizontal: line.horizontal)))
+            c.input.handleVideoMouseScroll(ScrollWheelInput(event: event))
+        }
+        return reports(c.sent)
+    }
+
+    @Test func onlyXChangesSignOnTheWayToTheTarget() {
+        func target(_ x: CGFloat, _ y: CGFloat) -> [CGFloat] {
+            let out = InputManager.targetScrollSteps(macDeltaX: x, macDeltaY: y)
+            return [out.deltaX, out.deltaY]
+        }
+        #expect(target(1, 1) == [-1, 1])
+        #expect(target(-3, -2) == [3, -2])
+        #expect(target(0, 4) == [0, 4])
+    }
+
+    @Test func scrollingLeftIsANegativePan() throws {
+        // A positive `scrollingDeltaX` is the Mac scrolling left.
+        let event = try #require(NSEvent(cgEvent: try lineEvent(vertical: 0, horizontal: 1)))
+        #expect(event.scrollingDeltaX > 0)
+
+        #expect(try reportsForLineEvents([(0, 1), (0, 2)]) == [[-1, 0], [-2, 0]])
+    }
+
+    @Test func scrollingRightIsAPositivePan() throws {
+        #expect(try reportsForLineEvents([(0, -1), (0, -4)]) == [[1, 0], [4, 0]])
+    }
+
+    @Test func verticalScrollingKeepsItsSign() throws {
+        #expect(try reportsForLineEvents([(1, 0), (-1, 0), (3, 0), (-5, 0)]) == [[0, 1], [0, -1], [0, 3], [0, -5]])
+    }
+
+    @Test func aCombinedEventFlipsOnlyItsX() throws {
+        // Up and left on the Mac: up and left on the target, which is +Y and -X in HID.
+        #expect(try reportsForLineEvents([(1, 1), (-2, 3), (2, -1)]) == [[-1, 1], [-3, -2], [1, 2]])
+    }
+
+    @Test func aTrackpadSwipeFlipsXOnce() {
+        let c = Capture()
+        // 20 events of 2.5 points to the left on the Mac: five steps, each a pan of -1. Flipped
+        // twice, they would come out +1; not flipped at all, the same.
+        c.input.handleVideoMouseScroll(precise(2.5, 0, at: 0, phase: .began))
+        for i in 1..<20 {
+            c.input.handleVideoMouseScroll(precise(2.5, 0, at: Double(i) * 0.01, phase: .changed))
+        }
+
+        #expect(c.sent == Array(repeating: .scroll(deltaX: -1, deltaY: 0), count: 5))
+        #expect(reports(c.sent) == Array(repeating: [-1, 0], count: 5))
+    }
+
+    @Test func aTrackpadEventFromTheNSEventFlipsXOnce() throws {
+        let c = Capture()
+        // 25 points left and 12 down on the Mac, as a trackpad's pixel event.
+        let cg = try #require(CGEvent(
+            scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -12, wheel2: 25, wheel3: 0
+        ))
+        cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(CGScrollPhase.began.rawValue))
+        let event = try #require(NSEvent(cgEvent: cg))
+        c.input.handleVideoMouseScroll(ScrollWheelInput(event: event))
+
+        // Two steps of pan to the left and one down.
+        #expect(reports(c.sent) == [[-2, -1]])
     }
 
     @Test(arguments: [1, -1, 3, -6] as [Int32])
