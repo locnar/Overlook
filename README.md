@@ -11,7 +11,7 @@ It focuses on *fast*, *low-friction* day-to-day “reach over and fix it” work
 - Low-latency WebRTC video streaming (Janus signaling).
 - Full keyboard + mouse input capture.
 - **Clipboard bridging**:
-  - **Local → Remote paste** with `⌘V` (types the clipboard into the remote machine).
+  - **Local → Remote paste** with `⇧⌘V` (types the clipboard into the remote machine).
   - **Remote → Local copy via ML OCR**: select text directly from the live video stream using Apple Vision and copy it to your Mac clipboard.
 
 If you spend time in BIOS/UEFI, bootloaders, headless servers, or “the machine that’s *just* out of reach”, Overlook aims to make the remote console feel like a first-class Mac app.
@@ -36,11 +36,11 @@ This is especially useful for:
 
 **Note:** OCR is performed locally on your Mac.
 
-### 2) Paste to the remote machine with `⌘V`
+### 2) Paste to the remote machine with `⇧⌘V`
 
-Overlook intercepts `⌘V` while input capture is enabled and sends the macOS clipboard to the remote via the device’s HID “print text” API.
+Overlook intercepts `⇧⌘V` while input capture is enabled and sends the macOS clipboard to the remote via the device’s HID “print text” API. Plain `⌘C` and `⌘V` go to the remote like any other keystroke, so copy and paste work inside the remote machine's own apps.
 
-This replaces the old “Paste to Remote” settings UI: the workflow is now the shortcut you already expect.
+This replaces the old “Paste to Remote” settings UI: **Edit › Paste Clipboard to Target** (`⇧⌘V`) does the same from the menu.
 
 ### 3) Low-latency WebRTC video
 
@@ -287,6 +287,7 @@ You can enable OCR mode from:
 
 - The main toolbar button (document/text icon).
 - The fullscreen hover controls.
+- **Edit › Toggle OCR Selection**, or `⇧⌘C` (also while keys are being sent to the target).
 - The menu bar item (also supports a global shortcut).
 
 When OCR mode is enabled:
@@ -318,11 +319,12 @@ If the area holds no text, a “No text found” notice appears in the bottom-ri
 
 ## Clipboard Paste (Local → Remote)
 
-### Paste with `⌘V`
+### Paste with `⇧⌘V`
 
-When connected and input capture is active:
+When connected:
 
-- Press `⌘V` on your Mac.
+- Press `⇧⌘V` on your Mac, or choose **Edit › Paste Clipboard to Target**.
+- `⌘V` on its own goes to the remote as a keystroke, pasting the remote machine's own clipboard.
 - Overlook reads your macOS clipboard and sends it to the remote machine via the device’s HID text entry API.
 
 This is ideal for:
@@ -334,7 +336,7 @@ This is ideal for:
 
 ### Tips
 
-- The device types the text at its own pace (a few milliseconds per key), so a long paste takes a while to arrive. Overlook sends it in parts of up to 512 characters, one after another, and a second `⌘V` waits for the first to finish. Disconnecting stops a paste that is still being typed.
+- The device types the text at its own pace (a few milliseconds per key), so a long paste takes a while to arrive. Overlook sends it in parts of up to 512 characters, one after another, and a second `⇧⌘V` waits for the first to finish. Disconnecting stops a paste that is still being typed.
 - Characters the target's keymap has no key for (emoji, for example) are skipped by the device.
 - For best reliability, paste smaller chunks when interacting with BIOS/UEFI or slow boot environments.
 
@@ -346,17 +348,19 @@ Overlook includes a few “quality of life” shortcuts.
 
 ### In-session shortcuts (while keyboard capture is enabled)
 
-- `⌘C`: toggles OCR selection mode (so you can “copy” from the remote screen).
-- `⌘V`: pastes macOS clipboard to the remote.
+- `⇧⌘C`: toggles OCR selection mode (so you can “copy” from the remote screen).
+- `⇧⌘V`: pastes macOS clipboard to the remote.
 - `⇧⌘S`: saves a screenshot.
 - `⇧⌘R`: starts or stops a recording.
 - `⌘Q`: quits Overlook (releases any held keys and hangs up first).
 
-All five are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+S (Snipping Tool), Win+Shift+R and Win+Q are not reachable through Overlook. `⇧⌘S` and `⇧⌘R` are also the **Capture** menu's shortcuts, so they work when keyboard capture is off as well.
+Plain `⌘C` and `⌘V` are not on this list: they go to the target, so copy and paste work inside the remote machine.
+
+All five are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+C, Win+Shift+V, Win+Shift+S (Snipping Tool), Win+Shift+R and Win+Q are not reachable through Overlook. `⇧⌘C` and `⇧⌘V` are also the **Edit** menu's **Toggle OCR Selection** and **Paste Clipboard to Target**, and `⇧⌘S` and `⇧⌘R` the **Capture** menu's shortcuts, so all four work when keyboard capture is off as well. With keyboard capture off, `⌘C` and `⌘V` copy and paste in Overlook's own text fields as usual.
 
 Each acts once per press: holding the keys down does not repeat it.
 
-Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⌘V`, `⌥⌘C`, `⌥⇧⌘S`), or `⇧` added to `⌘C`, `⌘V` or `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
+Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⇧⌘V`, `⌥⇧⌘C`, `⌥⇧⌘S`), or `⇧` dropped from a `⇧⌘` chord (`⌘C`, `⌘V`, `⌘S`), or added to `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
 
 ### Menu bar global shortcuts
 
@@ -469,7 +473,7 @@ The device's **Mouse mode** (Absolute / Relative) is read from the KVM on connec
   - Optional audio/mic track.
 - `Overlook/InputManager.swift`
   - Keyboard/mouse capture.
-  - Local→remote paste (`⌘V`), queued through `RemotePaste.swift`.
+  - Local→remote paste (`⇧⌘V`), queued through `RemotePaste.swift`.
   - HID transport via WebSocket to the device.
 - `Overlook/RemotePaste.swift`
   - Splits a paste into parts the device's `hid/print` types one request at a time, and runs pastes one after another.

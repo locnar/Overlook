@@ -426,5 +426,7 @@ extension View {
             // are that window's, and nil while no console window is key.
             .focusedSceneObject(session.panels)
             .focusedSceneObject(session.captureManager)
+            .focusedSceneObject(session)
+            .focusedSceneObject(session.connection)
     }
 }

@@ -294,7 +294,8 @@ extension View {
 /// declares it — without that group there is nothing for this to sit before.
 ///
 /// Deliberately no key equivalents. Every chord the app claims is one the remote target stops
-/// receiving, and this codebase already spends ⇧⌘S and ⇧⌘R on capture; three more for panels
+/// receiving, and this codebase already spends ⇧⌘S and ⇧⌘R on capture and ⇧⌘C and ⇧⌘V on OCR
+/// and paste; three more for panels
 /// that are one click away is a poor trade. (Same reasoning as the capture-region commands.)
 struct PanelCommands: Commands {
     /// The key window's panels; nil, and every entry greyed out, while no console window is key.

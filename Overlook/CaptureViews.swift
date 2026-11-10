@@ -416,6 +416,40 @@ struct CaptureCommands: Commands {
     }
 }
 
+// MARK: - Edit menu: OCR selection and paste to the target
+
+/// Overlook's two clipboard commands, in the Edit menu below the standard Copy and Paste: ⇧⌘C
+/// toggles OCR selection (copying text off the remote screen) and ⇧⌘V types this Mac's clipboard
+/// on the target. The standard ⌘C and ⌘V stay as they are, so they copy and paste in Overlook's
+/// own text fields while keys are not being sent to the target; while they are, ⌘C and ⌘V go to
+/// the target and `InputManager` reproduces ⇧⌘C and ⇧⌘V.
+///
+/// Both act on the key window's session and are greyed out while it is not connected.
+struct RemoteClipboardCommands: Commands {
+    @FocusedObject private var session: ConsoleSession?
+    @FocusedObject private var connection: SessionConnection?
+
+    private var isConnected: Bool { session != nil && connection?.connectedDevice != nil }
+
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Divider()
+
+            Button("Toggle OCR Selection") {
+                session?.perform(.toggleCopyMode)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(!isConnected)
+
+            Button("Paste Clipboard to Target") {
+                session?.inputManager.pasteClipboardToRemote()
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+            .disabled(!isConnected)
+        }
+    }
+}
+
 // MARK: - Settings section
 
 struct CaptureSettingsSection: View {

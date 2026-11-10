@@ -7,7 +7,7 @@ import Carbon.HIToolbox
 
 @MainActor
 class InputManager: ObservableObject {
-    /// The app's own chords that keyboard capture keeps rather than sends: ⇧⌘S, ⇧⌘R, and ⌘C for
+    /// The app's own chords that keyboard capture keeps rather than sends: ⇧⌘S, ⇧⌘R, and ⇧⌘C for
     /// OCR copy mode. Capture swallows every key before the menus can see it, so it reproduces
     /// them itself.
     enum LocalShortcut: Equatable {
@@ -21,11 +21,14 @@ class InputManager: ObservableObject {
     var onLocalShortcut: ((LocalShortcut) -> Void)?
 
     /// The chords keyboard capture keeps for Overlook instead of sending them to the target:
-    /// - ⌘C toggles OCR copy mode;
-    /// - ⌘V types the Mac's clipboard on the target;
-    /// - ⇧⌘S saves a screenshot and ⇧⌘R starts or stops a recording (the Capture menu's
-    ///   shortcuts, reproduced because capture swallows every key event before the menu sees it);
+    /// - ⇧⌘C toggles OCR copy mode;
+    /// - ⇧⌘V types the Mac's clipboard on the target;
+    /// - ⇧⌘S saves a screenshot and ⇧⌘R starts or stops a recording.
     /// - ⌘Q quits Overlook, as in every other Mac app.
+    ///
+    /// The first four are also menu shortcuts (Edit and Capture), reproduced here because capture
+    /// swallows every key event before the menus see it. Plain ⌘C and ⌘V are the target's, like
+    /// any other ⌘ keystroke, so copy and paste work inside the target's own apps.
     enum InterceptedChord: Equatable, CaseIterable {
         case copyMode
         case paste
@@ -48,8 +51,8 @@ class InputManager: ObservableObject {
         /// keystroke the target's.
         var modifiers: NSEvent.ModifierFlags {
             switch self {
-            case .copyMode, .paste, .quit: return [.command]
-            case .saveScreenshot, .toggleRecording: return [.command, .shift]
+            case .quit: return [.command]
+            case .copyMode, .paste, .saveScreenshot, .toggleRecording: return [.command, .shift]
             }
         }
     }
@@ -59,7 +62,7 @@ class InputManager: ObservableObject {
     nonisolated static let chordModifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
 
     /// Which of Overlook's chords a key-down is, or nil when it goes to the target. A chord needs
-    /// exactly its own modifiers among ⌘ ⇧ ⌥ ⌃: ⌃⌘V, ⌥⌘C or ⇧⌘C, for example, are the target's.
+    /// exactly its own modifiers among ⌘ ⇧ ⌥ ⌃: ⌘C, ⌘V, ⌃⇧⌘V or ⌥⇧⌘C, for example, are the target's.
     nonisolated static func interceptedChord(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> InterceptedChord? {
         let held = modifiers.intersection(chordModifiers)
         return InterceptedChord.allCases.first { $0.keyCode == keyCode && $0.modifiers == held }
@@ -77,7 +80,7 @@ class InputManager: ObservableObject {
     /// it: with no device attached, it is the one place a send can be observed.
     var sentInputObserver: ((SentInput) -> Void)?
 
-    /// Where ⌘V reads the Mac's clipboard, and what ⌘Q does. Only the tests replace them, so a
+    /// Where ⇧⌘V reads the Mac's clipboard, and what ⌘Q does. Only the tests replace them, so a
     /// chord can be driven without touching the real pasteboard or quitting the test host.
     var readClipboardText: () -> String? = { NSPasteboard.general.string(forType: .string) }
     var terminateApp: () -> Void = { NSApp.terminate(nil) }
@@ -101,7 +104,7 @@ class InputManager: ObservableObject {
     // HID transport: every send is chained on `hidCommandTail` so key and mouse events reach the
     // device in the order they happened; a failed send schedules a socket reconnect.
     private var hidCommandTail: Task<Void, Never>?
-    /// ⌘V pastes, typed one at a time through the device's `hid/print`.
+    /// ⇧⌘V pastes, typed one at a time through the device's `hid/print`.
     private let remotePaste = RemotePasteQueue()
     /// True when no paste is queued or being typed.
     var isPasteIdle: Bool { remotePaste.isIdle }
@@ -755,7 +758,7 @@ class InputManager: ObservableObject {
                 // Overlook's own chords, kept rather than sent; see `InterceptedChord`.
                 if let chord = Self.interceptedChord(keyCode: keyCode, modifiers: modifiers) {
                     // Once per physical press: the auto-repeats of a held chord are swallowed
-                    // here, so a held ⌘V pastes once, ⌘C toggles copy mode once and ⇧⌘R cannot
+                    // here, so a held ⇧⌘V pastes once, ⇧⌘C toggles copy mode once and ⇧⌘R cannot
                     // toggle twice. They still never reach the target.
                     guard !event.isARepeat else { return }
                     prepareForLocalCommandShortcut()
@@ -764,7 +767,10 @@ class InputManager: ObservableObject {
                     case .copyMode:
                         onLocalShortcut?(.toggleCopyMode)
                     case .paste:
-                        pasteClipboardToRemote()
+                        // ⇧ went to the target when it was pressed, before V made this a chord.
+                        // The device types the paste under whatever the target holds, so ⇧ is let
+                        // go first; otherwise every letter would come out shifted.
+                        pasteClipboardToRemote(after: releaseRemoteShift())
                     case .saveScreenshot:
                         onLocalShortcut?(.saveScreenshot)
                     case .toggleRecording:
@@ -1050,20 +1056,37 @@ class InputManager: ObservableObject {
         sendKeyEvent(keyEvent)
     }
 
-    private func pasteClipboardToRemote() {
+    /// Types the Mac's clipboard on the target: from ⇧⌘V under keyboard capture, or from the Edit
+    /// menu's Paste Clipboard to Target. Starts once `after` (a HID command) has been sent, if given.
+    func pasteClipboardToRemote(after: Task<Void, Never>? = nil) {
         guard glkvmClient != nil else { return }
         guard let text = readClipboardText() else { return }
-        pasteToRemote(text)
+        pasteToRemote(text, after: after)
     }
 
-    /// Types `text` into the target, after any paste still under way. Internal so tests can paste
-    /// without going through the pasteboard.
+    /// Types `text` into the target, after any paste still under way and after `after`. Internal
+    /// so tests can paste without going through the pasteboard.
     @discardableResult
-    func pasteToRemote(_ text: String) -> Task<Void, Never>? {
+    func pasteToRemote(_ text: String, after: Task<Void, Never>? = nil) -> Task<Void, Never>? {
         guard let client = glkvmClient else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return remotePaste.enqueue(trimmed, to: client, log: log)
+        return remotePaste.enqueue(trimmed, to: client, log: log, after: after)
+    }
+
+    /// Lets go of ⇧ on the target where it is held there, and returns the HID command doing it,
+    /// or nil when there was nothing to let go. The physical key's own release still goes out
+    /// later; a second key-up for a key already up changes nothing on the target.
+    private func releaseRemoteShift() -> Task<Void, Never>? {
+        let held = remoteHeldKeys.intersection(["ShiftLeft", "ShiftRight"])
+        guard !held.isEmpty, transportMode == .glkvmWebSocket, let ws = glkvmWebSocketClient else { return nil }
+        remoteHeldKeys.subtract(held)
+        let keys = held.sorted()
+        return enqueueHIDCommand(label: "shift release") {
+            for key in keys {
+                try await ws.sendHidKey(key: key, state: false)
+            }
+        }
     }
     
     func sendClick(at location: CGPoint, in geometry: GeometryProxy, videoSize: CGSize? = nil) {

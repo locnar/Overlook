@@ -13,7 +13,7 @@ import Foundation
 /// - Parts never split a character (`Character`, a grapheme cluster): an emoji sequence, a letter
 ///   with its combining marks, or a CRLF line end stays whole.
 ///
-/// Pastes run one after another, and the parts of each in order, so two quick ⌘Vs cannot
+/// Pastes run one after another, and the parts of each in order, so two quick ⇧⌘Vs cannot
 /// interleave on the target. `cancelAll` stops them: the request under way is cancelled, which
 /// closes its connection and so stops the device typing, and no later part is sent.
 @MainActor
@@ -29,16 +29,18 @@ final class RemotePasteQueue {
     /// True when no paste is queued or under way.
     var isIdle: Bool { pastes.isEmpty }
 
-    /// Queues `text` to be typed after any paste already queued. Returns the paste's task, which
-    /// ends when the paste is done, has failed, or was stopped.
+    /// Queues `text` to be typed after any paste already queued, and after `after` when given (the
+    /// HID command that lets go of ⇧ on the target). Returns the paste's task, which ends when the
+    /// paste is done, has failed, or was stopped.
     @discardableResult
-    func enqueue(_ text: String, to client: GLKVMClient, log: SessionLog) -> Task<Void, Never> {
+    func enqueue(_ text: String, to client: GLKVMClient, log: SessionLog, after: Task<Void, Never>? = nil) -> Task<Void, Never> {
         let parts = Self.parts(of: text)
         let characterCount = text.count
         let previous = tail
         let id = UUID()
         let task = Task { [weak self] in
             await previous?.value
+            await after?.value
             await Self.type(parts, characterCount: characterCount, to: client, log: log)
             self?.pastes[id] = nil
         }

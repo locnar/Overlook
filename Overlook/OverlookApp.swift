@@ -32,6 +32,8 @@ struct OverlookApp: App {
             PanelCommands()
 
             CaptureCommands()
+
+            RemoteClipboardCommands()
         }
     }
 }

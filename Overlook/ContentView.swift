@@ -241,7 +241,7 @@ struct ContentView: View {
                                       : "rectangle.and.text.magnifyingglass")
                             }
                             .disabled(!isConnected)
-                            .help(isOCRModeEnabled ? "Disable OCR Selection" : "Enable OCR Selection")
+                            .help(isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
 
                             Divider()
                                 .frame(height: 18)
@@ -624,7 +624,7 @@ struct ContentView: View {
                               : "rectangle.and.text.magnifyingglass")
                     }
                     .disabled(!isConnected)
-                    .help(isOCRModeEnabled ? "Disable OCR Selection" : "Enable OCR Selection")
+                    .help(isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
                 }
 
                 if #available(macOS 26.0, *) {

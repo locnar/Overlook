@@ -102,7 +102,7 @@ struct ConsoleSessionTests {
 
     // MARK: - Shortcuts reach only their own session
 
-    /// What keyboard capture does on ⇧⌘S, ⇧⌘R and ⌘C: hand the chord to its session.
+    /// What keyboard capture does on ⇧⌘S, ⇧⌘R and ⇧⌘C: hand the chord to its session.
     private func press(_ shortcut: InputManager.LocalShortcut, in session: ConsoleSession) {
         session.inputManager.onLocalShortcut?(shortcut)
     }
