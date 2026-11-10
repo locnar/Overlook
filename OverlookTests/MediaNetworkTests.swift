@@ -117,6 +117,13 @@ enum KVMOffer {
         ] + candidates + ["a=end-of-candidates"]
     }
 
+    /// Host candidates Janus does not offer today but a KVM with a public or global address
+    /// could: a public IPv4 (TEST-NET-3), a global IPv6 (documentation range) and a ULA that is
+    /// not Tailscale's.
+    static let publicV4 = "a=candidate:7 1 udp 2015363583 203.0.113.7 30272 typ host"
+    static let globalV6 = "a=candidate:8 1 udp 2015363327 2001:db8::5 30272 typ host"
+    static let ulaV6 = "a=candidate:9 1 udp 2015363071 fd12:3456::1 30272 typ host"
+
     static let header = ["v=0", "o=- 1794326147 1 IN IP4 192.168.0.131", "s=Mountpoint 0", "t=0 0"]
 
     /// An SDP with CRLF line endings, as Janus sends them.
@@ -349,6 +356,54 @@ struct RemoteOfferFilterTests {
         #expect(lines.map(lan.keepsRemote) == [true, false, false, false, false, false])
         #expect(lines.map(tailscale.keepsRemote) == [false, true, false, true, false, false])
     }
+
+    @Test func theLANDropsPublicIPv4AndEveryIPv6HostCandidate() {
+        let offer = KVMOffer.sdp(KVMOffer.header + KVMOffer.section("video", mid: 0, candidates: [
+            KVMOffer.candidates[0],
+            KVMOffer.publicV4,
+            KVMOffer.globalV6,
+            KVMOffer.ulaV6,
+        ]))
+        let result = route("192.168.0.131").filterRemoteOffer(offer)
+        #expect(!result.keptWholeOffer)
+        #expect(result.dropped.map(\.label) == ["203.0.113.7", "2001:db8::5", "fd12:3456::1"])
+        #expect(result.sdp == KVMOffer.sdp(KVMOffer.header + KVMOffer.section("video", mid: 0, candidates: [KVMOffer.candidates[0]])))
+    }
+
+    @Test func theLANKeepsEveryRFC1918RangeAndNothingNextToThem() {
+        let lan = route("192.168.0.131")
+        func host(_ address: String) -> ICECandidateLine {
+            ICECandidateLine("candidate:9 1 udp 2015372799 \(address) 30272 typ host")!
+        }
+        for address in ["10.0.0.5", "10.255.255.254", "172.16.0.5", "172.31.255.254", "192.168.1.20"] {
+            #expect(lan.keepsRemote(host(address)), "\(address)")
+        }
+        for address in ["172.32.0.5", "172.15.255.254", "192.169.0.5", "11.0.0.5", "203.0.113.7",
+                        "2001:db8::5", "fd12:3456::1", "100.124.73.6", "169.254.10.1", "127.0.0.1"] {
+            #expect(!lan.keepsRemote(host(address)), "\(address)")
+        }
+        // An RFC 1918 address that is not a host candidate is still dropped.
+        #expect(!lan.keepsRemote(ICECandidateLine("candidate:9 1 udp 1679820287 10.0.0.5 30272 typ srflx raddr 10.0.0.5 rport 30272")!))
+    }
+
+    @Test func anOfferWithOnlyNonPrivateCandidatesIsLeftWholeOnTheLAN() {
+        let publicOnly = KVMOffer.sdp(KVMOffer.header + KVMOffer.section("video", mid: 0, candidates: [
+            KVMOffer.publicV4, KVMOffer.globalV6, KVMOffer.ulaV6, KVMOffer.candidates[5],
+        ]))
+        let result = route("192.168.0.131").filterRemoteOffer(publicOnly)
+        #expect(result.keptWholeOffer)
+        #expect(result.sdp == publicOnly)
+        #expect(result.dropped.isEmpty)
+    }
+
+    @Test func oneSectionWithNoPrivateCandidateLeavesTheWholeOfferAlone() {
+        let offer = KVMOffer.sdp(KVMOffer.header
+            + KVMOffer.section("audio", mid: 0, candidates: [KVMOffer.publicV4, KVMOffer.globalV6])
+            + KVMOffer.section("video", mid: 1))
+        let result = route("192.168.0.131").filterRemoteOffer(offer)
+        #expect(result.keptWholeOffer)
+        #expect(result.sdp == offer)
+    }
 }
 
 // MARK: - This Mac's candidates
@@ -524,6 +579,32 @@ struct ManagerMediaRouteTests {
         #expect(await messages(containing: "dropped 5 remote candidates").count == 1)
         #expect(await messages(containing: "Video and audio limited to the LAN (chosen network only): dropped 5 remote candidates "
             + "(100.124.73.6, fe80::9683:c4ff:fed7:d748, fd7a:115c:a1e0::9428:4907, fe80::cd48:fc39:244a:6817, 70.134.225.46 srflx)").count == 1)
+    }
+
+    @Test func theLogNamesEveryDroppedCandidateIncludingPublicAndIPv6Hosts() async {
+        await manager.prepareMediaRoute(for: device("192.168.0.131"))
+        let offer = KVMOffer.sdp(KVMOffer.header + KVMOffer.section(
+            "video", mid: 0, candidates: KVMOffer.candidates + [KVMOffer.publicV4, KVMOffer.globalV6, KVMOffer.ulaV6]
+        ))
+        var applied: [String] = []
+        await manager.applyRemoteOffer(offer, leg: .video) { applied.append($0.sdp) }
+        #expect(applied == [KVMOffer.sdp(KVMOffer.header + KVMOffer.section("video", mid: 0, candidates: [KVMOffer.candidates[0]]))])
+        #expect(await messages(containing: "Video and audio limited to the LAN (chosen network only): dropped 8 remote candidates "
+            + "(100.124.73.6, fe80::9683:c4ff:fed7:d748, fd7a:115c:a1e0::9428:4907, fe80::cd48:fc39:244a:6817, 70.134.225.46 srflx, "
+            + "203.0.113.7, 2001:db8::5, fd12:3456::1)").count == 1)
+    }
+
+    @Test func anOfferWithOnlyPublicCandidatesIsAppliedWholeWithAWarning() async {
+        await manager.prepareMediaRoute(for: device("192.168.0.131"))
+        let offer = KVMOffer.sdp(KVMOffer.header + KVMOffer.section(
+            "video", mid: 0, candidates: [KVMOffer.publicV4, KVMOffer.globalV6, KVMOffer.ulaV6]
+        ))
+        var applied: [String] = []
+        await manager.applyRemoteOffer(offer, leg: .video) { applied.append($0.sdp) }
+        #expect(applied == [offer])
+        #expect(await messages(containing: "Video and audio limited to the LAN (chosen network only): the KVM's video offer "
+            + "has no candidate on that network; keeping all of its candidates for this offer").count == 1)
+        #expect(await messages(containing: "dropped").isEmpty)
     }
 
     @Test func allAddressesPassesTheOfferThroughUntouched() async {

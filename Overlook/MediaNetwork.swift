@@ -424,15 +424,16 @@ struct MediaRoute: Equatable {
         }
     }
 
-    /// Whether the KVM's candidate is kept. LAN: host candidates that are not Tailscale,
-    /// link-local or loopback. Tailscale: Tailscale addresses only.
+    /// Whether the KVM's candidate is kept. LAN: only host candidates on an RFC 1918 address
+    /// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16); a public IPv4 or any IPv6 host candidate is
+    /// dropped along with everything else. Tailscale: Tailscale addresses only.
     func keepsRemote(_ candidate: ICECandidateLine) -> Bool {
         switch scope {
         case .all:
             return true
         case .chosen(.lan):
             guard candidate.type == "host", let ip = candidate.ip else { return false }
-            return !ip.isTailscale && !ip.isLinkLocal && !ip.isLoopback
+            return ip.isPrivateLAN
         case .chosen(.tailscale):
             return candidate.ip?.isTailscale == true
         }
