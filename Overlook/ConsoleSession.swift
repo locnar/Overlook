@@ -52,12 +52,17 @@ final class ConsoleSession: ObservableObject {
     /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`. `link` is
     /// for tests too: the app's reaches the device, the stream and the connection log. So are
     /// `audioPreferences` (the app's sessions all share `AudioPreferences.shared`) and
-    /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file).
+    /// `connectionLog` (the app's is `ConnectionLog.shared`, which writes the file). The input and
+    /// capture settings are the app's shared objects when `defaults` is the app's, and objects of
+    /// their own on a test's scratch suite otherwise; a test that wants two sessions on one
+    /// settings object passes it.
     init(
         catalog: KVMDeviceManager,
         defaults: UserDefaults = AppEnvironment.defaults,
         link: ConsoleSessionLink? = nil,
         audioPreferences: AudioPreferences? = nil,
+        inputPreferences: InputPreferences? = nil,
+        capturePreferences: CapturePreferences? = nil,
         connectionLog: ConnectionLog? = nil
     ) {
         // Made here rather than as the default argument, which is evaluated outside the main actor.
@@ -68,9 +73,14 @@ final class ConsoleSession: ObservableObject {
         let webRTCManager = WebRTCManager(audioPreferences: audioPreferences, log: log)
         self.connection = connection
         self.webRTCManager = webRTCManager
-        inputManager = InputManager(defaults: defaults, log: log)
+        inputManager = InputManager(defaults: defaults, inputPreferences: inputPreferences, log: log)
         ocrManager = OCRManager()
-        captureManager = CaptureManager(webRTCManager: webRTCManager, connection: connection, defaults: defaults)
+        captureManager = CaptureManager(
+            webRTCManager: webRTCManager,
+            connection: connection,
+            defaults: defaults,
+            preferences: capturePreferences
+        )
         panels = PanelPresentation(defaults: defaults)
         // Here rather than in the window's `onAppear`: the menu-bar agent can connect a session
         // before its window has appeared.

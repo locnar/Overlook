@@ -122,33 +122,37 @@ final class CaptureManager: ObservableObject {
     /// cleared mid-recording applies to the next one: the file's frame size is fixed at start.
     @Published private(set) var activeRecordingRegion: CGRect?
 
-    @Published var recordingMode: RecordingMode {
-        didSet { defaults.set(recordingMode.rawValue, forKey: Self.recordingModeDefaultsKey) }
+    /// What a recording keeps, its codec, the save folders and the outline switch. Shared with
+    /// every other window and with Settings › Capture, so a change made anywhere applies here.
+    let preferences: CapturePreferences
+
+    var recordingMode: RecordingMode {
+        get { preferences.recordingMode }
+        set { preferences.recordingMode = newValue }
     }
-    @Published var videoCodec: RecordingVideoCodec {
-        didSet { defaults.set(videoCodec.rawValue, forKey: Self.videoCodecDefaultsKey) }
+    var videoCodec: RecordingVideoCodec {
+        get { preferences.videoCodec }
+        set { preferences.videoCodec = newValue }
     }
-    @Published var screenshotsFolder: URL {
-        didSet { defaults.set(screenshotsFolder.path, forKey: Folder.screenshots.defaultsKey) }
+    var screenshotsFolder: URL {
+        get { preferences.screenshotsFolder }
+        set { preferences.screenshotsFolder = newValue }
     }
-    @Published var recordingsFolder: URL {
-        didSet { defaults.set(recordingsFolder.path, forKey: Folder.recordings.defaultsKey) }
+    var recordingsFolder: URL {
+        get { preferences.recordingsFolder }
+        set { preferences.recordingsFolder = newValue }
     }
     /// Whether the dashed outline of the set region is drawn over the video. Off hides the outline
     /// only; the region stays in effect.
-    @Published var showsRegionOutline: Bool {
-        didSet { defaults.set(showsRegionOutline, forKey: Self.showsRegionOutlineDefaultsKey) }
+    var showsRegionOutline: Bool {
+        get { preferences.showsRegionOutline }
+        set { preferences.showsRegionOutline = newValue }
     }
 
     let clock = RecordingClock()
 
-    private static let recordingModeDefaultsKey = "overlook.capture.recordingMode"
-    private static let videoCodecDefaultsKey = "overlook.capture.videoCodec"
-    private static let showsRegionOutlineDefaultsKey = "overlook.capture.showsRegionOutline"
-
     private let webRTCManager: WebRTCManager
     private let connection: SessionConnection
-    private let defaults: UserDefaults
     private var hub: MediaCaptureHub { webRTCManager.captureHub }
 
     private var recorder: SessionRecorder?
@@ -162,17 +166,25 @@ final class CaptureManager: ObservableObject {
         return formatter
     }()
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`.
-    init(webRTCManager: WebRTCManager, connection: SessionConnection, defaults: UserDefaults = AppEnvironment.defaults) {
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`,
+    /// whose settings object is the shared one (`CapturePreferences.shared`). A test that wants two
+    /// capture managers on one settings object passes `preferences`.
+    init(
+        webRTCManager: WebRTCManager,
+        connection: SessionConnection,
+        defaults: UserDefaults = AppEnvironment.defaults,
+        preferences: CapturePreferences? = nil
+    ) {
         self.webRTCManager = webRTCManager
         self.connection = connection
-        self.defaults = defaults
+        let preferences = preferences ?? .forDefaults(defaults)
+        self.preferences = preferences
 
-        recordingMode = RecordingMode(rawValue: defaults.string(forKey: Self.recordingModeDefaultsKey) ?? "") ?? .videoAndAudio
-        videoCodec = RecordingVideoCodec(rawValue: defaults.string(forKey: Self.videoCodecDefaultsKey) ?? "") ?? .h264
-        screenshotsFolder = Self.storedFolder(.screenshots, in: defaults)
-        recordingsFolder = Self.storedFolder(.recordings, in: defaults)
-        showsRegionOutline = defaults.object(forKey: Self.showsRegionOutlineDefaultsKey) as? Bool ?? true
+        // The window's views observe this object, not the settings: pass a settings change on, so
+        // the toolbar's Record pop-up and the region outline follow a change made in Settings.
+        preferences.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         // An operator disconnect ends the recording; a dropped connection does not (the
         // auto-reconnect keeps the same recorder, with a gap in the file).
@@ -389,33 +401,19 @@ final class CaptureManager: ObservableObject {
     // MARK: Folders
 
     func chooseFolder(_ folder: Folder) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = "Choose where Overlook saves \(folder.title.lowercased())."
-        panel.directoryURL = self.folderURL(folder)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        setFolder(folder, to: url)
+        preferences.chooseFolder(folder)
     }
 
     func resetFolder(_ folder: Folder) {
-        setFolder(folder, to: folder.defaultURL)
+        preferences.resetFolder(folder)
     }
 
     func folderURL(_ folder: Folder) -> URL {
-        switch folder {
-        case .screenshots: return screenshotsFolder
-        case .recordings: return recordingsFolder
-        }
+        preferences.folderURL(folder)
     }
 
     func revealFolder(_ folder: Folder) {
-        let url = folderURL(folder)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(url)
+        preferences.revealFolder(folder)
     }
 
     func revealInFinder(_ url: URL) {
@@ -425,20 +423,6 @@ final class CaptureManager: ObservableObject {
     /// `~/Pictures/Overlook` style path for the settings panel.
     static func displayPath(_ url: URL) -> String {
         (url.path as NSString).abbreviatingWithTildeInPath
-    }
-
-    private func setFolder(_ folder: Folder, to url: URL) {
-        switch folder {
-        case .screenshots: screenshotsFolder = url
-        case .recordings: recordingsFolder = url
-        }
-    }
-
-    private static func storedFolder(_ folder: Folder, in defaults: UserDefaults) -> URL {
-        if let path = defaults.string(forKey: folder.defaultsKey), !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        return folder.defaultURL
     }
 
     // MARK: Notices

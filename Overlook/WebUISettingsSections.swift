@@ -436,8 +436,9 @@ struct MouseJigglerToggle: View {
 
 // MARK: - Relative mouse mode (local)
 
-/// Overlook-side relative-mode controls: they live on `InputManager`, not in the device config,
-/// so they get their own observer and do not re-evaluate the rest of the remote section.
+/// Overlook-side relative-mode controls. They are settings of this Mac, not of the device, kept in
+/// `InputPreferences` and shared by every window, so they get their own observer and do not
+/// re-evaluate the rest of the remote section.
 struct LocalRelativeMouseSettings: View {
     @EnvironmentObject var inputManager: InputManager
 
@@ -449,23 +450,36 @@ struct LocalRelativeMouseSettings: View {
             Text("Relative mode on this Mac")
                 .font(.subheadline.weight(.semibold))
 
-            HStack {
-                Text("Local sensitivity")
-                Spacer()
-                Text(String(format: "%.2f×", inputManager.relativeSensitivity))
-                    .monospacedDigit()
-                    .foregroundColor(.secondary)
-            }
-            Slider(value: $inputManager.relativeSensitivity, in: 0.25...4.0, step: 0.05)
-                .help("Multiplier on mouse movement while the pointer is captured. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have — or, with unaccelerated input on, the target receives your mouse's raw counts unchanged.")
+            RelativeMouseSettingsControls(preferences: inputManager.inputPreferences)
+        }
+    }
+}
 
-            Toggle("Unaccelerated input (experimental)", isOn: $inputManager.useUnacceleratedRelativeInput)
-                .help("Send the mouse's raw movement counts instead of macOS-accelerated movement, so the target applies its own pointer settings once, as with a directly attached mouse. Falls back to accelerated movement when the system does not provide counts. Expect to re-tune sensitivity.")
+/// Local sensitivity and unaccelerated input, bound to the shared `InputPreferences`.
+struct RelativeMouseSettingsControls: View {
+    @ObservedObject var preferences: InputPreferences
 
-            Text("Click the video to capture the pointer; press ⌃⌥ to release it.")
-                .font(.caption)
+    var body: some View {
+        HStack {
+            Text("Local sensitivity")
+            Spacer()
+            Text(String(format: "%.2f×", preferences.relativeSensitivity))
+                .monospacedDigit()
                 .foregroundColor(.secondary)
         }
+        Slider(
+            value: $preferences.relativeSensitivity,
+            in: InputPreferences.sensitivityRange,
+            step: InputPreferences.sensitivityStep
+        )
+        .help("Multiplier on mouse movement while the pointer is captured. At 1.00× the remote cursor travels the same on-screen distance your local cursor would have — or, with unaccelerated input on, the target receives your mouse's raw counts unchanged.")
+
+        Toggle("Unaccelerated input (experimental)", isOn: $preferences.useUnacceleratedRelativeInput)
+            .help("Send the mouse's raw movement counts instead of macOS-accelerated movement, so the target applies its own pointer settings once, as with a directly attached mouse. Falls back to accelerated movement when the system does not provide counts. Expect to re-tune sensitivity.")
+
+        Text("Click the video to capture the pointer; press ⌃⌥ to release it.")
+            .font(.caption)
+            .foregroundColor(.secondary)
     }
 }
 

@@ -151,8 +151,6 @@ class InputManager: ObservableObject {
     private var deviceEventTask: Task<Void, Never>?
     private var deviceMouseModeRefreshDebounce: Task<Void, Never>?
 
-    private static let relativeSensitivityDefaultsKey = "overlook.relativeMouseSensitivity"
-    private static let unacceleratedInputDefaultsKey = "overlook.relativeMouseUnacceleratedInput"
     /// Holding exactly Control+Option releases a captured pointer (VMware / Parallels convention).
     static let pointerReleaseChord: NSEvent.ModifierFlags = [.control, .option]
 
@@ -193,35 +191,46 @@ class InputManager: ObservableObject {
     @Published private(set) var deviceJiggler: GLKVMJigglerState?
     @Published private(set) var isPointerLocked = false
 
+    /// Relative-mode settings on this Mac, shared with every other window and with Settings › Input.
+    /// Read on every captured mouse move, so a change made anywhere applies here at once.
+    let inputPreferences: InputPreferences
+
     /// Multiplier applied to relative mouse movement. With accelerated input it sits on top of the
-    /// view-to-remote scale; with unaccelerated input it is the only factor. Persisted on this Mac.
-    @Published var relativeSensitivity: Double {
-        didSet { defaults.set(relativeSensitivity, forKey: Self.relativeSensitivityDefaultsKey) }
+    /// view-to-remote scale; with unaccelerated input it is the only factor. Kept in
+    /// `inputPreferences`, so every window uses the same value.
+    var relativeSensitivity: Double {
+        get { inputPreferences.relativeSensitivity }
+        set { inputPreferences.relativeSensitivity = newValue }
     }
 
     /// Send the mouse's raw movement counts (kCGEventUnacceleratedPointerMovementX/Y) instead of
     /// macOS-accelerated deltas, so the target applies its own pointer settings once. Falls back
-    /// to accelerated deltas per event when the system does not provide counts.
-    @Published var useUnacceleratedRelativeInput: Bool {
-        didSet { defaults.set(useUnacceleratedRelativeInput, forKey: Self.unacceleratedInputDefaultsKey) }
+    /// to accelerated deltas per event when the system does not provide counts. Kept in
+    /// `inputPreferences`.
+    var useUnacceleratedRelativeInput: Bool {
+        get { inputPreferences.useUnacceleratedRelativeInput }
+        set { inputPreferences.useUnacceleratedRelativeInput = newValue }
     }
 
     var isRelativeMouseMode: Bool {
         transportMode == .glkvmWebSocket && !isGLKVMAbsoluteMouseMode
     }
 
-    private let defaults: UserDefaults
     /// The session's handle on the connection log; every line from here names its device.
     let log: SessionLog
 
-    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`. `log` is
-    /// the session's (tests pass one on a log kept in memory); an input manager on its own logs to
-    /// the app's log under a session of its own.
-    init(defaults: UserDefaults = AppEnvironment.defaults, log: SessionLog? = nil) {
-        self.defaults = defaults
+    /// `defaults` is for tests, which pass a scratch suite; the app takes `AppEnvironment.defaults`,
+    /// whose settings objects are the shared ones (`InputPreferences.shared`). A test that wants
+    /// two input managers on one settings object passes `inputPreferences`. `log` is the
+    /// session's (tests pass one on a log kept in memory); an input manager on its own logs to the
+    /// app's log under a session of its own.
+    init(
+        defaults: UserDefaults = AppEnvironment.defaults,
+        inputPreferences: InputPreferences? = nil,
+        log: SessionLog? = nil
+    ) {
+        self.inputPreferences = inputPreferences ?? .forDefaults(defaults)
         self.log = log ?? SessionLog(destination: .shared)
-        relativeSensitivity = (defaults.object(forKey: Self.relativeSensitivityDefaultsKey) as? Double) ?? 1.0
-        useUnacceleratedRelativeInput = defaults.bool(forKey: Self.unacceleratedInputDefaultsKey)
     }
     
     func setup(with webRTCManager: WebRTCManager) {
