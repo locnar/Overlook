@@ -113,26 +113,207 @@ enum LocalSweep {
 
 /// What a probed host has to answer to be listed as a KVM. Every swept host goes through the same
 /// check, whatever network it is on.
+///
+/// A host is listed only on an answer that kvmd (the daemon behind GLKVM's web UI and API, from
+/// PiKVM) gives and other web servers do not:
+/// - an API endpoint answering kvmd's JSON envelope, `{"ok": <Boolean>, "result": {…}}`, with `ok`
+///   true exactly when the status is 200. kvmd's `make_json_response` writes that envelope for
+///   every API answer, errors included: an unauthenticated `GET /api/auth/check` gets 401 with
+///   `{"ok": false, "result": {"error": "UnauthorizedError", "error_msg": "Unauthorized"}}`, and
+///   `GET /api/init/is_inited` (GL.iNet's addition, no login needed) gets 200 with
+///   `{"ok": true, "result": {"is_inited": true, …}}`;
+/// - or, failing that, a 200 web page titled exactly `GLKVM`, the title GLKVM's web UI carries.
+///
+/// A redirect, a bare 401 or 403, a JSON error in another shape (UniFi OS answers
+/// `{"error": {"code": 401, …}}`) and a page that merely mentions "kvm" do not list a host.
 enum DiscoveryProbe {
-    /// The GLKVM API endpoints probed. Any one answering `apiStatusLooksLikeGLKVM` lists the host.
+    /// The GLKVM API endpoints probed. Any one answering kvmd's JSON envelope lists the host.
     static let apiPaths = ["api/auth/check", "api/init/is_inited"]
+
+    /// How much of a page is searched for its title. GLKVM's page names itself within its first
+    /// 400 bytes.
+    static let pageBytesRead = 8192
 
     /// The schemes tried on `port`, in order: https first on 443 and 8443, http first elsewhere.
     static func schemes(forPort port: Int) -> [String] {
         (port == 443 || port == 8443) ? ["https", "http"] : ["http", "https"]
     }
 
-    /// A GLKVM answers its API endpoints with success, an auth refusal, or a redirect.
-    static func apiStatusLooksLikeGLKVM(_ status: Int) -> Bool {
-        [200, 401, 403, 301, 302, 307, 308].contains(status)
+    /// Whether an API answer is kvmd's JSON envelope: an object with a Boolean `ok` and an
+    /// object `result`, where `ok` is true for a 200 and false for anything else.
+    static func isKVMDAnswer(status: Int, body: Data) -> Bool {
+        guard let json = try? JSONDecoder().decode(JSONValue.self, from: body),
+              case .bool(let ok)? = json["ok"],
+              case .object? = json["result"] else { return false }
+        return ok == (status == 200)
     }
 
-    /// A web UI page that names a KVM: a 2xx or 3xx response whose first 4 KB mention `kvm`
-    /// (which covers `kvmd` and `glkvm`) or `comet`, in any case.
-    static func pageLooksLikeKVM(status: Int, body: Data) -> Bool {
-        guard (200...399).contains(status) else { return false }
-        let text = String(decoding: body.prefix(4096), as: UTF8.self).lowercased()
-        return text.contains("kvm") || text.contains("comet")
+    /// Whether a page is GLKVM's web UI: a 200 whose `<title>` is `GLKVM`, in any case.
+    static func isGLKVMPage(status: Int, body: Data) -> Bool {
+        guard status == 200 else { return false }
+        return pageTitle(body)?.caseInsensitiveCompare("GLKVM") == .orderedSame
+    }
+
+    /// The text of the first `<title>` element in the first `pageBytesRead` bytes, trimmed.
+    static func pageTitle(_ body: Data) -> String? {
+        let text = String(decoding: body.prefix(pageBytesRead), as: UTF8.self)
+        guard let open = text.range(of: "<title", options: .caseInsensitive),
+              let openEnd = text.range(of: ">", range: open.upperBound..<text.endIndex),
+              let close = text.range(of: "</title>", options: .caseInsensitive, range: openEnd.upperBound..<text.endIndex)
+        else { return nil }
+        return text[openEnd.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Whether a probe follows a redirect: only to the host it asked, as GLKVM's own http to
+    /// https redirect does. A redirect elsewhere (a router's login portal, a vendor's site) is not
+    /// followed, so a probe never leaves the address it was sent to.
+    static func followsRedirect(from original: URL?, to destination: URL?) -> Bool {
+        guard let from = original?.host, let to = destination?.host else { return false }
+        return DiscoveredMerge.hostKey(from) == DiscoveredMerge.hostKey(to)
+    }
+}
+
+/// How a scan works through the swept hosts, in two stages: a quick TCP connect to each host's
+/// candidate ports, then HTTP probes (`DiscoveryHTTPProbe`) only on the ports that accepted the
+/// connection, each started as soon as its port accepts. Most addresses on a /24 have nothing behind them, and a closed or absent port now
+/// costs one short connect attempt instead of holding an HTTP probe slot.
+///
+/// The connecting and the probing are handed in, so the stage logic can be checked without a
+/// network.
+enum DiscoverySweep {
+    /// One host:port to try.
+    struct Target: Hashable, Sendable {
+        let host: String
+        let port: Int
+    }
+
+    /// What one connect attempt learned about a port.
+    enum PortState: Sendable, Equatable {
+        /// It accepted the connection.
+        case open
+        /// It refused, the host is known to be down, or nothing answered in time.
+        case closed
+        /// The attempt was held up by something about the Mac's side rather than the host
+        /// ("Network is down" while Network warms up for the app's first connections) and ran out
+        /// of time. Tried once more after the other targets.
+        case unsure
+    }
+
+    /// What a sweep found.
+    struct Outcome: Sendable {
+        /// The targets that accepted a TCP connection, in target order.
+        var openTargets: [Target] = []
+        /// The devices the HTTP probes identified, in target order.
+        var found: [KVMDevice] = []
+        /// How many targets were unsure on the first try and connected to again.
+        var retried = 0
+
+        /// How many hosts answered on at least one port.
+        var hostsAnswering: Int { Set(openTargets.map(\.host)).count }
+    }
+
+    /// How long a connect attempt may take before the port counts as closed. On the home network
+    /// (measured 2026-11-09) the GLKVMs accepted in 8 to 28 ms, most hosts answered (accepted or
+    /// refused) within 30 ms, and the slowest answer, from a host on Wi-Fi, took 284 ms: power
+    /// save can hold a reply for a beacon interval or two. Half a second leaves room over that.
+    /// Most of a sweep's attempts go to addresses with no host, and each of those waits out the
+    /// full timeout, so this sets the sweep's length.
+    static let connectTimeout: TimeInterval = 0.5
+
+    /// How many connect attempts run at once. Targets go host by host, so this is about 12 hosts
+    /// (4 ports each) at a time: a dozen ARP requests and 48 SYNs per half second, well under what
+    /// a home router handles and far from the 256 file descriptors a Mac app gets by default (each
+    /// attempt holds one socket). Not 64: probing 64 targets at a time once tripped rate limiting
+    /// on some Wi-Fi routers and starved the Bonjour browse running alongside (872d6d1).
+    static let connectLimit = 48
+
+    /// How many HTTP probes run at once, on top of the connects. Only ports that accepted a
+    /// connection get one, a handful per network, so this rarely binds; it is the old sweep's
+    /// limit. Connects and probes together hold at most 64 sockets plus the few a probe's
+    /// requests open.
+    static let probeLimit = 16
+
+    /// Every host's ports, host by host, each host's ports in the order given.
+    static func targets(hosts: [String], ports: [Int]) -> [Target] {
+        hosts.flatMap { host in ports.map { Target(host: host, port: $0) } }
+    }
+
+    /// Whether a connect attempt that Network reports as waiting with `code` has its answer: the
+    /// port refused (a host is there, the port is closed), or the system already knows the host
+    /// is down (an ARP request for it went unanswered moments ago). Any other reason is about the
+    /// Mac's side and may clear up within the timeout.
+    static func isAnswer(_ code: POSIXErrorCode) -> Bool {
+        code == .ECONNREFUSED || code == .EHOSTDOWN
+    }
+
+    /// Connects to every target, `connectLimit` at a time, and probes each port as soon as it
+    /// accepts, `probeLimit` at a time, alongside the connects still running: a slow host's HTTP
+    /// answers then overlap the rest of the sweep instead of adding to it. Once every target has
+    /// had one try, the unsure ones get a second. Once the calling task is cancelled no new
+    /// connect or probe starts; what already started finishes, and the outcome holds what was
+    /// learned by then.
+    static func run(
+        targets: [Target],
+        connectLimit: Int = connectLimit,
+        probeLimit: Int = probeLimit,
+        connect: @escaping @Sendable (Target) async -> PortState,
+        probe: @escaping @Sendable (Target) async -> KVMDevice?
+    ) async -> Outcome {
+        enum Event: Sendable {
+            case connected(Int, PortState)
+            case probed(Int, KVMDevice?)
+        }
+
+        var states = [PortState?](repeating: nil, count: targets.count)
+        var devices: [Int: KVMDevice] = [:]
+        var retried = 0
+        await withTaskGroup(of: Event.self) { group in
+            var connectQueue = ArraySlice(targets.indices)
+            var probeQueue: [Int] = []
+            var isOnSecondTries = false
+            var connecting = 0
+            var probing = 0
+            while true {
+                if !Task.isCancelled {
+                    while connecting < max(connectLimit, 1), let index = connectQueue.popFirst() {
+                        let target = targets[index]
+                        group.addTask { .connected(index, await connect(target)) }
+                        connecting += 1
+                    }
+                    if !isOnSecondTries, connectQueue.isEmpty, connecting == 0 {
+                        isOnSecondTries = true
+                        let unsure = states.indices.filter { states[$0] == .unsure }
+                        retried = unsure.count
+                        connectQueue = ArraySlice(unsure)
+                        continue
+                    }
+                    while probing < max(probeLimit, 1), !probeQueue.isEmpty {
+                        let index = probeQueue.removeFirst()
+                        let target = targets[index]
+                        group.addTask { .probed(index, await probe(target)) }
+                        probing += 1
+                    }
+                }
+                guard connecting + probing > 0, let event = await group.next() else { break }
+                switch event {
+                case .connected(let index, let state):
+                    connecting -= 1
+                    states[index] = state
+                    if state == .open {
+                        probeQueue.append(index)
+                    }
+                case .probed(let index, let device):
+                    probing -= 1
+                    devices[index] = device
+                }
+            }
+        }
+
+        var outcome = Outcome()
+        outcome.openTargets = zip(targets, states).compactMap { $0.1 == .open ? $0.0 : nil }
+        outcome.found = devices.keys.sorted().compactMap { devices[$0] }
+        outcome.retried = retried
+        return outcome
     }
 }
 

@@ -204,28 +204,602 @@ struct DiscoveryProbeTests {
         #expect(DiscoveryProbe.apiPaths == ["api/auth/check", "api/init/is_inited"])
     }
 
-    @Test func apiAnswersThatListAHost() {
-        for status in [200, 401, 403, 301, 302, 307, 308] {
-            #expect(DiscoveryProbe.apiStatusLooksLikeGLKVM(status), "\(status)")
-        }
-        for status in [204, 400, 404, 405, 500, 502, 503] {
-            #expect(!DiscoveryProbe.apiStatusLooksLikeGLKVM(status), "\(status)")
+    // MARK: - API answers
+
+    @Test func kvmdsUnauthorizedAnswerListsAHost() {
+        #expect(DiscoveryProbe.isKVMDAnswer(status: 401, body: ProbeFixtures.glkvmAuthCheck401))
+    }
+
+    @Test func kvmdsIsInitedAnswerListsAHost() {
+        #expect(DiscoveryProbe.isKVMDAnswer(status: 200, body: ProbeFixtures.glkvmIsInited200))
+    }
+
+    @Test func kvmdsAnswerWithAuthenticationOffListsAHost() {
+        // kvmd with auth disabled answers /auth/check with an empty success envelope.
+        #expect(DiscoveryProbe.isKVMDAnswer(status: 200, body: Data(#"{"ok": true, "result": {}}"#.utf8)))
+        #expect(DiscoveryProbe.isKVMDAnswer(status: 403, body: Data(#"{"ok": false, "result": {"error": "ForbiddenError", "error_msg": "Forbidden"}}"#.utf8)))
+    }
+
+    @Test func aUniFiJSONRefusalDoesNotListAHost() {
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 401, body: ProbeFixtures.unifiAPI401))
+    }
+
+    @Test func aRouterRedirectToItsLoginPageDoesNotListAHost() {
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 302, body: ProbeFixtures.router302ToLogin))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 302, body: Data()))
+        for status in [301, 307, 308] {
+            #expect(!DiscoveryProbe.isKVMDAnswer(status: status, body: Data()), "\(status)")
         }
     }
 
-    @Test func aPageThatNamesAKVMListsAHost() {
-        func page(_ text: String) -> Data { Data(text.utf8) }
-        #expect(DiscoveryProbe.pageLooksLikeKVM(status: 200, body: page("<title>GLKVM</title>")))
-        #expect(DiscoveryProbe.pageLooksLikeKVM(status: 200, body: page("served by KVMD")))
-        #expect(DiscoveryProbe.pageLooksLikeKVM(status: 302, body: page("Comet")))
-        #expect(!DiscoveryProbe.pageLooksLikeKVM(status: 200, body: page("<title>Router login</title>")))
-        #expect(!DiscoveryProbe.pageLooksLikeKVM(status: 404, body: page("glkvm")))
-        #expect(!DiscoveryProbe.pageLooksLikeKVM(status: 500, body: page("kvm")))
+    @Test func aBare401Or403DoesNotListAHost() {
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 401, body: Data()))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 403, body: Data()))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 401, body: ProbeFixtures.router401HTML))
     }
 
-    @Test func onlyTheFirst4KBOfAPageAreRead() {
-        let late = Data(String(repeating: "x", count: 4096).utf8) + Data("glkvm".utf8)
-        #expect(!DiscoveryProbe.pageLooksLikeKVM(status: 200, body: late))
+    @Test func aPageThatMentionsKVMDoesNotListAHostThroughTheAPI() {
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 200, body: ProbeFixtures.genericPageMentioningKVM))
+    }
+
+    @Test func aNonJSONSuccessDoesNotListAHost() {
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 200, body: ProbeFixtures.synologyRedirectPage200))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 200, body: ProbeFixtures.unifiPage200))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 400, body: ProbeFixtures.nginxPlainHTTPToHTTPSPort400))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 200, body: Data("OK".utf8)))
+    }
+
+    @Test func aJSONSuccessWithoutKVMDsEnvelopeDoesNotListAHost() {
+        for json in [
+            #"{"result": {}}"#,
+            #"{"status": "ok", "data": {"is_inited": true}}"#,
+            #"{"ok": true}"#,
+            #"{"ok": "true", "result": {}}"#,
+            #"{"ok": null, "result": {}}"#,
+            #"{"ok": true, "result": "fine"}"#,
+            #"{"ok": true, "result": [1, 2]}"#,
+            #"[{"ok": true, "result": {}}]"#,
+            #"true"#,
+        ] {
+            #expect(!DiscoveryProbe.isKVMDAnswer(status: 200, body: Data(json.utf8)), "\(json)")
+        }
+    }
+
+    @Test func anEnvelopeWhoseOkDisagreesWithTheStatusDoesNotListAHost() {
+        // kvmd sets ok to (status == 200), always.
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 401, body: Data(#"{"ok": true, "result": {}}"#.utf8)))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 200, body: Data(#"{"ok": false, "result": {}}"#.utf8)))
+        #expect(!DiscoveryProbe.isKVMDAnswer(status: 404, body: ProbeFixtures.glkvmIsInited200))
+    }
+
+    // MARK: - Web pages
+
+    @Test func glkvmsWebPageListsAHost() {
+        #expect(DiscoveryProbe.pageTitle(ProbeFixtures.glkvmPage200) == "GLKVM")
+        #expect(DiscoveryProbe.isGLKVMPage(status: 200, body: ProbeFixtures.glkvmPage200))
+        #expect(DiscoveryProbe.isGLKVMPage(status: 200, body: Data("<TITLE lang=en> glkvm\n</TITLE>".utf8)))
+    }
+
+    @Test func otherPagesDoNotListAHost() {
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 200, body: ProbeFixtures.unifiPage200))
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 200, body: ProbeFixtures.synologyRedirectPage200))
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 200, body: ProbeFixtures.genericPageMentioningKVM))
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 401, body: ProbeFixtures.router401HTML))
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 200, body: Data("<title>GLKVM Manager for routers</title>".utf8)))
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 200, body: Data("<p>GLKVM</p>".utf8)))
+    }
+
+    @Test func glkvmsPageOnlyCountsAsA200() {
+        for status in [302, 401, 403, 404, 500] {
+            #expect(!DiscoveryProbe.isGLKVMPage(status: status, body: ProbeFixtures.glkvmPage200), "\(status)")
+        }
+    }
+
+    @Test func onlyThePagesFirst8KBAreSearchedForItsTitle() {
+        let late = Data(String(repeating: " ", count: DiscoveryProbe.pageBytesRead).utf8) + Data("<title>GLKVM</title>".utf8)
+        #expect(!DiscoveryProbe.isGLKVMPage(status: 200, body: late))
+        #expect(DiscoveryProbe.pageTitle(Data("<title>unterminated".utf8)) == nil)
+    }
+
+    // MARK: - Redirects
+
+    @Test func redirectsAreFollowedOnlyOnTheSameHost() {
+        let http = URL(string: "http://192.168.0.131:80/api/auth/check")
+        #expect(DiscoveryProbe.followsRedirect(from: http, to: URL(string: "https://192.168.0.131/api/auth/check")))
+        #expect(DiscoveryProbe.followsRedirect(from: URL(string: "http://GLKVM.local/"), to: URL(string: "https://glkvm.local./login")))
+        #expect(!DiscoveryProbe.followsRedirect(from: http, to: URL(string: "https://192.168.0.1/login")))
+        #expect(!DiscoveryProbe.followsRedirect(from: http, to: URL(string: "https://unifi.ui.com/")))
+        #expect(!DiscoveryProbe.followsRedirect(from: http, to: URL(string: "/login")))
+        #expect(!DiscoveryProbe.followsRedirect(from: nil, to: http))
+    }
+}
+
+/// Answers captured from Michael's network during a scan on 2026-11-09 (status, content type and
+/// the first 200 bytes of each body were logged), plus made-up answers in the shapes other routers
+/// give. The GLKVMs at .131 and .114 answered identically.
+enum ProbeFixtures {
+    /// GLKVM (.131, .114): `GET /api/auth/check` without a token, 401, `application/json`.
+    static let glkvmAuthCheck401 = Data("""
+    {
+        "ok": false,
+        "result": {
+            "error": "UnauthorizedError",
+            "error_msg": "Unauthorized"
+        }
+    }
+    """.utf8)
+
+    /// GLKVM (.131, .114): `GET /api/init/is_inited`, 200, `application/json`.
+    static let glkvmIsInited200 = Data("""
+    {
+        "ok": true,
+        "result": {
+            "country_code": "",
+            "has_screen": true,
+            "is_inited": true
+        }
+    }
+    """.utf8)
+
+    /// GLKVM (.131, .114): `GET /`, 200, `text/html`. The captured start of the page, then the
+    /// title as logged from further in.
+    static let glkvmPage200 = Data("""
+    <!doctype html>\r\n<html lang="en">\r\n    <head>\r\n        <meta charset="UTF-8" />\r\n        \
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\r\n        \
+    <link rel="icon" href="./assets/favico-BZEItO8Z.ico" />\r\n        <title>GLKVM</title>\r\n
+    """.utf8)
+
+    /// The router at .1 (UniFi OS, nginx): both API paths, 401, `application/json`.
+    static let unifiAPI401 = Data(#"{"error":{"code":401,"message":"Unauthorized"}}"#.utf8)
+
+    /// The router at .1: `GET /`, 200. The captured start of the page, then its title.
+    static let unifiPage200 = Data("""
+    <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex">\
+    <link rel="icon" href="/favicon.ico?v3" sizes="any"><title>UniFi OS</title></head><body></body></html>
+    """.utf8)
+
+    /// .250 (nginx, most likely a Synology NAS: the page hands off to DSM's ports 5000/5001):
+    /// every path probed, 200, `text/html`. As captured (the first 200 bytes).
+    static let synologyRedirectPage200 = Data("""
+    <!DOCTYPE html>
+    <html>
+        <body>
+            <input type="hidden" id="http" name="http" value="5000">
+            <input type="hidden" id="https" name="https" value="5001">
+            <input type="hidden" id="p
+    """.utf8)
+
+    /// nginx on an https port asked over plain http (seen on .1, .114, .131 and .250), 400.
+    static let nginxPlainHTTPToHTTPSPort400 = Data("""
+    <html>\r\n<head><title>400 The plain HTTP request was sent to HTTPS port</title></head>\r\n<body>\r\n\
+    <center><h1>400 Bad Request</h1></center>\r\n<center>The plain HTTP request was sent to HTTPS port</center>
+    """.utf8)
+
+    /// Made up: a router sending every unknown path to its login page.
+    static let router302ToLogin = Data("""
+    <html><head><title>302 Found</title></head><body><center><h1>302 Found</h1></center></body></html>
+    """.utf8)
+
+    /// Made up: a router refusing the API paths with an HTML page.
+    static let router401HTML = Data("""
+    <html><head><title>401 Authorization Required</title></head>\
+    <body><h1>401 Authorization Required</h1><p>Log in to manage your router.</p></body></html>
+    """.utf8)
+
+    /// Made up: a page that mentions KVM and kvmd without being one.
+    static let genericPageMentioningKVM = Data("""
+    <html><head><title>KVM switch inventory</title></head>\
+    <body>Rack 2: 8-port KVM, kvmd not installed, GLKVM on order.</body></html>
+    """.utf8)
+}
+
+/// The HTTP half of a probe, against stubbed hosts: nothing reaches the network.
+@Suite("Discovery HTTP probe")
+struct DiscoveryHTTPProbeTests {
+    static func probe() -> DiscoveryHTTPProbe {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return DiscoveryHTTPProbe(session: URLSession(configuration: configuration))
+    }
+
+    static func answer(_ status: Int, _ body: Data) -> StubDevice.Response {
+        StubDevice.Response(status: status, body: body)
+    }
+
+    @Test func aGLKVMIsFoundOnItsFirstAPIAnswer() async throws {
+        let glkvm = StubDevice { request in
+            switch request.path {
+            case "/api/auth/check": return Self.answer(401, ProbeFixtures.glkvmAuthCheck401)
+            case "/api/init/is_inited": return Self.answer(200, ProbeFixtures.glkvmIsInited200)
+            default: return Self.answer(200, ProbeFixtures.glkvmPage200)
+            }
+        }
+        let device = try #require(await Self.probe().identify(host: glkvm.host, port: 443))
+        #expect(device.id == "scanned-\(glkvm.host)-443")
+        #expect(device.address == DeviceAddress(host: glkvm.host, port: 443))
+        #expect(device.type == .glinetComet)
+        #expect(glkvm.requests.map(\.path) == ["/api/auth/check"])
+        #expect(glkvm.requests.allSatisfy { $0.method == "GET" && $0.body.isEmpty })
+    }
+
+    @Test func aGLKVMIsFoundByIsInitedAlone() async {
+        let glkvm = StubDevice { request in
+            request.path == "/api/init/is_inited"
+                ? Self.answer(200, ProbeFixtures.glkvmIsInited200)
+                : Self.answer(404, Data())
+        }
+        #expect(await Self.probe().identify(host: glkvm.host, port: 80) != nil)
+        #expect(glkvm.requests.map(\.path) == ["/api/auth/check", "/api/init/is_inited"])
+    }
+
+    @Test func aGLKVMWhoseAPIIsUnreachableIsFoundByItsPage() async {
+        let glkvm = StubDevice { request in
+            request.path == "/" ? Self.answer(200, ProbeFixtures.glkvmPage200) : Self.answer(404, Data())
+        }
+        #expect(await Self.probe().identify(host: glkvm.host, port: 443)?.type == .glinetComet)
+    }
+
+    @Test func theUniFiRouterIsNotListed() async {
+        let router = StubDevice { request in
+            request.path == "/" ? Self.answer(200, ProbeFixtures.unifiPage200) : Self.answer(401, ProbeFixtures.unifiAPI401)
+        }
+        #expect(await Self.probe().identify(host: router.host, port: 443) == nil)
+        // Both API paths and the page, on both schemes.
+        #expect(router.requests.map(\.path) == [
+            "/api/auth/check", "/api/init/is_inited", "/api/auth/check", "/api/init/is_inited", "/", "/",
+        ])
+    }
+
+    @Test func aHostAnsweringEveryPathWithAPageIsNotListed() async {
+        let nas = StubDevice { _ in Self.answer(200, ProbeFixtures.synologyRedirectPage200) }
+        #expect(await Self.probe().identify(host: nas.host, port: 80) == nil)
+    }
+
+    @Test func redirectsAndBareRefusalsAreNotListed() async {
+        for response in [
+            Self.answer(302, ProbeFixtures.router302ToLogin),
+            Self.answer(401, ProbeFixtures.router401HTML),
+            Self.answer(403, Data()),
+            Self.answer(200, ProbeFixtures.genericPageMentioningKVM),
+        ] {
+            let host = StubDevice { _ in response }
+            #expect(await Self.probe().identify(host: host.host, port: 8080) == nil, "\(response.status)")
+        }
+    }
+
+    @Test func aHostThatDoesNotAnswerIsNotListed() async {
+        // No stub registered for the host: every request fails.
+        #expect(await Self.probe().identify(host: "nobody-\(UUID().uuidString.lowercased()).invalid", port: 443) == nil)
+    }
+}
+
+/// The sweep's two stages, with a made-up connector and prober: nothing touches the network.
+@Suite("Discovery sweep stages")
+struct DiscoverySweepStageTests {
+    typealias Target = DiscoverySweep.Target
+
+    /// Counts calls and the most that were running at once.
+    final class Tally: @unchecked Sendable {
+        private let lock = NSLock()
+        private var running = 0
+        private(set) var started = 0
+        private(set) var mostAtOnce = 0
+        private var seen: [Target] = []
+
+        var targets: [Target] { lock.withLock { seen } }
+        var startedCount: Int { lock.withLock { started } }
+        var peak: Int { lock.withLock { mostAtOnce } }
+
+        @discardableResult
+        func begin(_ target: Target) -> Int {
+            lock.withLock {
+                started += 1
+                running += 1
+                mostAtOnce = max(mostAtOnce, running)
+                seen.append(target)
+                return started
+            }
+        }
+
+        func end() {
+            lock.withLock { running -= 1 }
+        }
+    }
+
+    /// Holds callers until opened.
+    actor Gate {
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private var isOpen = false
+
+        func pass() async {
+            guard !isOpen else { return }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+
+        func open() {
+            isOpen = true
+            waiting.forEach { $0.resume() }
+            waiting.removeAll()
+        }
+    }
+
+    static let hosts = (1...30).map { "192.168.0.\($0)" }
+    static let ports = KVMDeviceManager.sweptPorts
+
+    static func device(_ target: Target) -> KVMDevice {
+        Fixtures.device(id: "scanned-\(target.host)-\(target.port)", nickname: nil, host: target.host, port: target.port)
+    }
+
+    @Test func targetsGoHostByHostInPortOrder() {
+        let targets = DiscoverySweep.targets(hosts: ["192.168.0.1", "192.168.0.2"], ports: [443, 8443, 80, 8080])
+        #expect(targets.map { "\($0.host):\($0.port)" } == [
+            "192.168.0.1:443", "192.168.0.1:8443", "192.168.0.1:80", "192.168.0.1:8080",
+            "192.168.0.2:443", "192.168.0.2:8443", "192.168.0.2:80", "192.168.0.2:8080",
+        ])
+        #expect(KVMDeviceManager.sweptPorts == [443, 8443, 80, 8080])
+    }
+
+    @Test func theSweepsLimits() {
+        #expect(DiscoverySweep.connectTimeout == 0.5)
+        #expect(DiscoverySweep.connectLimit == 48)
+        #expect(DiscoverySweep.probeLimit == 16)
+    }
+
+    @Test func onlyPortsThatAcceptedAConnectionAreProbed() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: Self.ports)
+        let open: Set<Target> = [
+            Target(host: "192.168.0.1", port: 443), Target(host: "192.168.0.1", port: 80),
+            Target(host: "192.168.0.14", port: 8080), Target(host: "192.168.0.27", port: 443),
+        ]
+        let glkvm = Target(host: "192.168.0.27", port: 443)
+        let connects = Tally()
+        let probes = Tally()
+        let outcome = await DiscoverySweep.run(
+            targets: targets,
+            connect: { target in
+                connects.begin(target)
+                defer { connects.end() }
+                return open.contains(target) ? .open : .closed
+            },
+            probe: { target in
+                probes.begin(target)
+                defer { probes.end() }
+                return target == glkvm ? Self.device(target) : nil
+            }
+        )
+        #expect(connects.startedCount == targets.count)
+        #expect(Set(connects.targets) == Set(targets))
+        #expect(Set(probes.targets) == open)
+        #expect(probes.startedCount == open.count)
+        #expect(outcome.openTargets == targets.filter(open.contains))
+        #expect(outcome.hostsAnswering == 3)
+        #expect(outcome.found.map(\.id) == ["scanned-192.168.0.27-443"])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aPortIsProbedWhileOtherConnectsAreStillRunning() async {
+        // The first host's port opens at once; every other connect waits until that probe has
+        // run, which it could not if probing waited for the whole connect stage.
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: [443])
+        let first = Target(host: "192.168.0.1", port: 443)
+        let probed = Gate()
+        let outcome = await DiscoverySweep.run(
+            targets: targets,
+            connectLimit: 4,
+            connect: { target in
+                guard target != first else { return .open }
+                await probed.pass()
+                return .closed
+            },
+            probe: { target in
+                await probed.open()
+                return Self.device(target)
+            }
+        )
+        #expect(outcome.found.map(\.host) == ["192.168.0.1"])
+    }
+
+    @Test func noPortOpenMeansNoProbe() async {
+        let probes = Tally()
+        let outcome = await DiscoverySweep.run(
+            targets: DiscoverySweep.targets(hosts: Self.hosts, ports: Self.ports),
+            connect: { _ in .closed },
+            probe: { target in
+                probes.begin(target)
+                return nil
+            }
+        )
+        #expect(probes.startedCount == 0)
+        #expect(outcome.openTargets.isEmpty)
+        #expect(outcome.found.isEmpty)
+        #expect(outcome.hostsAnswering == 0)
+    }
+
+    @Test func unsureTargetsAreTriedOnceMoreAfterTheOthers() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: Self.ports)
+        let router = Target(host: "192.168.0.1", port: 443)
+        let glkvm = Target(host: "192.168.0.2", port: 443)
+        let stuck = Target(host: "192.168.0.3", port: 443)
+        let connects = Tally()
+        let outcome = await DiscoverySweep.run(
+            targets: targets,
+            connect: { target in
+                connects.begin(target)
+                defer { connects.end() }
+                let tries = connects.targets.filter { $0 == target }.count
+                switch target {
+                case router, glkvm: return tries == 1 ? .unsure : .open
+                case stuck: return .unsure
+                default: return .closed
+                }
+            },
+            probe: { target in target == glkvm ? Self.device(target) : nil }
+        )
+        #expect(connects.startedCount == targets.count + 3)
+        // The second tries come after every first try.
+        #expect(Set(connects.targets.suffix(3)) == [router, glkvm, stuck])
+        #expect(outcome.retried == 3)
+        #expect(outcome.openTargets == [router, glkvm])
+        #expect(outcome.found.map(\.host) == ["192.168.0.2"])
+    }
+
+    @Test func aSweepWithNothingUnsureTriesNothingTwice() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: Self.ports)
+        let connects = Tally()
+        let outcome = await DiscoverySweep.run(
+            targets: targets,
+            connect: { target in
+                connects.begin(target)
+                return .closed
+            },
+            probe: { _ in nil }
+        )
+        #expect(connects.startedCount == targets.count)
+        #expect(outcome.retried == 0)
+    }
+
+    @Test func onlyARefusalOrAKnownDownHostClosesAPortAtOnce() {
+        #expect(DiscoverySweep.isAnswer(.ECONNREFUSED))
+        #expect(DiscoverySweep.isAnswer(.EHOSTDOWN))
+        // Seen for every connect in the first second of an app's first scan, router included.
+        #expect(!DiscoverySweep.isAnswer(.ENETDOWN))
+        #expect(!DiscoverySweep.isAnswer(.ENETUNREACH))
+        #expect(!DiscoverySweep.isAnswer(.EHOSTUNREACH))
+        #expect(!DiscoverySweep.isAnswer(.ETIMEDOUT))
+    }
+
+    @Test func connectsNeverExceedTheirLimit() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: Self.ports)
+        let connects = Tally()
+        _ = await DiscoverySweep.run(
+            targets: targets,
+            connectLimit: 6,
+            connect: { target in
+                connects.begin(target)
+                try? await Task.sleep(for: .milliseconds(5))
+                connects.end()
+                return .closed
+            },
+            probe: { _ in nil }
+        )
+        #expect(connects.startedCount == targets.count)
+        #expect(connects.peak == 6)
+    }
+
+    @Test func probesNeverExceedTheirLimit() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: [443])
+        let probes = Tally()
+        let outcome = await DiscoverySweep.run(
+            targets: targets,
+            probeLimit: 3,
+            connect: { _ in .open },
+            probe: { target in
+                probes.begin(target)
+                try? await Task.sleep(for: .milliseconds(5))
+                probes.end()
+                return Self.device(target)
+            }
+        )
+        #expect(probes.startedCount == targets.count)
+        #expect(probes.peak == 3)
+        // Results keep target order whatever order the probes finished in.
+        #expect(outcome.found.map(\.host) == Self.hosts)
+    }
+
+    @Test func cancellingTheScanStopsNewConnectsAndProbes() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: Self.ports)
+        let gate = Gate()
+        let connects = Tally()
+        let probes = Tally()
+        let (saturated, signal) = AsyncStream<Void>.makeStream()
+        // Connects 1-7 find the port closed at once; 8-11 wait at the gate, filling all 4 slots,
+        // and then find it open, after the scan was cancelled.
+        let sweep = Task {
+            await DiscoverySweep.run(
+                targets: targets,
+                connectLimit: 4,
+                connect: { target in
+                    let number = connects.begin(target)
+                    defer { connects.end() }
+                    guard number >= 8 else { return .closed }
+                    if number == 11 {
+                        signal.yield()
+                    }
+                    await gate.pass()
+                    return .open
+                },
+                probe: { target in
+                    probes.begin(target)
+                    return nil
+                }
+            )
+        }
+        for await _ in saturated {
+            break
+        }
+        sweep.cancel()
+        await gate.open()
+        let outcome = await sweep.value
+        #expect(connects.startedCount == 11)
+        #expect(probes.startedCount == 0)
+        #expect(outcome.openTargets.count == 4)
+        #expect(outcome.found.isEmpty)
+    }
+
+    @Test func cancellingDuringProbesStopsNewProbes() async {
+        let targets = DiscoverySweep.targets(hosts: Self.hosts, ports: [443])
+        let gate = Gate()
+        let probes = Tally()
+        let (saturated, signal) = AsyncStream<Void>.makeStream()
+        let sweep = Task {
+            await DiscoverySweep.run(
+                targets: targets,
+                probeLimit: 2,
+                connect: { _ in .open },
+                probe: { target in
+                    let number = probes.begin(target)
+                    defer { probes.end() }
+                    if number == 2 {
+                        signal.yield()
+                    }
+                    await gate.pass()
+                    return Self.device(target)
+                }
+            )
+        }
+        for await _ in saturated {
+            break
+        }
+        sweep.cancel()
+        await gate.open()
+        let outcome = await sweep.value
+        #expect(probes.startedCount == 2)
+        #expect(outcome.found.count == 2)
+        #expect(Set(outcome.found.map(\.host)) == Set(probes.targets.map(\.host)))
+    }
+}
+
+/// Saved and added devices stay listed through a scan whatever it finds or fails to reach.
+@Suite("Scan listing")
+struct ScanListingTests {
+    static let linux = Fixtures.device(id: "saved-linux", nickname: "Linux KVM", host: "192.168.0.131")
+    static let surface = Fixtures.device(id: "saved-surface", nickname: "Surface KVM", host: "192.168.0.114")
+    static let added = Fixtures.device(id: "manual-x", nickname: nil, host: "10.0.0.9")
+
+    @Test func savedDevicesAreListedWhenTheScanFindsNothing() {
+        let listed = KVMDeviceManager.scanListing(pinned: [Self.linux, Self.surface, Self.added], found: [])
+        #expect(Set(listed.map(\.id)) == ["saved-linux", "saved-surface", "manual-x"])
+    }
+
+    @Test func aSavedDeviceFoundByTheScanIsListedOnce() {
+        let found = [
+            Fixtures.device(id: "scanned-192.168.0.131-443", nickname: nil, host: "192.168.0.131"),
+            Fixtures.device(id: "scanned-192.168.0.131-80", nickname: nil, host: "192.168.0.131", port: 80),
+            Fixtures.device(id: "scanned-192.168.0.77-443", nickname: nil, host: "192.168.0.77"),
+        ]
+        let listed = KVMDeviceManager.scanListing(pinned: [Self.linux, Self.surface], found: found)
+        #expect(listed.filter { $0.host == "192.168.0.131" }.map(\.id) == ["saved-linux"])
+        #expect(Set(listed.map(\.id)) == ["saved-linux", "saved-surface", "scanned-192.168.0.77-443"])
     }
 }
 

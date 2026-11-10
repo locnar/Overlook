@@ -102,13 +102,21 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     // matches, so a cancelled scan never overwrites the device list after the fact.
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = 0
-    /// Upper bound on simultaneous TCP probes during the /24 sweep. 64 was enough to trip
-    /// rate limiting on some Wi-Fi routers and starve the mDNS browsers running alongside.
-    private static let maximumConcurrentProbes = 16
-
     /// Discovery probes accept any certificate: they hit arbitrary LAN hosts, send no credentials,
     /// and must not pin whatever those hosts present. Real connections go through DeviceTrustStore.
-    private final class ProbeTLSDelegate: NSObject, URLSessionDelegate {
+    /// They follow a redirect only to the host they asked (`DiscoveryProbe.followsRedirect`).
+    private final class ProbeTLSDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            let follows = DiscoveryProbe.followsRedirect(from: task.originalRequest?.url, to: request.url)
+            completionHandler(follows ? request : nil)
+        }
+
         func urlSession(
             _ session: URLSession,
             didReceive challenge: URLAuthenticationChallenge,
@@ -251,9 +259,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                     let found = allDevices
                     await MainActor.run {
                         guard self.scanGeneration == generation else { return }
-                        self.availableDevices = Self.mergeListed(
-                            pinnedDevices + DiscoveredMerge.merge(found, shownAs: pinnedDevices)
-                        )
+                        self.availableDevices = Self.scanListing(pinned: pinnedDevices, found: found)
                     }
                 }
 
@@ -505,49 +511,32 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     /// Info.plist, or macOS refuses the browse.
     nonisolated static let bonjourServiceTypes = ["_comet._tcp", "_kvm._tcp"]
 
-    private func scanKnownPorts(hosts localNetwork: [String]) async -> [KVMDevice] {
-        var devices: [KVMDevice] = []
-        let knownPorts = Self.sweptPorts
-
-        let maxConcurrent = Self.maximumConcurrentProbes
-        var targets: [(host: String, port: Int)] = []
-        targets.reserveCapacity(localNetwork.count * knownPorts.count)
-        for host in localNetwork {
-            for port in knownPorts {
-                targets.append((host: host, port: port))
+    /// The /24 sweep, in `DiscoverySweep`'s two stages: a TCP connect to every swept host's
+    /// ports, then HTTP probes on the ports that accepted.
+    private func scanKnownPorts(hosts: [String]) async -> [KVMDevice] {
+        guard !hosts.isEmpty else { return [] }
+        let started = Date()
+        let targets = DiscoverySweep.targets(hosts: hosts, ports: Self.sweptPorts)
+        let session = probeSession
+        let outcome = await DiscoverySweep.run(
+            targets: targets,
+            connect: { target in
+                await Self.checkPort(host: target.host, port: target.port, timeout: DiscoverySweep.connectTimeout)
+            },
+            probe: { target in
+                await DiscoveryHTTPProbe(session: session).identify(host: target.host, port: target.port)
             }
-        }
-
-        await withTaskGroup(of: KVMDevice?.self) { group in
-            var nextIndex = 0
-            var inFlight = 0
-
-            while nextIndex < targets.count || inFlight > 0 {
-                if Task.isCancelled {
-                    group.cancelAll()
-                    return
-                }
-                while inFlight < maxConcurrent && nextIndex < targets.count {
-                    let target = targets[nextIndex]
-                    nextIndex += 1
-                    inFlight += 1
-                    group.addTask {
-                        await self.checkKVMService(host: target.host, port: target.port)
-                    }
-                }
-
-                if let device = await group.next() {
-                    inFlight -= 1
-                    if let device {
-                        devices.append(device)
-                    }
-                }
-            }
-        }
-        
-        return devices
+        )
+        guard !Task.isCancelled else { return outcome.found }
+        let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
+        let glkvms = Set(outcome.found.map { DiscoveredMerge.hostKey($0.host) }).count
+        let retried = outcome.retried > 0 ? ", \(outcome.retried) tried twice" : ""
+        clog.info(.network, "Sweep finished in \(seconds) s: \(outcome.hostsAnswering) of \(hosts.count) hosts answered on a port "
+            + "(\(outcome.openTargets.count) open ports; \(DiscoverySweep.connectLimit) connects at a time, "
+            + "\(Int(DiscoverySweep.connectTimeout * 1000)) ms timeout\(retried)); \(glkvms) \(glkvms == 1 ? "is a GLKVM" : "are GLKVMs")")
+        return outcome.found
     }
-    
+
     /// Every IPv4 address on the Mac's interfaces, with the interface's name, netmask and flags.
     nonisolated static func readIPv4Interfaces() -> [IPv4Interface] {
         var interfaces: [IPv4Interface] = []
@@ -585,47 +574,56 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return String(cString: buffer)
     }
 
-    private func probeTCPPortOpen(host: String, port: Int, timeout: TimeInterval = 0.7) async -> Bool {
-        guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
-            return false
+    /// Whether `host:port` accepts a TCP connection within `timeout`.
+    nonisolated private static func probeTCPPortOpen(host: String, port: Int, timeout: TimeInterval) async -> Bool {
+        await checkPort(host: host, port: port, timeout: timeout) == .open
+    }
+
+    /// What one TCP connect to `host:port` learns within `timeout`. A refusal, or a host the
+    /// system already knows is down, closes the port at once (`DiscoverySweep.isAnswer`); while
+    /// Network waits for any other reason the attempt carries on (Network retries by itself), and
+    /// if it runs out of time after such a wait the port is unsure rather than closed.
+    nonisolated static func checkPort(host: String, port: Int, timeout: TimeInterval) async -> DiscoverySweep.PortState {
+        guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else {
+            return .closed
         }
 
-        final class Flag {
-            var value: Bool = false
+        // Touched on `queue` only, which serializes it.
+        final class Attempt: @unchecked Sendable {
+            var finished = false
+            var heldUp = false
         }
 
         let queue = DispatchQueue(label: "com.overlook.probe.port")
         let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
 
         return await withCheckedContinuation { continuation in
-            let finished = Flag()
+            let attempt = Attempt()
 
-            let timeoutWorkItem = DispatchWorkItem {
-                if finished.value { return }
-                finished.value = true
+            let finish: @Sendable (DiscoverySweep.PortState) -> Void = { state in
+                if attempt.finished { return }
+                attempt.finished = true
                 connection.stateUpdateHandler = nil
                 connection.cancel()
-                continuation.resume(returning: false)
+                continuation.resume(returning: state)
             }
 
-            queue.asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
+            queue.asyncAfter(deadline: .now() + timeout) {
+                finish(attempt.heldUp ? .unsure : .closed)
+            }
 
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    if finished.value { return }
-                    finished.value = true
-                    timeoutWorkItem.cancel()
-                    connection.stateUpdateHandler = nil
-                    connection.cancel()
-                    continuation.resume(returning: true)
+                    finish(.open)
+                case .waiting(let error):
+                    if case .posix(let code) = error, DiscoverySweep.isAnswer(code) {
+                        finish(.closed)
+                    } else {
+                        attempt.heldUp = true
+                    }
                 case .failed, .cancelled:
-                    if finished.value { return }
-                    finished.value = true
-                    timeoutWorkItem.cancel()
-                    connection.stateUpdateHandler = nil
-                    connection.cancel()
-                    continuation.resume(returning: false)
+                    finish(.closed)
                 default:
                     break
                 }
@@ -634,81 +632,14 @@ final class KVMDeviceManager: NSObject, ObservableObject {
             connection.start(queue: queue)
         }
     }
-    
+
     private func checkKVMService(host: String, port: Int) async -> KVMDevice? {
         // A closed or absent port is rejected by one TCP probe in about a second; the HTTP probes
         // below would each wait out their own timeouts on it, several times over per target.
-        guard await probeTCPPortOpen(host: host, port: port, timeout: 1.0) else { return nil }
-
-        if await probeGLKVM(host: host, port: port) {
-            return KVMDevice(
-                id: "scanned-\(host)-\(port)",
-                host: host,
-                port: port,
-                type: .glinetComet,
-                authToken: "",
-                capabilities: [.videoStreaming, .keyboardInput, .mouseInput, .virtualMedia, .powerManagement]
-            )
-        }
-
-        if await probeWebUIKeywords(host: host, port: port) {
-            return KVMDevice(
-                id: "scanned-\(host)-\(port)",
-                host: host,
-                port: port,
-                type: .generic,
-                authToken: "",
-                capabilities: [.videoStreaming, .keyboardInput, .mouseInput]
-            )
-        }
-
-        return nil
+        guard await Self.probeTCPPortOpen(host: host, port: port, timeout: 1.0) else { return nil }
+        return await DiscoveryHTTPProbe(session: probeSession).identify(host: host, port: port)
     }
 
-    private func probeGLKVM(host: String, port: Int) async -> Bool {
-        for scheme in DiscoveryProbe.schemes(forPort: port) {
-            for path in DiscoveryProbe.apiPaths {
-                guard let url = URL(string: "\(scheme)://\(host):\(port)/\(path)") else { continue }
-                var request = URLRequest(url: url)
-                request.httpMethod = "GET"
-                request.timeoutInterval = 3
-
-                do {
-                    let (_, response) = try await probeSession.data(for: request)
-                    guard let http = response as? HTTPURLResponse else { continue }
-                    if DiscoveryProbe.apiStatusLooksLikeGLKVM(http.statusCode) {
-                        return true
-                    }
-                } catch {
-                    continue
-                }
-            }
-        }
-
-        return false
-    }
-
-    private func probeWebUIKeywords(host: String, port: Int) async -> Bool {
-        for scheme in DiscoveryProbe.schemes(forPort: port) {
-            guard let url = URL(string: "\(scheme)://\(host):\(port)/") else { continue }
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 2
-
-            do {
-                let (data, response) = try await probeSession.data(for: request)
-                guard let http = response as? HTTPURLResponse else { continue }
-                if DiscoveryProbe.pageLooksLikeKVM(status: http.statusCode, body: data) {
-                    return true
-                }
-            } catch {
-                continue
-            }
-        }
-
-        return false
-    }
-    
     private func discoverTailscaleDevices() async -> [KVMDevice] {
         var devices: [KVMDevice] = []
         
@@ -745,6 +676,12 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return nil
     }
     
+    /// The device list a scan shows: every saved or added device, whatever the scan found or
+    /// failed to reach, plus one entry per other host found.
+    nonisolated static func scanListing(pinned: [KVMDevice], found: [KVMDevice]) -> [KVMDevice] {
+        mergeListed(pinned + DiscoveredMerge.merge(found, shownAs: pinned))
+    }
+
     /// The device list as shown: saved devices first claim every one of their addresses, then
     /// each other entry is kept unless its address is already claimed, so a scan that finds a
     /// saved device's address (any of them) shows that device rather than a second entry.
@@ -1458,5 +1395,65 @@ enum KVMError: Error, LocalizedError, Equatable, CustomStringConvertible {
 
     var description: String {
         errorDescription ?? String(reflecting: self)
+    }
+}
+
+/// The HTTP half of probing one swept host:port: asks it whether it is a GLKVM, as
+/// `DiscoveryProbe` defines one. Read-only GETs, no credentials. The session is the scan's probe
+/// session in the app (any certificate accepted, redirects followed only on the same host) and a
+/// stubbed one in tests.
+struct DiscoveryHTTPProbe: Sendable {
+    let session: URLSession
+
+    /// A device for `host:port` when it answers as a GLKVM, else nil. The API endpoints are asked
+    /// first, on each scheme in `DiscoveryProbe.schemes(forPort:)` order; the web page only when
+    /// no API endpoint answered as kvmd.
+    func identify(host: String, port: Int) async -> KVMDevice? {
+        var isGLKVM = await answersAsKVMD(host: host, port: port)
+        if !isGLKVM {
+            isGLKVM = await servesGLKVMPage(host: host, port: port)
+        }
+        guard isGLKVM else { return nil }
+        return KVMDevice(
+            id: "scanned-\(host)-\(port)",
+            host: host,
+            port: port,
+            type: .glinetComet,
+            authToken: "",
+            capabilities: [.videoStreaming, .keyboardInput, .mouseInput, .virtualMedia, .powerManagement]
+        )
+    }
+
+    func answersAsKVMD(host: String, port: Int) async -> Bool {
+        for scheme in DiscoveryProbe.schemes(forPort: port) {
+            for path in DiscoveryProbe.apiPaths {
+                guard let answer = await get("\(scheme)://\(host):\(port)/\(path)", timeout: 3) else { continue }
+                if DiscoveryProbe.isKVMDAnswer(status: answer.status, body: answer.body) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    func servesGLKVMPage(host: String, port: Int) async -> Bool {
+        for scheme in DiscoveryProbe.schemes(forPort: port) {
+            guard let answer = await get("\(scheme)://\(host):\(port)/", timeout: 2) else { continue }
+            if DiscoveryProbe.isGLKVMPage(status: answer.status, body: answer.body) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The status and body of a GET, or nil when it fails or is cancelled.
+    private func get(_ address: String, timeout: TimeInterval) async -> (status: Int, body: Data)? {
+        guard let url = URL(string: address) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        guard let answer = try? await session.data(for: request),
+              let http = answer.1 as? HTTPURLResponse else { return nil }
+        return (http.statusCode, answer.0)
     }
 }
