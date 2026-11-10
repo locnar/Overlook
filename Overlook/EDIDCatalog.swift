@@ -17,8 +17,9 @@ struct EDIDOption: Hashable, Identifiable {
 ///
 /// Each label reads `WxH/Vendor/RefreshHz` and is taken from the entry's own EDID: WxH and refresh are
 /// the preferred (first detailed) timing, refresh shown to two decimals unless it is within 0.01 Hz of
-/// a whole number, and Vendor is a readable name for the manufacturer (PNP) code. A test decodes every
-/// blob and checks its label, so the two cannot drift apart.
+/// a whole number, and Vendor is a readable name for the manufacturer (PNP) code. LTM (Lontium, the
+/// HDMI chip inside the GLKVM) is shown as GLKVM, since those entries are GL.iNet's own presets. A test
+/// decodes every blob and checks its label, so the two cannot drift apart.
 ///
 /// Each entry's `edid` is exactly what is pushed to the device. There used to be a separate
 /// per-id override table that won over the entry's own blob; its six blobs are folded into the
@@ -35,7 +36,7 @@ enum EDIDCatalog {
         ),
         EDIDOption(
             id: "E3840x2160",
-            label: "3840x2160/Lontium/30Hz",
+            label: "3840x2160/GLKVM/30Hz",
             edid: "00 ff ff ff ff ff ff 00 32 8d 32 31 00 88 88 88\n        20 1e 01 03 80 0c 07 78 0a 0d c9 a0 57 47 98 27\n        12 48 4c 00 00 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 04 74 00 30 f2 70 5a 80 b0 58\n        8a 00 00 70 f8 00 00 1e 02 3a 80 18 71 38 2d 40\n        58 2c 45 00 c4 8e 21 00 00 1e 00 00 00 fd 00 18\n        64 14 96 1e 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 4c 6f 6e 74 69 75 6d 20 73 65 6d 69 0a 01 64\n\n        02 03 1d f0 4a 01 04 10 1f 20 21 22 5d 5e 5f 23\n        09 04 01 83 01 00 00 65 03 0c 00 10 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ba"
         ),
         EDIDOption(
@@ -70,7 +71,7 @@ enum EDIDCatalog {
         ),
         EDIDOption(
             id: "E2560x1600LTM",
-            label: "2560x1600/Lontium/50Hz",
+            label: "2560x1600/GLKVM/50Hz",
             edid: "00 ff ff ff ff ff ff 00 32 8d 32 31 00 88 88 88\n        20 1e 01 03 80 0c 07 78 0a 0d c9 a0 57 47 98 27\n        12 48 4c 00 00 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 03 57 00 a0 a0 40 26 60 30 20\n        36 00 00 40 a6 00 00 1e 02 3a 80 18 71 38 2d 40\n        58 2c 45 00 c4 8e 21 00 00 1e 00 00 00 fd 00 18\n        64 14 96 1e 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 41 53 55 53 0a 20 20 20 20 20 20 20 20 01 f0\n        02 03 1d f0 4a 01 04 10 1f 20 21 22 5d 5e 5f 23\n        09 04 01 83 01 00 00 65 03 0c 00 10 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ba\n        "
         ),
         EDIDOption(

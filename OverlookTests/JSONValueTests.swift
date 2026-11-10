@@ -177,12 +177,14 @@ struct DecodedEDID: Equatable {
 
 /// Readable vendor names for the PNP codes the catalog uses. Registry names are from the UEFI PNP ID
 /// list (as mirrored in hwdata's pnp.ids); GLI, LTM and AOC are not in that list and are named after the
-/// companies that ship them (GL.iNet's KVM, Lontium's bridge chips, AOC monitors). CHR is registered
-/// to christmann informationstechnik, but the one entry using it names a Chrontel chip (CH7511B).
+/// companies that ship them (GL.iNet's KVM, Lontium's bridge chips, AOC monitors). LTM shows as GLKVM,
+/// not Lontium: Lontium makes the HDMI chip inside the GLKVM, and the entries carrying LTM are GL.iNet's
+/// own presets, so GLKVM is the name a user recognizes. CHR is registered to christmann
+/// informationstechnik, but the one entry using it names a Chrontel chip (CH7511B).
 private let edidVendorNames: [String: String] = [
     "GLI": "GLKVM",
     "SEC": "Epson",
-    "LTM": "Lontium",
+    "LTM": "GLKVM",
     "AOC": "AOC",
     "AUS": "ASUS",
     "AUO": "AUO",
