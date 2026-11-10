@@ -349,4 +349,69 @@ struct ScrollScalingTests {
         #expect(input.phase == [])
         #expect(input.deltaY > 0)
     }
+
+    // MARK: - A line event, end to end
+
+    /// A notched wheel's event as a source builds it: whole lines on each axis (axis 1 vertical,
+    /// axis 2 horizontal), with no acceleration.
+    private func lineEvent(vertical: Int32, horizontal: Int32 = 0) throws -> CGEvent {
+        try #require(CGEvent(
+            scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: vertical, wheel2: horizontal, wheel3: 0
+        ))
+    }
+
+    /// The HID wheel reports for what `sent` holds, in order.
+    private func reports(_ sent: [InputManager.SentInput]) -> [[Int]] {
+        sent.compactMap {
+            guard case let .scroll(deltaX, deltaY) = $0 else { return nil }
+            return wheel(deltaX, deltaY)
+        }
+    }
+
+    @Test func aLineEventScrollsTheTargetTheWayItArrived() throws {
+        let c = Capture()
+        let lines: [(vertical: Int32, horizontal: Int32)] = [(1, 0), (-1, 0), (0, 1), (0, -1), (2, -3)]
+        for line in lines {
+            let event = try #require(NSEvent(cgEvent: try lineEvent(vertical: line.vertical, horizontal: line.horizontal)))
+            c.input.handleVideoMouseScroll(ScrollWheelInput(event: event))
+        }
+
+        // The vertical line goes out as Y and the horizontal one as X, each with its own sign.
+        #expect(reports(c.sent) == [[0, 1], [0, -1], [1, 0], [-1, 0], [-3, 2]])
+    }
+
+    @Test(arguments: [1, -1, 3, -6] as [Int32])
+    func aLineEventsWholeLineFieldsMatchItsScrollingDeltas(lines: Int32) throws {
+        let vertical = try lineEvent(vertical: lines)
+        let horizontal = try lineEvent(vertical: 0, horizontal: lines)
+        let up = try #require(NSEvent(cgEvent: vertical))
+        let left = try #require(NSEvent(cgEvent: horizontal))
+
+        #expect(vertical.getIntegerValueField(.scrollWheelEventDeltaAxis1) == Int64(lines))
+        #expect(vertical.getIntegerValueField(.scrollWheelEventDeltaAxis2) == 0)
+        #expect(up.scrollingDeltaY == CGFloat(lines))
+        #expect(up.scrollingDeltaX == 0)
+
+        #expect(horizontal.getIntegerValueField(.scrollWheelEventDeltaAxis2) == Int64(lines))
+        #expect(horizontal.getIntegerValueField(.scrollWheelEventDeltaAxis1) == 0)
+        #expect(left.scrollingDeltaX == CGFloat(lines))
+        #expect(left.scrollingDeltaY == 0)
+    }
+
+    @Test(arguments: [-12, 25, 3, -40] as [Int32])
+    func aPixelEventsWholeLineFieldNeverDisagreesWithItsScrollingDelta(pixels: Int32) throws {
+        let cg = try #require(CGEvent(
+            scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: pixels, wheel2: pixels, wheel3: 0
+        ))
+        let event = try #require(NSEvent(cgEvent: cg))
+        let lineY = cg.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        let lineX = cg.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+
+        #expect(event.scrollingDeltaY == CGFloat(pixels))
+        #expect(event.scrollingDeltaX == CGFloat(pixels))
+        // Built in memory, these come out as -1, 2, 1 and -4 lines: never zero, never the other
+        // way. Only the sign is pinned here.
+        #expect(lineY == 0 || (lineY < 0) == (pixels < 0))
+        #expect(lineX == 0 || (lineX < 0) == (pixels < 0))
+    }
 }
