@@ -351,6 +351,15 @@ struct CaptureNoticeView: View {
             Image(systemName: notice.systemImage ?? (notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
                 .foregroundStyle(symbolColor)
                 .font(.title3)
+                .overlay {
+                    if let badge = notice.systemImageBadge {
+                        // Sits in the clipboard's body, below its clip.
+                        Image(systemName: badge)
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(symbolColor)
+                            .offset(y: 2)
+                    }
+                }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(notice.title)

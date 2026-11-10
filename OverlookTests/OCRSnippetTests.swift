@@ -193,7 +193,8 @@ struct OCRSnippetTests {
         #expect(notice.title == "Copied 2 lines")
         #expect(notice.detail == "“ls -la”")
         #expect(notice.copiedText == "ls -la\ntotal 48")
-        #expect(notice.systemImage == OCRSnippet.copiedSymbolName)
+        #expect(notice.systemImage == "clipboard")
+        #expect(notice.systemImageBadge == "checkmark")
         #expect(notice.tintsSymbol)
         #expect(notice.isError == false)
         #expect(notice.fileURL == nil)
@@ -454,6 +455,7 @@ struct OCRSnippetTests {
 
     @Test func theNoticeSymbolsExist() {
         #expect(NSImage(systemSymbolName: OCRSnippet.copiedSymbolName, accessibilityDescription: nil) != nil)
+        #expect(NSImage(systemSymbolName: OCRSnippet.copiedSymbolBadge, accessibilityDescription: nil) != nil)
         #expect(NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: nil) != nil)
     }
 }

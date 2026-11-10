@@ -180,11 +180,11 @@ final class OCRSnippet: ObservableObject {
         pasteboard.setString(text, forType: .string)
     }
 
-    /// The notice's green clipboard-with-a-check symbol, or the nearest this macOS has.
-    static let copiedSymbolName: String = {
-        let candidates = ["checkmark.clipboard", "clipboard", "doc.on.clipboard"]
-        return candidates.first { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil } ?? "doc.on.clipboard"
-    }()
+    /// The copied-text notice's symbol: a clipboard with a checkmark drawn inside it. SF Symbols
+    /// has no clipboard with a check (macOS 14 through 27 were checked), so the notice draws the
+    /// check itself (`CaptureManager.Notice.systemImageBadge`).
+    static let copiedSymbolName = "clipboard"
+    static let copiedSymbolBadge = "checkmark"
 }
 
 // MARK: - From the view to the video

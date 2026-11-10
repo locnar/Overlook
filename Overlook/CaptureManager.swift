@@ -70,6 +70,9 @@ final class CaptureManager: ObservableObject {
         var systemImage: String? = nil
         /// Draws `systemImage` in the success green rather than grey.
         var tintsSymbol = false
+        /// A smaller symbol drawn inside `systemImage`, for a combination SF Symbols lacks (the
+        /// check on the copied-text notice's clipboard).
+        var systemImageBadge: String? = nil
         /// The whole text an OCR snippet copied. The notice then offers Show text, which opens
         /// the results sheet with it.
         var copiedText: String? = nil
@@ -456,6 +459,7 @@ final class CaptureManager: ObservableObject {
             isError: false,
             systemImage: OCRSnippet.copiedSymbolName,
             tintsSymbol: true,
+            systemImageBadge: OCRSnippet.copiedSymbolBadge,
             copiedText: text
         )
     }
@@ -490,6 +494,7 @@ final class CaptureManager: ObservableObject {
         isError: Bool,
         systemImage: String? = nil,
         tintsSymbol: Bool = false,
+        systemImageBadge: String? = nil,
         copiedText: String? = nil
     ) {
         noticeDismissTask?.cancel()
@@ -500,6 +505,7 @@ final class CaptureManager: ObservableObject {
             isError: isError,
             systemImage: systemImage,
             tintsSymbol: tintsSymbol,
+            systemImageBadge: systemImageBadge,
             copiedText: copiedText
         )
         notice = shown
