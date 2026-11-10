@@ -12,10 +12,13 @@ struct EDIDOption: Hashable, Identifiable {
 
 /// Immutable EDID catalog.
 ///
-/// Ticket 05: these tables used to be per-instance `let` properties on `WebUISettingsPanel`, so
-/// every single instantiation of that view struct (once per parent render pass, while the panel is
-/// open) rebuilt ~17 KB of hex string literals and a dictionary. They are process-wide constants
-/// now — allocated lazily, exactly once.
+/// The table is a process-wide constant, built lazily once, rather than a per-instance property of
+/// `WebUISettingsPanel` (which rebuilt ~17 KB of hex literals on every render while the panel was open).
+///
+/// Each label reads `WxH/Vendor/RefreshHz` and is taken from the entry's own EDID: WxH and refresh are
+/// the preferred (first detailed) timing, refresh shown to two decimals unless it is within 0.01 Hz of
+/// a whole number, and Vendor is a readable name for the manufacturer (PNP) code. A test decodes every
+/// blob and checks its label, so the two cannot drift apart.
 ///
 /// Each entry's `edid` is exactly what is pushed to the device. There used to be a separate
 /// per-id override table that won over the entry's own blob; its six blobs are folded into the
@@ -27,12 +30,12 @@ enum EDIDCatalog {
     static let options: [EDIDOption] = [
         EDIDOption(
             id: "E2560x1440",
-            label: "2560x1440/GLKVM/60Hz",
+            label: "2560x1440/GLKVM/59.95Hz",
             edid: "00 ff ff ff ff ff ff 00 1d 89 1c c2 8a 0e 00 00\n        08 1f 01 03 80 3c 22 78 2a 2d 71 af 4f 44 a9 27\n        0d 50 54 21 08 00 d1 c0 95 c0 95 00 81 80 81 40\n        81 c0 01 01 01 01 56 5e 00 a0 a0 a0 29 50 30 20\n        35 00 55 50 21 00 00 1e 00 00 00 ff 00 38 39 31\n        32 34 37 0a 20 20 20 20 20 20 00 00 00 fc 00 47\n        4c 4b 56 4d 0a 20 20 20 20 20 20 20 00 00 00 fd\n        00 30 4b 1e 72 1e 00 0a 20 20 20 20 20 20 01 5d\n\n        02 03 27 f0 4b 10 1f 05 14 04 13 03 12 02 11 01\n        23 09 07 07 83 01 00 00 65 03 0c 00 10 00 68 1a\n        00 00 01 01 30 4b 00 02 3a 80 18 71 38 2d 40 58\n        2c 45 00 55 50 21 00 00 1e 8c 0a d0 8a 20 e0 2d\n        10 10 3e 96 00 55 50 21 00 00 18 8c 0a d0 90 20\n        40 31 20 0c 40 55 00 55 50 21 00 00 18 f0 3c 00\n        d0 51 a0 35 50 60 88 3a 00 55 50 21 00 00 1c 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ae"
         ),
         EDIDOption(
             id: "E3840x2160",
-            label: "3840x2160/GLKVM/30Hz",
+            label: "3840x2160/Lontium/30Hz",
             edid: "00 ff ff ff ff ff ff 00 32 8d 32 31 00 88 88 88\n        20 1e 01 03 80 0c 07 78 0a 0d c9 a0 57 47 98 27\n        12 48 4c 00 00 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 04 74 00 30 f2 70 5a 80 b0 58\n        8a 00 00 70 f8 00 00 1e 02 3a 80 18 71 38 2d 40\n        58 2c 45 00 c4 8e 21 00 00 1e 00 00 00 fd 00 18\n        64 14 96 1e 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 4c 6f 6e 74 69 75 6d 20 73 65 6d 69 0a 01 64\n\n        02 03 1d f0 4a 01 04 10 1f 20 21 22 5d 5e 5f 23\n        09 04 01 83 01 00 00 65 03 0c 00 10 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ba"
         ),
         EDIDOption(
@@ -42,17 +45,17 @@ enum EDIDCatalog {
         ),
         EDIDOption(
             id: "E1920x1200",
-            label: "1920x1200/Samsung/60Hz",
+            label: "1920x1200/Epson/59.95Hz",
             edid: "00 ff ff ff ff ff ff 00 4c a3 0b a7 01 01 01 01\n        08 1a 01 03 80 00 00 78 0a de 50 a3 54 4c 99 26\n        0f 50 54 a1 08 00 81 40 81 c0 95 00 81 80 90 40\n        b3 00 a9 40 01 01 28 3c 80 a0 70 b0 23 40 30 20\n        36 00 40 84 63 00 00 1a 9e 20 00 90 51 20 1f 30\n        48 80 36 00 40 84 63 00 00 1c 00 00 00 fd 00 17\n        55 0f 5c 11 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 45 50 53 4f 4e 20 50 4a 0a 20 20 20 20 01 15\n\n        02 03 28 f1 51 90 1f 20 22 05 14 04 13 03 02 12\n        11 07 06 16 15 01 23 09 07 07 83 01 00 00 66 03\n        0c 00 20 00 80 e2 00 fb 02 3a 80 18 71 38 2d 40\n        58 2c 45 00 40 84 63 00 00 1e 01 1d 80 18 71 38\n        2d 40 58 2c 45 00 40 84 63 00 00 1e 66 21 56 aa\n        51 00 1e 30 46 8f 33 00 40 84 63 00 00 1e 30 2a\n        40 c8 60 84 64 30 18 50 13 00 40 84 63 00 00 1e\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80"
         ),
         EDIDOption(
             id: "E1920x1280",
-            label: "1920x1280/AUO/60Hz",
+            label: "1920x1280/AUO/59.98Hz",
             edid: "00 ff ff ff ff ff ff 00 06 af 8d 93 00 00 00 00\n        0f 20 01 04 a5 1a 11 78 03 24 45 9b 53 4c 8e 27\n        16 50 54 00 00 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 62 3e 80 64 70 00 26 50 28 10\n        66 00 05 ae 10 00 00 18 00 00 00 fd 00 30 3c 50\n        50 10 00 00 00 00 00 00 00 20 00 00 00 fe 00 47\n        31 32 34 55 41 4e 30 31 2e 30 00 00 00 00 00 fe\n        00 52 51 39 33 48 32 46 57 37 44 33 34 00 00 ef"
         ),
         EDIDOption(
             id: "E2560x1440VS",
-            label: "2560x1440/ViewSonic/60Hz",
+            label: "2560x1440/ViewSonic/59.95Hz",
             edid: "00 ff ff ff ff ff ff 00 5a 63 34 2f ea 50 00 00\n        24 1e 01 03 80 35 1e 78 2e ff d5 a9 53 45 a0 25\n        0d 50 54 bf ef 80 d1 c0 b3 00 a9 40 a9 c0 95 00\n        90 40 81 80 81 c0 56 5e 00 a0 a0 a0 29 50 30 20\n        35 00 0f 28 21 00 00 1a 00 00 00 fd 00 32 4c 1e\n        53 1e 00 0a 20 20 20 20 20 20 00 00 00 fc 00 56\n        58 32 34 37 38 2d 32 0a 20 20 20 20 00 00 00 ff\n        00 55 59 4c 32 30 33 36 32 30 37 31 34 0a 01 ea\n\n        02 03 24 f1 4f 90 05 04 03 02 07 12 13 14 16 1f\n        20 21 22 01 23 09 7f 07 83 01 00 00 67 03 0c 00\n        10 00 20 40 02 3a 80 18 71 38 2d 40 58 2c 45 00\n        0f 28 21 00 00 1e 01 1d 80 18 71 1c 16 20 58 2c\n        25 00 0f 28 21 00 00 9e 01 1d 00 72 51 d0 1e 20\n        6e 28 55 00 0f 28 21 00 00 1e 02 3a 80 d0 72 38\n        2d 40 10 2c 45 80 0f 28 21 00 00 1e 01 1d 80 d0\n        72 1c 16 20 10 2c 25 80 0f 28 21 00 00 9e 00 50"
         ),
         EDIDOption(
@@ -62,22 +65,22 @@ enum EDIDCatalog {
         ),
         EDIDOption(
             id: "E2560x1664AOC",
-            label: "2560x1664/AOC/50Hz",
+            label: "2560x1664/AOC/49.95Hz",
             edid: "00 ff ff ff ff ff ff 00 05 e3 77 25 24 00 00 00\n        01 1e 01 04 a5 37 1f 78 3a 44 55 a9 55 4d 9d 26\n        0f 50 54 21 08 00 d1 c0 b3 00 95 00 81 80 81 40\n        81 c0 01 01 01 01 6e 5a 00 a0 a0 80 28 60 30 20\n        3a 00 29 37 21 00 00 1e 00 00 00 fd 00 1e 3c 1e\n        63 1e 00 0a 20 20 20 20 20 20 00 00 00 fc 00 47\n        4c 4b 56 4d 0a 20 20 20 20 20 20 20 00 00 00 ff\n        00 41 48 4c 4c 31 39 41 30 30 30 30 33 36 01 d5\n        02 03 1e f1 4b 01 03 05 14 04 13 1f 12 02 11 90\n        23 09 07 07 83 01 00 00 65 03 0c 00 10 00 02 3a\n        80 18 71 38 2d 40 58 2c 45 00 29 37 21 00 00 1e\n        01 1d 00 72 51 d0 1e 20 6e 28 55 00 29 37 21 00\n        00 1e 8c 0a d0 8a 20 e0 2d 10 10 3e 96 00 29 37\n        21 00 00 18 8c 0a d0 90 20 40 31 20 0c 40 55 00\n        29 37 21 00 00 18 f0 3c 00 d0 51 a0 35 50 60 88\n        3a 00 29 37 21 00 00 1c 00 00 00 00 00 00 00 d0\n        "
         ),
         EDIDOption(
             id: "E2560x1600LTM",
-            label: "2560x1600/LTM/50Hz",
+            label: "2560x1600/Lontium/50Hz",
             edid: "00 ff ff ff ff ff ff 00 32 8d 32 31 00 88 88 88\n        20 1e 01 03 80 0c 07 78 0a 0d c9 a0 57 47 98 27\n        12 48 4c 00 00 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 03 57 00 a0 a0 40 26 60 30 20\n        36 00 00 40 a6 00 00 1e 02 3a 80 18 71 38 2d 40\n        58 2c 45 00 c4 8e 21 00 00 1e 00 00 00 fd 00 18\n        64 14 96 1e 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 41 53 55 53 0a 20 20 20 20 20 20 20 20 01 f0\n        02 03 1d f0 4a 01 04 10 1f 20 21 22 5d 5e 5f 23\n        09 04 01 83 01 00 00 65 03 0c 00 10 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ba\n        "
         ),
         EDIDOption(
             id: "E3440x1440AOC",
-            label: "3440x1440/AOC/50Hz",
+            label: "3440x1440/AOC/49.99Hz",
             edid: "00 ff ff ff ff ff ff 00 05 e3 25 35 01 01 01 01\n        00 1a 01 03 80 52 23 78 0e ee 91 a3 54 4c 99 26\n        0f 50 54 21 08 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 9d 67 70 a0 d0 a0 22 50 30 20\n        3a 00 33 5a 31 00 00 1a 00 00 00 ff 00 0a 20 20\n        20 20 20 20 20 20 20 20 20 20 00 00 00 fd 00 18\n        3c 1e 8c 1e 01 0a 20 20 20 20 20 20 00 00 00 fc\n        00 41 47 33 35 32 55 43 47 0a 20 20 20 20 01 6d\n\n        02 03 1a c1 47 90 1f 04 13 03 12 01 23 09 07 01\n        83 01 00 00 65 03 0c 00 10 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 c1\n        "
         ),
         EDIDOption(
             id: "E2560x1080AOC",
-            label: "2560x1080/AOC/60Hz",
+            label: "2560x1080/AOC/59.98Hz",
             edid: "00 ff ff ff ff ff ff 00 05 e3 63 29 4b 01 00 00\n        0a 17 01 03 80 43 1c 78 2a ca 95 a6 55 4e a1 26\n        0f 50 54 bf ef 00 d1 c0 b3 00 95 00 81 80 81 40\n        81 c0 01 01 01 01 cd 46 00 a0 a0 38 1f 40 30 20\n        3a 00 a1 1c 21 00 00 1a 02 3a 80 18 71 38 2d 40\n        58 2c 45 00 a1 1c 21 00 00 1e 00 00 00 fd 00 32\n        4c 1e 63 1e 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 32 39 36 33 0a 20 20 20 20 20 20 20 20 01 16\n\n        02 03 1f f1 4c 05 14 10 1f 04 13 03 12 02 11 01\n        22 23 09 07 01 83 01 00 00 65 03 0c 00 10 00 02\n        3a 80 18 71 38 2d 40 58 2c 45 00 a1 1c 21 00 00\n        1e 01 1d 00 72 51 d0 1e 20 6e 28 55 00 a1 1c 21\n        00 00 1e 8c 0a d0 8a 20 e0 2d 10 10 3e 96 00 a1\n        1c 21 00 00 18 8c 0a d0 90 20 40 31 20 0c 40 55\n        00 a1 1c 21 00 00 18 00 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ef\n        "
         ),
         EDIDOption(
@@ -87,7 +90,7 @@ enum EDIDCatalog {
         ),
         EDIDOption(
             id: "E800x600CHR",
-            label: "800x600/CHR/60Hz",
+            label: "800x600/Chrontel/59.86Hz",
             edid: "00 ff ff ff ff ff ff 00 0d 12 11 75 70 03 00 00\n        05 17 01 04 95 2b 1d 78 e2 80 42 ac 51 30 b4 25\n        10 50 53 00 00 00 01 01 01 01 01 01 01 01 01 01\n        01 01 01 01 01 01 f1 0e 20 e0 30 58 18 20 20 50\n        34 00 07 44 21 00 00 1c 00 00 00 00 00 00 00 00\n        00 00 00 00 00 00 00 00 00 00 00 00 00 fd 00 38\n        4c 1e 53 11 00 0a 20 20 20 20 20 20 00 00 00 fc\n        00 43 48 37 35 31 31 42 0a 20 20 20 20 20 00 12\n        "
         ),
         EDIDOption(id: "CUSTOMIZE", label: "Custom", edid: nil),

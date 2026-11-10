@@ -126,6 +126,159 @@ struct EDIDCatalogTests {
     }
 }
 
+// MARK: - EDID labels match their data
+
+/// The facts a catalog label is built from, read out of an EDID's base block.
+struct DecodedEDID: Equatable {
+    /// The three-letter PNP manufacturer code from bytes 8–9 (e.g. "AOC").
+    let manufacturer: String
+    /// The monitor name descriptor (tag 0xFC), trimmed, or nil when the EDID has none.
+    let name: String?
+    /// The preferred timing: the first detailed timing descriptor.
+    let width: Int
+    let height: Int
+    let refreshHz: Double
+    let interlaced: Bool
+
+    /// Decodes `bytes` (at least the 128-byte base block), or nil when there is no detailed timing.
+    init?(_ bytes: [UInt8]) {
+        guard bytes.count >= 128 else { return nil }
+        let code = UInt16(bytes[8]) << 8 | UInt16(bytes[9])
+        manufacturer = String([10, 5, 0].map { shift in
+            Character(UnicodeScalar(UInt8((code >> shift) & 0x1f) + 64))
+        })
+
+        var timing: (width: Int, height: Int, refresh: Double, interlaced: Bool)?
+        var name: String?
+        for offset in [54, 72, 90, 108] {
+            let d = Array(bytes[offset..<(offset + 18)]) // swiftlint:disable:this identifier_name
+            let pixelClock = Int(d[0]) | Int(d[1]) << 8 // in 10 kHz units; 0 means a text/other descriptor
+            if pixelClock != 0 {
+                guard timing == nil else { continue }
+                let hActive = Int(d[2]) | Int(d[4] & 0xf0) << 4
+                let hBlank = Int(d[3]) | Int(d[4] & 0x0f) << 8
+                let vActive = Int(d[5]) | Int(d[7] & 0xf0) << 4
+                let vBlank = Int(d[6]) | Int(d[7] & 0x0f) << 8
+                let refresh = Double(pixelClock) * 10_000 / Double((hActive + hBlank) * (vActive + vBlank))
+                timing = (hActive, vActive, refresh, d[17] & 0x80 != 0)
+            } else if d[3] == 0xfc, name == nil {
+                let text = d[5..<18].prefix { $0 != 0x0a }
+                name = String(decoding: text, as: UTF8.self).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        guard let timing else { return nil }
+        self.name = name
+        width = timing.width
+        height = timing.height
+        refreshHz = timing.refresh
+        interlaced = timing.interlaced
+    }
+}
+
+/// Readable vendor names for the PNP codes the catalog uses. Registry names are from the UEFI PNP ID
+/// list (as mirrored in hwdata's pnp.ids); GLI, LTM and AOC are not in that list and are named after the
+/// companies that ship them (GL.iNet's KVM, Lontium's bridge chips, AOC monitors). CHR is registered
+/// to christmann informationstechnik, but the one entry using it names a Chrontel chip (CH7511B).
+private let edidVendorNames: [String: String] = [
+    "GLI": "GLKVM",
+    "SEC": "Epson",
+    "LTM": "Lontium",
+    "AOC": "AOC",
+    "AUS": "ASUS",
+    "AUO": "AUO",
+    "VSC": "ViewSonic",
+    "WAC": "Wacom",
+    "CHR": "Chrontel",
+]
+
+/// The refresh as a label shows it: a whole number when it rounds to one at two decimals,
+/// otherwise two decimals ("60", "59.95").
+func edidRefreshText(_ hz: Double) -> String {
+    let twoPlaces = String(format: "%.2f", hz)
+    return twoPlaces.hasSuffix(".00") ? String(twoPlaces.dropLast(3)) : twoPlaces
+}
+
+@Suite("EDID labels")
+struct EDIDLabelTests {
+    /// What each entry's blob decodes to, written down so a changed blob (or decoder) shows up here
+    /// as well as in the frozen hashes.
+    private let decoded: [String: (code: String, name: String?, width: Int, height: Int, refresh: String)] = [
+        "E2560x1440": ("GLI", "GLKVM", 2560, 1440, "59.95"),
+        "E3840x2160": ("LTM", "Lontium semi", 3840, 2160, "30"),
+        "E1920x1080": ("AUS", "ROG PG248Q", 1920, 1080, "60"),
+        "E1920x1200": ("SEC", "EPSON PJ", 1920, 1200, "59.95"),
+        "E1920x1280": ("AUO", nil, 1920, 1280, "59.98"),
+        "E2560x1440VS": ("VSC", "VX2478-2", 2560, 1440, "59.95"),
+        "E1600x1200": ("WAC", "Cintiq21UX", 1600, 1200, "60"),
+        "E2560x1664AOC": ("AOC", "GLKVM", 2560, 1664, "49.95"),
+        "E2560x1600LTM": ("LTM", "ASUS", 2560, 1600, "50"),
+        "E3440x1440AOC": ("AOC", "AG352UCG", 3440, 1440, "49.99"),
+        "E2560x1080AOC": ("AOC", "2963", 2560, 1080, "59.98"),
+        "E1024x768AOC": ("AOC", "LM522", 1024, 768, "60"),
+        "E800x600CHR": ("CHR", "CH7511B", 800, 600, "59.86"),
+    ]
+
+    @Test func everyBlobDecodesToTheRecordedFacts() throws {
+        let withBlobs = EDIDCatalog.options.filter { $0.edid != nil }
+        #expect(Set(withBlobs.map(\.id)) == Set(decoded.keys))
+        for option in withBlobs {
+            let edid = try #require(DecodedEDID(edidBytes(option.edid ?? "")), "\(option.id) has no detailed timing")
+            let want = try #require(decoded[option.id], "\(option.id) is not recorded")
+            #expect(edid.manufacturer == want.code, "\(option.id)")
+            #expect(edid.name == want.name, "\(option.id)")
+            #expect(edid.width == want.width && edid.height == want.height, "\(option.id)")
+            #expect(edidRefreshText(edid.refreshHz) == want.refresh, "\(option.id)")
+            #expect(!edid.interlaced, "\(option.id)")
+        }
+    }
+
+    /// Every label is `WxH/Vendor/RefreshHz` from the entry's own EDID: the preferred timing's size
+    /// and refresh, and the vendor named for the manufacturer code.
+    @Test func everyLabelMatchesItsEDID() throws {
+        for option in EDIDCatalog.options {
+            guard let blob = option.edid else {
+                #expect(option.label == "Custom", "\(option.id)")
+                continue
+            }
+            let edid = try #require(DecodedEDID(edidBytes(blob)), "\(option.id)")
+            let vendor = try #require(edidVendorNames[edid.manufacturer], "\(option.id): no vendor name for \(edid.manufacturer)")
+            let expected = "\(edid.width)x\(edid.height)/\(vendor)/\(edidRefreshText(edid.refreshHz))Hz"
+            #expect(option.label == expected, "\(option.id)")
+        }
+    }
+
+    @Test func labelsAreUnique() {
+        let labels = EDIDCatalog.options.map(\.label)
+        #expect(Set(labels).count == labels.count)
+    }
+
+    @Test func refreshTextRoundsToTwoPlacesAndDropsAWholeNumbersDecimals() {
+        #expect(edidRefreshText(60.0) == "60")
+        #expect(edidRefreshText(60.0038) == "60")
+        #expect(edidRefreshText(49.996) == "50")
+        #expect(edidRefreshText(49.9868) == "49.99")
+        #expect(edidRefreshText(59.9506) == "59.95")
+        #expect(edidRefreshText(30) == "30")
+    }
+
+    @Test func theDecoderReadsAHandBuiltBaseBlock() throws {
+        var block = [UInt8](repeating: 0, count: 128)
+        block.replaceSubrange(0..<8, with: [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00])
+        block[8] = 0x1e // "GSM": G=7, S=19, M=13 in three 5-bit fields
+        block[9] = 0x6d
+        // 1920x1080, 148.5 MHz, totals 2200x1125: exactly 60 Hz.
+        block.replaceSubrange(54..<72, with: [0x02, 0x3a, 0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c,
+                                              0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1e])
+        block.replaceSubrange(72..<90, with: [0x00, 0x00, 0x00, 0xfc, 0x00] + Array("TEST NAME\n   ".utf8))
+        let edid = try #require(DecodedEDID(block))
+        #expect(edid.manufacturer == "GSM")
+        #expect(edid.name == "TEST NAME")
+        #expect(edid.width == 1920 && edid.height == 1080)
+        #expect(abs(edid.refreshHz - 60) < 1e-9)
+        #expect(!edid.interlaced)
+    }
+}
+
 // MARK: - Frozen EDID output
 
 /// What `EDIDCatalog.resolvedEdid(forID:)` returns for each entry, frozen from the catalog as it
