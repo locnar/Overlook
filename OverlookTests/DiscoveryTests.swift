@@ -987,3 +987,139 @@ struct DiscoveredMergeTests {
         #expect(KVMDeviceManager.address(of: nil) == nil)
     }
 }
+
+/// Bonjour results go through the same kvmd check as swept hosts before they are listed, against
+/// stubbed hosts: nothing reaches the network.
+@Suite("Bonjour results check")
+struct BonjourCheckTests {
+    static func service(_ name: String, type: String = "_comet._tcp") -> NWEndpoint {
+        .service(name: name, type: type, domain: "local.", interface: nil)
+    }
+
+    static func makeComet(_ endpoint: NWEndpoint, _ address: DeviceAddress) -> KVMDevice {
+        KVMDeviceManager.createGLiNetDevice(from: endpoint, resolved: address)
+    }
+
+    /// The real HTTP probe on a session whose requests the stubs answer.
+    static func isGLKVM(_ address: DeviceAddress) async -> Bool {
+        await DiscoveryHTTPProbeTests.probe().isGLKVM(host: address.host, port: address.port)
+    }
+
+    static func glkvm() -> StubDevice {
+        StubDevice { request in
+            switch request.path {
+            case "/api/auth/check": return StubDevice.Response(status: 401, body: ProbeFixtures.glkvmAuthCheck401)
+            case "/api/init/is_inited": return StubDevice.Response(status: 200, body: ProbeFixtures.glkvmIsInited200)
+            default: return StubDevice.Response(status: 200, body: ProbeFixtures.glkvmPage200)
+            }
+        }
+    }
+
+    @Test func aServiceThatAnswersAsKVMDIsListedUnderItsName() async throws {
+        let desk = Self.glkvm()
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [(Self.service("GLKVM-Desk"), DeviceAddress(host: desk.host, port: 443))],
+            makeDevice: Self.makeComet,
+            isGLKVM: { await Self.isGLKVM($0) }
+        )
+        let device = try #require(checked.listed.first)
+        #expect(checked.listed.count == 1)
+        #expect(device.nickname == "GLKVM-Desk")
+        #expect(device.address == DeviceAddress(host: desk.host, port: 443))
+        #expect(checked.refused.isEmpty && checked.unresolved.isEmpty)
+        #expect(desk.requests.map(\.path) == ["/api/auth/check"])
+    }
+
+    @Test func aServiceServingGLKVMsPageIsListed() async {
+        let page = StubDevice { request in
+            request.path == "/"
+                ? StubDevice.Response(status: 200, body: ProbeFixtures.glkvmPage200)
+                : StubDevice.Response(status: 404, body: Data())
+        }
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [(Self.service("Rack"), DeviceAddress(host: page.host, port: 443))],
+            makeDevice: Self.makeComet,
+            isGLKVM: { await Self.isGLKVM($0) }
+        )
+        #expect(checked.listed.map(\.host) == [page.host])
+    }
+
+    @Test func aServiceThatFailsTheCheckIsNotListed() async {
+        let router = StubDevice { request in
+            request.path == "/"
+                ? StubDevice.Response(status: 200, body: ProbeFixtures.unifiPage200)
+                : StubDevice.Response(status: 401, body: ProbeFixtures.unifiAPI401)
+        }
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [(Self.service("not-a-kvm", type: "_kvm._tcp"), DeviceAddress(host: router.host, port: 8080))],
+            makeDevice: Self.makeComet,
+            isGLKVM: { await Self.isGLKVM($0) }
+        )
+        #expect(checked.listed.isEmpty)
+        #expect(checked.refused.map(\.nickname) == ["not-a-kvm"])
+        #expect(!router.requests.isEmpty)
+    }
+
+    @Test func aServiceThatDoesNotAnswerIsNotListed() async {
+        let nobody = DeviceAddress(host: "nobody-\(UUID().uuidString.lowercased()).invalid", port: 443)
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [(Self.service("Gone"), nobody)],
+            makeDevice: Self.makeComet,
+            isGLKVM: { await Self.isGLKVM($0) }
+        )
+        #expect(checked.listed.isEmpty)
+        #expect(checked.refused.count == 1)
+    }
+
+    @Test func aServiceThatDoesNotResolveIsNotCheckedOrListed() async {
+        let asked = AskedAddresses()
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [(Self.service("Unresolved"), nil)],
+            makeDevice: Self.makeComet,
+            isGLKVM: { address in
+                asked.add(address)
+                return true
+            }
+        )
+        #expect(checked.listed.isEmpty)
+        #expect(checked.unresolved == ["Unresolved"])
+        #expect(asked.all.isEmpty)
+    }
+
+    @Test func listedServicesKeepTheOrderTheyWereGiven() async {
+        let first = Self.glkvm()
+        let second = Self.glkvm()
+        let router = StubDevice { _ in StubDevice.Response(status: 403, body: Data()) }
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [
+                (Self.service("B"), DeviceAddress(host: second.host, port: 443)),
+                (Self.service("X"), DeviceAddress(host: router.host, port: 443)),
+                (Self.service("Y"), nil),
+                (Self.service("A"), DeviceAddress(host: first.host, port: 443)),
+            ],
+            makeDevice: Self.makeComet,
+            isGLKVM: { await Self.isGLKVM($0) }
+        )
+        #expect(checked.listed.map(\.nickname) == ["B", "A"])
+        #expect(checked.refused.map(\.nickname) == ["X"])
+        #expect(checked.unresolved == ["Y"])
+    }
+
+    @Test func aSavedDeviceStaysListedWhenItsBonjourServiceFailsTheCheck() async {
+        let saved = Fixtures.device(id: "saved-linux", nickname: "Linux KVM", host: "192.168.0.131")
+        let checked = await KVMDeviceManager.checkBonjourServices(
+            [(Self.service("GLKVM"), DeviceAddress(host: "192.168.0.131", port: 443))],
+            makeDevice: Self.makeComet,
+            isGLKVM: { _ in false }
+        )
+        let listed = KVMDeviceManager.scanListing(pinned: [saved], found: checked.listed)
+        #expect(listed.map(\.id) == ["saved-linux"])
+    }
+
+    final class AskedAddresses: @unchecked Sendable {
+        private let lock = NSLock()
+        private var addresses: [DeviceAddress] = []
+        func add(_ address: DeviceAddress) { lock.withLock { addresses.append(address) } }
+        var all: [DeviceAddress] { lock.withLock { addresses } }
+    }
+}

@@ -334,13 +334,86 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
 
     private func discoverGLiNetDevices() async -> [KVMDevice] {
-        let endpoints = await Self.browseBonjour(type: Self.bonjourServiceTypes[0])
-        return await Self.resolveAll(endpoints).map { Self.createGLiNetDevice(from: $0.endpoint, resolved: $0.address) }
+        await discoverBonjour(type: Self.bonjourServiceTypes[0]) { Self.createGLiNetDevice(from: $0, resolved: $1) }
     }
 
     private func discoverGenericKVMDevices() async -> [KVMDevice] {
-        let endpoints = await Self.browseBonjour(type: Self.bonjourServiceTypes[1])
-        return await Self.resolveAll(endpoints).map { Self.createGenericKVMDevice(from: $0.endpoint, resolved: $0.address) }
+        await discoverBonjour(type: Self.bonjourServiceTypes[1]) { Self.createGenericKVMDevice(from: $0, resolved: $1) }
+    }
+
+    /// The services of `type` that resolve to an address and answer there as a GLKVM, the same
+    /// check a swept host goes through (`DiscoveryProbe`). Anything can advertise a Bonjour
+    /// service, so the service type alone does not list a host.
+    private func discoverBonjour(
+        type: String,
+        makeDevice: @escaping (NWEndpoint, DeviceAddress) -> KVMDevice
+    ) async -> [KVMDevice] {
+        let endpoints = await Self.browseBonjour(type: type)
+        guard !Task.isCancelled else { return [] }
+        let resolved = await Self.resolveAll(endpoints)
+        let probe = DiscoveryHTTPProbe(session: probeSession)
+        let checked = await Self.checkBonjourServices(resolved, makeDevice: makeDevice) { address in
+            await probe.isGLKVM(host: address.host, port: address.port)
+        }
+        guard !Task.isCancelled else { return checked.listed }
+        for name in checked.unresolved {
+            clog.info(.network, "Bonjour: \(name) (\(type)) did not resolve to an IPv4 address; not listed")
+        }
+        for device in checked.refused {
+            clog.info(.network, "Bonjour: \(device.nickname ?? type) at \(device.address.label) did not answer as a GLKVM; not listed")
+        }
+        return checked.listed
+    }
+
+    /// What became of a browse's services.
+    struct BonjourCheck {
+        /// Services that resolved and answered as a GLKVM, as devices, in the order given.
+        var listed: [KVMDevice] = []
+        /// The names of services that did not resolve.
+        var unresolved: [String] = []
+        /// Services that resolved but did not answer as a GLKVM, as the devices they would have been.
+        var refused: [KVMDevice] = []
+    }
+
+    /// Checks each resolved service's host:port with `isGLKVM`, all at once. A service that did
+    /// not resolve is not checked and not listed: without an address there is nothing to probe.
+    nonisolated static func checkBonjourServices(
+        _ services: [(endpoint: NWEndpoint, address: DeviceAddress?)],
+        makeDevice: (NWEndpoint, DeviceAddress) -> KVMDevice,
+        isGLKVM: @escaping @Sendable (DeviceAddress) async -> Bool
+    ) async -> BonjourCheck {
+        var check = BonjourCheck()
+        var candidates: [KVMDevice] = []
+        for service in services {
+            guard let address = service.address else {
+                if case .service(let name, _, _, _) = service.endpoint {
+                    check.unresolved.append(name)
+                } else {
+                    check.unresolved.append("\(service.endpoint)")
+                }
+                continue
+            }
+            candidates.append(makeDevice(service.endpoint, address))
+        }
+        let addresses = candidates.map(\.address)
+        let answers = await withTaskGroup(of: (Int, Bool).self) { group in
+            for (index, address) in addresses.enumerated() {
+                group.addTask { (index, await isGLKVM(address)) }
+            }
+            var answers = [Bool](repeating: false, count: addresses.count)
+            for await (index, answer) in group {
+                answers[index] = answer
+            }
+            return answers
+        }
+        for (device, answer) in zip(candidates, answers) {
+            if answer {
+                check.listed.append(device)
+            } else {
+                check.refused.append(device)
+            }
+        }
+        return check
     }
 
     /// Every service of `type` that Bonjour reports within `duration`, each once.
@@ -1409,11 +1482,7 @@ struct DiscoveryHTTPProbe: Sendable {
     /// first, on each scheme in `DiscoveryProbe.schemes(forPort:)` order; the web page only when
     /// no API endpoint answered as kvmd.
     func identify(host: String, port: Int) async -> KVMDevice? {
-        var isGLKVM = await answersAsKVMD(host: host, port: port)
-        if !isGLKVM {
-            isGLKVM = await servesGLKVMPage(host: host, port: port)
-        }
-        guard isGLKVM else { return nil }
+        guard await isGLKVM(host: host, port: port) else { return nil }
         return KVMDevice(
             id: "scanned-\(host)-\(port)",
             host: host,
@@ -1422,6 +1491,15 @@ struct DiscoveryHTTPProbe: Sendable {
             authToken: "",
             capabilities: [.videoStreaming, .keyboardInput, .mouseInput, .virtualMedia, .powerManagement]
         )
+    }
+
+    /// Whether `host:port` answers as a GLKVM: an API endpoint in kvmd's envelope, or failing
+    /// that GLKVM's web page. Swept hosts and resolved Bonjour services both go through this.
+    func isGLKVM(host: String, port: Int) async -> Bool {
+        if await answersAsKVMD(host: host, port: port) {
+            return true
+        }
+        return await servesGLKVMPage(host: host, port: port)
     }
 
     func answersAsKVMD(host: String, port: Int) async -> Bool {
