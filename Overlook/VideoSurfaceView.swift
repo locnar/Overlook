@@ -63,9 +63,9 @@ struct VideoSurfaceView: View {
                                 videoSize: currentVideoSize()
                             )
                         },
-                        onScrollWheel: { deltaX, deltaY in
+                        onScrollWheel: { input in
                             guard !isOCRModeEnabled, !captureManager.isSelectingRegion else { return }
-                            inputManager.handleVideoMouseScroll(deltaX: deltaX, deltaY: deltaY)
+                            inputManager.handleVideoMouseScroll(input)
                         }
                     )
                         .frame(width: geometry.size.width, height: geometry.size.height)
@@ -446,7 +446,7 @@ struct VideoViewRepresentable: NSViewRepresentable {
     let videoView: RTCMTLNSVideoView
     let onMouseMove: (CGPoint, CGSize) -> Void
     let onMouseButton: (MouseButton, Bool, CGPoint) -> Void
-    let onScrollWheel: (CGFloat, CGFloat) -> Void
+    let onScrollWheel: (ScrollWheelInput) -> Void
 
     func makeNSView(context: Context) -> TrackingContainerView {
         let container = TrackingContainerView()
@@ -468,7 +468,7 @@ struct VideoViewRepresentable: NSViewRepresentable {
 final class TrackingContainerView: NSView {
     var onMouseMove: ((CGPoint, CGSize) -> Void)?
     var onMouseButton: ((MouseButton, Bool, CGPoint) -> Void)?
-    var onScrollWheel: ((CGFloat, CGFloat) -> Void)?
+    var onScrollWheel: ((ScrollWheelInput) -> Void)?
 
     private var trackingAreaRef: NSTrackingArea?
 
@@ -596,7 +596,7 @@ final class TrackingContainerView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         super.scrollWheel(with: event)
-        onScrollWheel?(event.scrollingDeltaX, event.scrollingDeltaY)
+        onScrollWheel?(ScrollWheelInput(event: event))
     }
 
     private func emitMouseMove(with event: NSEvent) {

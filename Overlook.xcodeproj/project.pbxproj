@@ -95,11 +95,13 @@
 		01000041 /* DiscoveryRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000041 /* DiscoveryRules.swift */; };
 		01000042 /* JanusSignaling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000043 /* JanusSignaling.swift */; };
 		01000043 /* VideoFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000044 /* VideoFrames.swift */; };
+		01000044 /* ScrollAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000045 /* ScrollAccumulator.swift */; };
 		01000125 /* DiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000125 /* DiscoveryTests.swift */; };
 		01000126 /* JanusSignalingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000126 /* JanusSignalingTests.swift */; };
 		01000127 /* JanusSenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000127 /* JanusSenderTests.swift */; };
 		01000128 /* VideoTrackTeardownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000128 /* VideoTrackTeardownTests.swift */; };
 		01000129 /* OCRManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000129 /* OCRManagerTests.swift */; };
+		0100012A /* ScrollScalingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200012A /* ScrollScalingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -208,11 +210,13 @@
 		02000041 /* DiscoveryRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryRules.swift; sourceTree = "<group>"; };
 		02000043 /* JanusSignaling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignaling.swift; sourceTree = "<group>"; };
 		02000044 /* VideoFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrames.swift; sourceTree = "<group>"; };
+		02000045 /* ScrollAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollAccumulator.swift; sourceTree = "<group>"; };
 		02000125 /* DiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryTests.swift; sourceTree = "<group>"; };
 		02000126 /* JanusSignalingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignalingTests.swift; sourceTree = "<group>"; };
 		02000127 /* JanusSenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSenderTests.swift; sourceTree = "<group>"; };
 		02000128 /* VideoTrackTeardownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrackTeardownTests.swift; sourceTree = "<group>"; };
 		02000129 /* OCRManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRManagerTests.swift; sourceTree = "<group>"; };
+		0200012A /* ScrollScalingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollScalingTests.swift; sourceTree = "<group>"; };
 		02000042 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -294,6 +298,7 @@
 				02000041 /* DiscoveryRules.swift */,
 				02000043 /* JanusSignaling.swift */,
 				02000044 /* VideoFrames.swift */,
+				02000045 /* ScrollAccumulator.swift */,
 				0200003A /* AudioPreferences.swift */,
 				02000009 /* KVMDeviceManager.swift */,
 				02000022 /* DeviceTrustStore.swift */,
@@ -346,6 +351,7 @@
 				02000127 /* JanusSenderTests.swift */,
 				02000128 /* VideoTrackTeardownTests.swift */,
 				02000129 /* OCRManagerTests.swift */,
+				0200012A /* ScrollScalingTests.swift */,
 				02000123 /* KeyCodeTableTests.swift */,
 				02000122 /* AudioDeviceSetupTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
@@ -522,6 +528,7 @@
 				01000041 /* DiscoveryRules.swift in Sources */,
 				01000042 /* JanusSignaling.swift in Sources */,
 				01000043 /* VideoFrames.swift in Sources */,
+				01000044 /* ScrollAccumulator.swift in Sources */,
 				01000036 /* AudioPreferences.swift in Sources */,
 				01000009 /* KVMDeviceManager.swift in Sources */,
 				01000020 /* DeviceTrustStore.swift in Sources */,
@@ -572,6 +579,7 @@
 				01000127 /* JanusSenderTests.swift in Sources */,
 				01000128 /* VideoTrackTeardownTests.swift in Sources */,
 				01000129 /* OCRManagerTests.swift in Sources */,
+				0100012A /* ScrollScalingTests.swift in Sources */,
 				01000123 /* KeyCodeTableTests.swift in Sources */,
 				01000122 /* AudioDeviceSetupTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,

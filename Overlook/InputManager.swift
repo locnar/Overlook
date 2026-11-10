@@ -69,7 +69,7 @@ class InputManager: ObservableObject {
     enum SentInput: Equatable {
         case key(UInt16, isDown: Bool)
         case button(MouseButton, isDown: Bool)
-        case scroll
+        case scroll(deltaX: CGFloat, deltaY: CGFloat)
     }
 
     /// Sees every key, button and scroll event this manager decides to send. Only the tests set
@@ -125,6 +125,9 @@ class InputManager: ObservableObject {
         var deltaX: Int
         var deltaY: Int
     }
+
+    /// Scales trackpad and Magic Mouse scrolling down to wheel steps; see `ScrollAccumulator`.
+    private var scrollAccumulator = ScrollAccumulator()
 
     private var pendingAbsoluteMouseMove: PendingAbsoluteMouseMove?
     private var pendingRelativeMouseMove: PendingRelativeMouseMove?
@@ -487,11 +490,15 @@ class InputManager: ObservableObject {
         sendMouseButtonEvent(buttonEvent)
     }
 
-    func handleVideoMouseScroll(deltaX: CGFloat, deltaY: CGFloat) {
+    /// The only way scrolling reaches the target, in absolute mode and with the pointer locked
+    /// in relative mode alike: the locked cursor stays frozen over the video view, so its
+    /// `scrollWheel` keeps receiving the events.
+    func handleVideoMouseScroll(_ input: ScrollWheelInput) {
         // Scrolling reaches the window under the pointer whether or not it is key.
         guard isMouseCaptureEnabled, focusGate.admitsPointerMotion else { return }
         if isRelativeMouseMode, !isPointerLocked { return }
-        let scrollEvent = MouseScrollEvent(deltaX: deltaX, deltaY: deltaY, timestamp: CACurrentMediaTime())
+        guard let steps = scrollAccumulator.add(input) else { return }
+        let scrollEvent = MouseScrollEvent(deltaX: steps.deltaX, deltaY: steps.deltaY, timestamp: CACurrentMediaTime())
         sendMouseScrollEvent(scrollEvent)
     }
 
@@ -1144,11 +1151,21 @@ class InputManager: ObservableObject {
         webRTCManager?.sendInputEvent(inputEvent)
     }
     
+    /// The wheel report the HID socket sends for a scroll event: each axis rounded to a whole
+    /// step and clamped to the report's signed byte.
+    nonisolated static func glkvmWheelDeltas(deltaX: CGFloat, deltaY: CGFloat) -> (x: Int, y: Int) {
+        func wheel(_ delta: CGFloat) -> Int {
+            min(max(Int(delta.rounded()), -127), 127)
+        }
+        return (wheel(deltaX), wheel(deltaY))
+    }
+
     private func sendMouseScrollEvent(_ event: MouseScrollEvent) {
-        sentInputObserver?(.scroll)
+        sentInputObserver?(.scroll(deltaX: event.deltaX, deltaY: event.deltaY))
         if transportMode == .glkvmWebSocket, let ws = glkvmWebSocketClient {
-            let dx = Self.clampInt(Int(event.deltaX.rounded()), min: -127, max: 127)
-            let dy = Self.clampInt(Int(event.deltaY.rounded()), min: -127, max: 127)
+            let (dx, dy) = Self.glkvmWheelDeltas(deltaX: event.deltaX, deltaY: event.deltaY)
+            // A report that moves neither axis scrolls nothing; do not queue it.
+            guard dx != 0 || dy != 0 else { return }
             enqueueHIDCommand(label: "mouse wheel") {
                 try await ws.sendHidMouseWheel(deltaX: dx, deltaY: dy)
             }

@@ -323,7 +323,7 @@ struct InputFocusTests {
 
         a.input.handleVideoMouseButton(button: .left, isDown: true, pointInView: CGPoint(x: 5, y: 5), viewSize: CGSize(width: 10, height: 10), videoSize: nil)
         a.input.handleVideoMouseButton(button: .left, isDown: false, pointInView: CGPoint(x: 5, y: 5), viewSize: CGSize(width: 10, height: 10), videoSize: nil)
-        a.input.handleVideoMouseScroll(deltaX: 0, deltaY: 3)
+        a.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: 3))
 
         #expect(a.sent.isEmpty)
     }
@@ -344,11 +344,11 @@ struct InputFocusTests {
 
     @Test func scrollingGoesOutOnlyWhileTheWindowIsKey() {
         let a = Capture()
-        a.input.handleVideoMouseScroll(deltaX: 0, deltaY: 3)
+        a.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: 3))
         a.input.windowDidBecomeKey(windowNumber: Self.windowA)
-        a.input.handleVideoMouseScroll(deltaX: 0, deltaY: 3)
+        a.input.handleVideoMouseScroll(ScrollWheelInput(deltaX: 0, deltaY: 3))
 
-        #expect(a.sent == [.scroll])
+        #expect(a.sent == [.scroll(deltaX: 0, deltaY: 3)])
     }
 
     @Test func thePointerLocksOnlyToTheSessionsOwnKeyWindow() {
