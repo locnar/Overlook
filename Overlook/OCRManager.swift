@@ -10,6 +10,9 @@ class OCRManager: ObservableObject {
     /// with Vision's accurate text request; tests pass a stub, so every way a recognition can end
     /// is driven without Vision. Runs on the OCR queue, never on the main thread.
     typealias LineReader = @Sendable (CVPixelBuffer) throws -> [String]
+    /// Finds the lines of text in a whole frame and where each is, for `detectTextRegions`. The
+    /// app uses Vision's fast text request; tests pass a stub. Runs on the OCR queue.
+    typealias RegionDetector = @Sendable (CVPixelBuffer) throws -> [TextRegion]
 
     /// True while a click or drag recognition is running. `recognize` sets it and clears it on
     /// the main actor, however the recognition ends.
@@ -21,12 +24,15 @@ class OCRManager: ObservableObject {
     nonisolated(unsafe) private var textObservationRequest: VNRecognizeTextRequest?
     nonisolated(unsafe) private var ocrQueue = DispatchQueue(label: "com.overlook.ocr", qos: .userInitiated)
     nonisolated private let lineReaderOverride: LineReader?
+    private let regionDetectorOverride: RegionDetector?
     /// Click and drag recognitions under way; `isProcessing` stays true until the last one ends.
     private(set) var recognitionsInFlight = 0
 
-    /// `lineReader` is for tests; the app passes nothing and reads with Vision.
-    init(lineReader: LineReader? = nil) {
+    /// `lineReader` and `regionDetector` are for tests; the app passes nothing and reads with
+    /// Vision.
+    init(lineReader: LineReader? = nil, regionDetector: RegionDetector? = nil) {
         lineReaderOverride = lineReader
+        regionDetectorOverride = regionDetector
         setupOCRRequests()
     }
     
@@ -107,58 +113,57 @@ class OCRManager: ObservableObject {
         }
     }
     
+    /// Every line of text in the frame with where it is, read with Vision's fast request.
+    /// Publishes them as `recognizedRegions`.
     func detectTextRegions(in pixelBuffer: CVPixelBuffer?) async throws -> [TextRegion] {
         guard let pixelBuffer = pixelBuffer else {
             throw OCRError.noVideoFrame
         }
 
-        let pixelBufferBox = PixelBufferBox(pixelBuffer)
-        return try await withCheckedThrowingContinuation { continuation in
-            ocrQueue.async { [weak self] in
-                self?.performTextDetection(in: pixelBufferBox.pixelBuffer) { result in
-                    continuation.resume(with: result)
-                }
+        // What the OCR queue runs is taken here, strongly, and never goes through `self`: the
+        // work used to reach the request through a weak `self`, and had the manager gone by the
+        // time it ran, nothing resumed the continuation and the caller waited forever. Now every
+        // way out (regions, none, an error) resumes it exactly once.
+        let frame = PixelBufferBox(pixelBuffer)
+        let detect = regionDetector()
+        let queue = ocrQueue
+        let regions = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[TextRegion], Error>) in
+            queue.async {
+                continuation.resume(with: Result { try detect(frame.pixelBuffer) })
             }
         }
+        recognizedRegions = regions
+        return regions
     }
-    
-    nonisolated private func performTextDetection(in pixelBuffer: CVPixelBuffer, completion: @escaping (Result<[TextRegion], Error>) -> Void) {
+
+    /// The detection the OCR queue runs: the test's stub, or Vision's fast request.
+    private func regionDetector() -> RegionDetector {
+        if let regionDetectorOverride {
+            return regionDetectorOverride
+        }
         guard let request = textObservationRequest else {
-            completion(.failure(OCRError.requestNotInitialized))
-            return
+            return { _ in throw OCRError.requestNotInitialized }
         }
-        
+        let box = RequestBox(request)
+        return { pixelBuffer in try Self.detectRegions(in: pixelBuffer, with: box.request) }
+    }
+
+    nonisolated private static func detectRegions(
+        in pixelBuffer: CVPixelBuffer,
+        with request: VNRecognizeTextRequest
+    ) throws -> [TextRegion] {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
-        
-        do {
-            try handler.perform([request])
-            
-            guard let observations = request.results else {
-                completion(.success([]))
-                return
-            }
-            
-            let textRegions = observations.compactMap { observation -> TextRegion? in
-                guard let candidate = observation.topCandidates(1).first else { return nil }
-                
-                return TextRegion(
-                    text: candidate.string,
-                    boundingBox: observation.boundingBox,
-                    confidence: candidate.confidence
-                )
-            }
-            
-            Task { @MainActor in
-                recognizedRegions = textRegions
-            }
-            
-            completion(.success(textRegions))
-            
-        } catch {
-            completion(.failure(error))
+        try handler.perform([request])
+        return (request.results ?? []).compactMap { observation -> TextRegion? in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            return TextRegion(
+                text: candidate.string,
+                boundingBox: observation.boundingBox,
+                confidence: candidate.confidence
+            )
         }
     }
-    
+
     nonisolated private func createRegionOfInterest(around point: CGPoint, in pixelBuffer: CVPixelBuffer) -> CGRect {
         let bufferSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
         let clampedX = max(0, min(1, point.x))
@@ -290,6 +295,15 @@ private struct PixelBufferBox: @unchecked Sendable {
 
     init(_ pixelBuffer: CVPixelBuffer) {
         self.pixelBuffer = pixelBuffer
+    }
+}
+
+/// Carries a Vision request to the OCR queue, the only place it is performed.
+private struct RequestBox: @unchecked Sendable {
+    let request: VNRecognizeTextRequest
+
+    init(_ request: VNRecognizeTextRequest) {
+        self.request = request
     }
 }
 

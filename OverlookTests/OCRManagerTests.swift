@@ -222,3 +222,70 @@ struct OCROutcomeTests {
         #expect(outcome == .noText)
     }
 }
+
+/// Whole-frame text detection with a stub detector instead of Vision. Every way out resumes the
+/// caller once.
+@MainActor
+@Suite("OCR text detection")
+struct OCRTextDetectionTests {
+    nonisolated static let regions = [
+        TextRegion(text: "login:", boundingBox: CGRect(x: 0.1, y: 0.8, width: 0.2, height: 0.05), confidence: 0.9),
+        TextRegion(text: "root", boundingBox: CGRect(x: 0.3, y: 0.8, width: 0.1, height: 0.05), confidence: 0.8),
+    ]
+
+    @Test func regionsFoundAreReturnedAndPublished() async throws {
+        let ocr = OCRManager(regionDetector: { _ in Self.regions })
+        let found = try await ocr.detectTextRegions(in: try OCRManagerTests.frame())
+        #expect(found.map(\.text) == ["login:", "root"])
+        #expect(ocr.recognizedRegions.map(\.text) == ["login:", "root"])
+    }
+
+    @Test func noRegionsIsAnEmptyResult() async throws {
+        let ocr = OCRManager(regionDetector: { _ in [] })
+        #expect(try await ocr.detectTextRegions(in: try OCRManagerTests.frame()).isEmpty)
+        #expect(ocr.recognizedRegions.isEmpty)
+    }
+
+    @Test func aDetectorErrorReachesTheCaller() async throws {
+        let ocr = OCRManager(regionDetector: { _ in throw OCRError.processingFailed })
+        await #expect(throws: OCRError.processingFailed) {
+            try await ocr.detectTextRegions(in: try OCRManagerTests.frame())
+        }
+    }
+
+    @Test func noFrameThrowsWithoutDetecting() async {
+        let ocr = OCRManager(regionDetector: { _ in
+            Issue.record("Detected without a frame")
+            return []
+        })
+        await #expect(throws: OCRError.noVideoFrame) {
+            try await ocr.detectTextRegions(in: nil)
+        }
+    }
+
+    /// The test lets go of its only reference while the detection runs on the OCR queue. The call
+    /// still comes back with the regions (the queue's work holds what it needs, not the manager),
+    /// and once it has, the manager is freed: nothing on the queue kept it.
+    @Test(.timeLimit(.minutes(1)))
+    func aDetectionFinishesWhenTheCallerLetsGoOfTheManager() async throws {
+        let gate = OCRManagerTests.Gate()
+        let frame = try OCRManagerTests.frame()
+        weak var released: OCRManager?
+        var ocr: OCRManager? = OCRManager(regionDetector: { _ in
+            gate.pass()
+            return Self.regions
+        })
+        released = ocr
+        let call = Task { [weak ocr] () -> [TextRegion]? in
+            try await ocr?.detectTextRegions(in: frame)
+        }
+        while gate.timesEntered == 0 {
+            await Task.yield()
+        }
+        ocr = nil
+        gate.open()
+        let found = try await call.value
+        #expect(found.map { $0.map(\.text) } == ["login:", "root"])
+        #expect(await waitUntil { released == nil })
+    }
+}
