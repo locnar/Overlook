@@ -25,6 +25,7 @@ struct TestHostTests {
         #expect(AppEnvironment.makeCredentialStore() is InMemoryDeviceCredentials)
         #expect(!ConnectionLog.shared.writesFile)
         #expect(AudioPreferences.shared.defaults === AppEnvironment.defaults)
+        #expect(NetworkPreferences.shared.defaults === AppEnvironment.defaults)
         #expect(DeviceTrustStore.shared.defaults === AppEnvironment.defaults)
     }
 

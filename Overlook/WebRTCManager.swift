@@ -297,6 +297,23 @@ class WebRTCManager: NSObject, ObservableObject {
     /// Whether this window plays its audio and sends the microphone, as `SessionAudioRouter` last
     /// decided from which window is active.
     private(set) var audioRoute: AudioRoute = .unrouted
+    /// Settings › Network, shared by every window; read as each connect starts.
+    let networkPreferences: NetworkPreferences
+    /// The "Video and audio addresses" setting the current connection was made with; nil while
+    /// not connected. Settings compares it with the setting to say a change waits for the next
+    /// connect.
+    @Published private(set) var mediaAddressesInEffect: MediaAddresses?
+    /// What the current connect's video and audio may use (`MediaRoute.decide`).
+    private(set) var mediaRoute: MediaRoute = .allAddresses()
+    /// Candidate addresses the current connect has already named in the log, so the video and
+    /// audio legs, which carry the same addresses, produce one line between them.
+    private var loggedDroppedRemoteAddresses: Set<String> = []
+    private var droppedLocalAddresses: [String] = []
+    private var loggedDroppedLocalAddresses: Set<String> = []
+    /// How a connect resolves a host name, and reads this Mac's interface addresses, to decide
+    /// its media route. Tests replace both so nothing reaches DNS.
+    var resolveHost: (String) async -> [String] = { await HostResolver.addresses(of: $0) }
+    var localInterfaces: () -> [LocalInterfaceAddress] = { LocalInterfaceAddress.current() }
     /// True after a connect asked for the microphone and macOS refused (System Settings ›
     /// Privacy & Security › Microphone). The session goes on without the mic.
     @Published private(set) var isMicrophoneAccessDenied = false
@@ -399,7 +416,8 @@ class WebRTCManager: NSObject, ObservableObject {
     private var consecutiveStallReconnects = 0
     private static let maxConsecutiveStallReconnects = 2
 
-    private var janusSessionId: Int?
+    /// Internal so a test can stand in for a created Janus session.
+    var janusSessionId: Int?
     private var janusHandleId: Int?
     private var janusAudioHandleId: Int?
     /// Which of the current handles a pushed message came from; strays are dropped.
@@ -443,11 +461,16 @@ class WebRTCManager: NSObject, ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
 
-    /// `audioPreferences` is the app's shared object unless a test hands in its own; `log` is the
-    /// session's handle on the connection log (a manager on its own logs untagged lines to the
-    /// app's log, under a session of its own).
-    init(audioPreferences: AudioPreferences? = nil, log: SessionLog? = nil) {
+    /// `audioPreferences` and `networkPreferences` are the app's shared objects unless a test hands
+    /// in its own; `log` is the session's handle on the connection log (a manager on its own logs
+    /// untagged lines to the app's log, under a session of its own).
+    init(
+        audioPreferences: AudioPreferences? = nil,
+        networkPreferences: NetworkPreferences? = nil,
+        log: SessionLog? = nil
+    ) {
         self.audioPreferences = audioPreferences ?? .shared
+        self.networkPreferences = networkPreferences ?? .shared
         self.log = log ?? SessionLog(destination: .shared)
         super.init()
         setupWebRTC()
@@ -516,7 +539,9 @@ class WebRTCManager: NSObject, ObservableObject {
         frameMeter.lastFrameTime
     }
     
-    private func setupWebRTC() {
+    /// `adapters` is the connect's media route's (`MediaRoute.adapterOptions`); the standard set
+    /// leaves the factory exactly as it has always been built.
+    private func setupWebRTC(adapters: MediaAdapterOptions = .standard) {
         let inputUID = audioPreferences.inputDeviceUID
         let outputUID = audioPreferences.outputDeviceUID
 
@@ -533,7 +558,16 @@ class WebRTCManager: NSObject, ObservableObject {
         audioDevice.isOutputMuted = !audioRoute.playsAudio
         customAudioDevice = audioDevice
 
-        factory = WebRTCFactoryBuilder.makeFactory(with: audioDevice)
+        let factory = WebRTCFactoryBuilder.makeFactory(with: audioDevice)
+        if adapters != .standard {
+            // Set before any peer connection exists: a peer's port allocator reads the factory's
+            // network ignore mask when it is made.
+            let options = RTCPeerConnectionFactoryOptions()
+            options.ignoreVPNNetworkAdapter = adapters.ignoresVPN
+            options.ignoreLoopbackNetworkAdapter = adapters.ignoresLoopback
+            factory.setOptions(options)
+        }
+        self.factory = factory
 
         if videoView == nil {
             videoView = RTCMTLNSVideoView(frame: .zero)
@@ -676,8 +710,12 @@ class WebRTCManager: NSObject, ObservableObject {
     /// name), or on link-local is always reachable directly, so a public STUN server adds a round
     /// trip to every connect and a stall to every connect on a network that filters UDP/3478
     /// outbound (`MediaNetworkRules.isDirectlyReachable`).
-    private static func iceServers(for device: KVMDevice, log: SessionLog) -> [RTCIceServer] {
-        if MediaNetworkRules.isDirectlyReachable(host: device.host) {
+    private static func iceServers(for device: KVMDevice, route: MediaRoute, log: SessionLog) -> [RTCIceServer] {
+        if case .chosen(let network) = route.scope {
+            log.info(.ice, "Peer \(device.host) on \(network.name): gathering host candidates only")
+            return []
+        }
+        if !route.addsPublicSTUN {
             log.info(.ice, "Local peer \(device.host): gathering host candidates only")
             return []
         }
@@ -800,6 +838,115 @@ class WebRTCManager: NSObject, ObservableObject {
         )
     }
 
+    // MARK: - Media route
+
+    /// Decides which addresses this connect's video and audio may use, from the address it goes
+    /// through and Settings › Network, and logs the decision once. A host name is resolved first
+    /// (only when the setting needs it), so a bare MagicDNS name counts as Tailscale. Internal so a
+    /// test can set a route up without connecting, with `resolveHost` and `localInterfaces` of
+    /// its own.
+    @discardableResult
+    func prepareMediaRoute(for device: KVMDevice) async -> MediaRoute {
+        let preference = networkPreferences.mediaAddresses
+        var resolved: [String] = []
+        var interfaces: [LocalInterfaceAddress] = []
+        if preference == .chosenNetwork {
+            if MediaNetwork.needsResolution(host: device.host) {
+                resolved = await resolveHost(device.host)
+            }
+            interfaces = localInterfaces()
+        }
+        let route = MediaRoute.decide(preference: preference, host: device.host, resolved: resolved, interfaces: interfaces)
+        mediaRoute = route
+        mediaAddressesInEffect = preference
+        loggedDroppedRemoteAddresses = []
+        droppedLocalAddresses = []
+        loggedDroppedLocalAddresses = []
+        if route.unclassifiedReason != nil {
+            log.notice(.ice, route.connectDescription)
+        } else {
+            log.info(.ice, route.connectDescription)
+        }
+        return route
+    }
+
+    /// Applies the KVM's offer to a leg's peer through `setRemoteDescription`, with the candidates
+    /// this connect's route does not keep taken out, and logs what was taken out the first time
+    /// an address is dropped in this connect. Internal so a test can see what reaches
+    /// `setRemoteDescription` without a peer connection.
+    func applyRemoteOffer(
+        _ sdp: String,
+        leg: JanusLeg,
+        setRemoteDescription: (RTCSessionDescription) async throws -> Void
+    ) async {
+        let result = mediaRoute.filterRemoteOffer(sdp)
+        if result.keptWholeOffer {
+            log.warning(
+                .ice,
+                "\(mediaRoute.limitDescription): the KVM's \(leg) offer has no candidate on that network; "
+                    + "keeping all of its candidates for this offer"
+            )
+        } else if !result.dropped.isEmpty {
+            let labels = result.dropped.map(\.label)
+            let new = labels.filter { !loggedDroppedRemoteAddresses.contains($0) }
+            if !new.isEmpty {
+                loggedDroppedRemoteAddresses.formUnion(new)
+                let count = result.dropped.count
+                log.notice(
+                    .ice,
+                    "\(mediaRoute.limitDescription): dropped \(count) remote candidate\(count == 1 ? "" : "s") "
+                        + "(\(labels.joined(separator: ", ")))"
+                )
+            } else {
+                log.debug(.ice, "Dropped the same \(result.dropped.count) remote candidates from the \(leg) offer")
+            }
+        }
+        do {
+            try await setRemoteDescription(RTCSessionDescription(type: .offer, sdp: result.sdp))
+        } catch {
+            log.error(.signaling, "Set remote description failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Whether a candidate the KVM trickled is used, under this connect's route.
+    func keepsTrickledRemoteCandidate(_ candidate: String) -> Bool {
+        guard let line = ICECandidateLine(candidate) else { return true }
+        let keeps = mediaRoute.keepsRemote(line)
+        if !keeps {
+            log.debug(.ice, "\(mediaRoute.limitDescription): dropped a trickled remote candidate (\(line.label))")
+        }
+        return keeps
+    }
+
+    /// Sends a candidate this Mac gathered to the KVM, unless this connect's route keeps it to
+    /// itself. Internal so a test can see which candidates reach the signaling socket.
+    func trickleLocalCandidate(_ candidate: RTCIceCandidate, handleId: Int) async {
+        if let line = ICECandidateLine(candidate.sdp), !mediaRoute.keepsLocal(line) {
+            if !droppedLocalAddresses.contains(line.address) {
+                droppedLocalAddresses.append(line.address)
+            }
+            return
+        }
+        do {
+            try await sendJanusTrickleCandidate(candidate, handleId: handleId)
+        } catch {
+            log.warning(.ice, "Send ICE candidate failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Once a leg has gathered: names the local addresses not sent to the KVM, each once per
+    /// connect. Internal so a test can check the line.
+    func logHeldBackLocalCandidates() {
+        let new = droppedLocalAddresses.filter { !loggedDroppedLocalAddresses.contains($0) }
+        guard !new.isEmpty else { return }
+        loggedDroppedLocalAddresses.formUnion(new)
+        log.notice(
+            .ice,
+            "\(mediaRoute.limitDescription): not sending \(new.count) local address\(new.count == 1 ? "" : "es") "
+                + "to the KVM (\(new.joined(separator: ", ")))"
+        )
+    }
+
     /// Tears down the current connection and connects to `device`, carrying the frame-capture
     /// setting across because teardown clears it.
     private func replaceConnection(with device: KVMDevice) async throws {
@@ -815,7 +962,10 @@ class WebRTCManager: NSObject, ObservableObject {
         connectionGeneration += 1
         let generation = connectionGeneration
         lastConnectedDevice = device
-        setupWebRTC()
+        let route = await prepareMediaRoute(for: device)
+        // Resolving a host name suspends, and a newer connect or a teardown can land meanwhile.
+        guard generation == connectionGeneration else { throw WebRTCError.superseded }
+        setupWebRTC(adapters: route.adapterOptions)
 
         guard let factory = factory else {
             throw WebRTCError.factoryNotInitialized
@@ -839,7 +989,7 @@ class WebRTCManager: NSObject, ObservableObject {
             // A reflexive candidate is only useful when the peer is off-link. For a KVM on the
             // LAN or over Tailscale the host candidate always wins, and reaching a public STUN
             // server can only add gathering latency — or block on a network that filters it.
-            configuration.iceServers = Self.iceServers(for: device, log: log)
+            configuration.iceServers = Self.iceServers(for: device, route: route, log: log)
             configuration.sdpSemantics = .unifiedPlan
             
             let constraints = RTCMediaConstraints(
@@ -1439,6 +1589,7 @@ class WebRTCManager: NSObject, ObservableObject {
             if (candidateObj["completed"] as? Bool) == true {
                 return
             }
+            guard keepsTrickledRemoteCandidate(candidateString) else { return }
 
             let sdpMid = candidateObj["sdpMid"] as? String
             let sdpMLineIndex: Int32
@@ -1609,15 +1760,8 @@ class WebRTCManager: NSObject, ObservableObject {
         }
         guard let peerConnection = peer(for: leg), let handleId else { return }
         
-        let sessionDescription = RTCSessionDescription(
-            type: .offer,
-            sdp: sdpString
-        )
-        
-        do {
-            try await peerConnection.setRemoteDescription(sessionDescription)
-        } catch {
-            self.log.error(.signaling, "Set remote description failed: \(error.localizedDescription)")
+        await applyRemoteOffer(sdpString, leg: leg) { offer in
+            try await peerConnection.setRemoteDescription(offer)
         }
 
         // The audio handle asks for `video: false`, a parameter the device's own client never
@@ -2294,6 +2438,7 @@ class WebRTCManager: NSObject, ObservableObject {
 
         lastLoggedCandidatePath = nil
         lastJanusAckAt = nil
+        mediaAddressesInEffect = nil
 
         janusKeepAliveTimer?.invalidate()
         janusKeepAliveTimer = nil
@@ -2537,6 +2682,9 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
             guard self.peerRoles.currentRole(of: peerConnection) != nil else { return }
             self.log.debug(.ice, "ICE gathering: \(stateChanged.rawValue)")
 
+            if stateChanged == .complete {
+                self.logHeldBackLocalCandidates()
+            }
             guard stateChanged == .complete,
                   let handleId = self.peerRoles.trickleHandle(
                       for: peerConnection,
@@ -2563,11 +2711,7 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
                 }
                 return
             }
-            do {
-                try await sendJanusTrickleCandidate(candidate, handleId: handleId)
-            } catch {
-                self.log.warning(.ice, "Send ICE candidate failed: \(error.localizedDescription)")
-            }
+            await self.trickleLocalCandidate(candidate, handleId: handleId)
         }
     }
     
@@ -2678,8 +2822,16 @@ final class WebRTCManager: NSObject, ObservableObject {
 
     let telemetry = StreamTelemetryModel()
 
-    init(audioPreferences: AudioPreferences? = nil, log: SessionLog? = nil) {
+    let networkPreferences: NetworkPreferences
+    @Published private(set) var mediaAddressesInEffect: MediaAddresses?
+
+    init(
+        audioPreferences: AudioPreferences? = nil,
+        networkPreferences: NetworkPreferences? = nil,
+        log: SessionLog? = nil
+    ) {
         self.audioPreferences = audioPreferences ?? .shared
+        self.networkPreferences = networkPreferences ?? .shared
         self.log = log ?? SessionLog(destination: .shared)
         super.init()
     }
