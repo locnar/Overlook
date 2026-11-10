@@ -306,8 +306,48 @@ struct WindowLifecycleTests {
 
     @Test func theWindowTitleNamesTheDevice() {
         let device = Fixtures.device(nickname: "Rack 3")
-        #expect(ContentView.windowTitlePrefix(device: device, isConnected: true) == "Overlook - Rack 3 / Connected")
-        #expect(ContentView.windowTitlePrefix(device: device, isConnected: false) == "Overlook - Rack 3 / Disconnected")
-        #expect(ContentView.windowTitlePrefix(device: nil, isConnected: false) == "Overlook - Overlook / Disconnected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: device, selectedDevice: device, isConnected: true) == "Overlook - Rack 3 / Connected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: nil, selectedDevice: device, isConnected: false) == "Overlook - Rack 3 / Disconnected")
+    }
+
+    /// A window with nothing chosen is just "Overlook", not "Overlook - Overlook / Disconnected".
+    @Test func aWindowWithNoDeviceIsJustOverlook() {
+        #expect(ContentView.windowTitlePrefix(connectedDevice: nil, selectedDevice: nil, isConnected: false) == "Overlook")
+    }
+
+    /// While connected the title names the connected device, even if another one is chosen in the
+    /// Connections panel.
+    @Test func connectedNamesTheConnectedDevice() {
+        let connected = Fixtures.device(id: "saved-a", nickname: "mdesktop", host: "192.168.0.131")
+        let other = Fixtures.device(id: "saved-b", nickname: "Rack 3", host: "192.0.2.20")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: connected, selectedDevice: other, isConnected: true) == "Overlook - mdesktop / Connected")
+    }
+
+    /// Reconnecting after a drop (the device is still set, the link is not up) reads as
+    /// disconnected from the chosen device.
+    @Test func aDeviceStillSetButNotConnectedIsDisconnected() {
+        let device = Fixtures.device(nickname: "mdesktop")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: device, selectedDevice: device, isConnected: false) == "Overlook - mdesktop / Disconnected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: device, selectedDevice: nil, isConnected: false) == "Overlook")
+    }
+
+    @Test func theLiveNumbersFollowOnlyWhileConnected() {
+        var telemetry = StreamTelemetry.empty
+        telemetry.hidRoundTripMs = 12
+        telemetry.videoKbps = 3400
+        telemetry.videoFps = 30
+        #expect(
+            ContentView.windowTitle(prefix: "Overlook - mdesktop / Connected", suffix: " / Mouse: Relative", telemetry: telemetry, isConnected: true)
+                == "Overlook - mdesktop / Connected / 12 ms RTT / 3400 kbps / 30 fps dynamic / Mouse: Relative"
+        )
+        #expect(
+            ContentView.windowTitle(prefix: "Overlook - mdesktop / Connected", suffix: "", telemetry: .empty, isConnected: true)
+                == "Overlook - mdesktop / Connected / — ms RTT / — kbps / — fps dynamic"
+        )
+        #expect(
+            ContentView.windowTitle(prefix: "Overlook - mdesktop / Disconnected", suffix: "", telemetry: telemetry, isConnected: false)
+                == "Overlook - mdesktop / Disconnected"
+        )
+        #expect(ContentView.windowTitle(prefix: "Overlook", suffix: "", telemetry: .empty, isConnected: false) == "Overlook")
     }
 }

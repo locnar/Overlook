@@ -16,14 +16,12 @@
 		01000009 /* KVMDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000009 /* KVMDeviceManager.swift */; };
 		01000010 /* MenuBarAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000010 /* MenuBarAgent.swift */; };
 		01000011 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000011 /* JSONValue.swift */; };
-		01000012 /* HardwareControlManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000012 /* HardwareControlManager.swift */; };
 		01000014 /* TailscaleManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000014 /* TailscaleManager.swift */; };
 		01000015 /* GLKVMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000015 /* GLKVMClient.swift */; };
 		01000016 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 14000001 /* WebRTC */; };
 		01000017 /* WebUISettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000016 /* WebUISettingsPanel.swift */; };
 		01000018 /* OCRViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000017 /* OCRViews.swift */; };
 		01000019 /* ConnectSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000018 /* ConnectSheets.swift */; };
-		0100001A /* ContentControlBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000019 /* ContentControlBar.swift */; };
 		0100001B /* VideoSurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200001A /* VideoSurfaceView.swift */; };
 		0100001C /* StatusBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200001B /* StatusBarView.swift */; };
 		0100001D /* CoreAudioDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200001C /* CoreAudioDevices.swift */; };
@@ -101,6 +99,7 @@
 		01000126 /* JanusSignalingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000126 /* JanusSignalingTests.swift */; };
 		01000127 /* JanusSenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000127 /* JanusSenderTests.swift */; };
 		01000128 /* VideoTrackTeardownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000128 /* VideoTrackTeardownTests.swift */; };
+		01000129 /* OCRManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000129 /* OCRManagerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -124,13 +123,11 @@
 		02000009 /* KVMDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KVMDeviceManager.swift; sourceTree = "<group>"; };
 		02000010 /* MenuBarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarAgent.swift; sourceTree = "<group>"; };
 		02000011 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
-		02000012 /* HardwareControlManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareControlManager.swift; sourceTree = "<group>"; };
 		02000014 /* TailscaleManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleManager.swift; sourceTree = "<group>"; };
 		02000015 /* GLKVMClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GLKVMClient.swift; sourceTree = "<group>"; };
 		02000016 /* WebUISettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUISettingsPanel.swift; sourceTree = "<group>"; };
 		02000017 /* OCRViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRViews.swift; sourceTree = "<group>"; };
 		02000018 /* ConnectSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSheets.swift; sourceTree = "<group>"; };
-		02000019 /* ContentControlBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentControlBar.swift; sourceTree = "<group>"; };
 		0200001A /* VideoSurfaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSurfaceView.swift; sourceTree = "<group>"; };
 		0200001B /* StatusBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarView.swift; sourceTree = "<group>"; };
 		0200001C /* CoreAudioDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioDevices.swift; sourceTree = "<group>"; };
@@ -215,6 +212,7 @@
 		02000126 /* JanusSignalingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignalingTests.swift; sourceTree = "<group>"; };
 		02000127 /* JanusSenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSenderTests.swift; sourceTree = "<group>"; };
 		02000128 /* VideoTrackTeardownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrackTeardownTests.swift; sourceTree = "<group>"; };
+		02000129 /* OCRManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRManagerTests.swift; sourceTree = "<group>"; };
 		02000042 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -252,7 +250,6 @@
 			children = (
 				02000001 /* OverlookApp.swift */,
 				02000002 /* ContentView.swift */,
-				02000019 /* ContentControlBar.swift */,
 				0200001A /* VideoSurfaceView.swift */,
 				0200001B /* StatusBarView.swift */,
 				02000017 /* OCRViews.swift */,
@@ -302,7 +299,6 @@
 				02000022 /* DeviceTrustStore.swift */,
 				02000023 /* KeychainTokenStore.swift */,
 				0200002A /* DevicePasswordStore.swift */,
-				02000012 /* HardwareControlManager.swift */,
 				02000010 /* MenuBarAgent.swift */,
 				02000014 /* TailscaleManager.swift */,
 				02000011 /* JSONValue.swift */,
@@ -349,6 +345,7 @@
 				02000126 /* JanusSignalingTests.swift */,
 				02000127 /* JanusSenderTests.swift */,
 				02000128 /* VideoTrackTeardownTests.swift */,
+				02000129 /* OCRManagerTests.swift */,
 				02000123 /* KeyCodeTableTests.swift */,
 				02000122 /* AudioDeviceSetupTests.swift */,
 				02000111 /* WindowDelegateInterposerTests.swift */,
@@ -485,7 +482,6 @@
 			files = (
 				01000001 /* OverlookApp.swift in Sources */,
 				01000002 /* ContentView.swift in Sources */,
-				0100001A /* ContentControlBar.swift in Sources */,
 				0100001B /* VideoSurfaceView.swift in Sources */,
 				0100001C /* StatusBarView.swift in Sources */,
 				01000017 /* WebUISettingsPanel.swift in Sources */,
@@ -531,7 +527,6 @@
 				01000020 /* DeviceTrustStore.swift in Sources */,
 				01000021 /* KeychainTokenStore.swift in Sources */,
 				01000028 /* DevicePasswordStore.swift in Sources */,
-				01000012 /* HardwareControlManager.swift in Sources */,
 				01000010 /* MenuBarAgent.swift in Sources */,
 				01000014 /* TailscaleManager.swift in Sources */,
 				01000011 /* JSONValue.swift in Sources */,
@@ -576,6 +571,7 @@
 				01000126 /* JanusSignalingTests.swift in Sources */,
 				01000127 /* JanusSenderTests.swift in Sources */,
 				01000128 /* VideoTrackTeardownTests.swift in Sources */,
+				01000129 /* OCRManagerTests.swift in Sources */,
 				01000123 /* KeyCodeTableTests.swift in Sources */,
 				01000122 /* AudioDeviceSetupTests.swift in Sources */,
 				01000111 /* WindowDelegateInterposerTests.swift in Sources */,

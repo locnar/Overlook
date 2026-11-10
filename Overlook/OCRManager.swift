@@ -6,25 +6,34 @@ import Combine
 
 @MainActor
 class OCRManager: ObservableObject {
-    @Published var isProcessing = false
+    /// Reads the lines of text in a frame already cut down to the part to read. The app reads
+    /// with Vision's accurate text request; tests pass a stub, so every way a recognition can end
+    /// is driven without Vision. Runs on the OCR queue, never on the main thread.
+    typealias LineReader = @Sendable (CVPixelBuffer) throws -> [String]
+
+    /// True while a click or drag recognition is running. `recognize` sets it and clears it on
+    /// the main actor, however the recognition ends.
+    @Published private(set) var isProcessing = false
     @Published var lastRecognizedText = ""
     @Published var recognizedRegions: [TextRegion] = []
     
     nonisolated(unsafe) private var textRecognitionRequest: VNRecognizeTextRequest?
     nonisolated(unsafe) private var textObservationRequest: VNRecognizeTextRequest?
     nonisolated(unsafe) private var ocrQueue = DispatchQueue(label: "com.overlook.ocr", qos: .userInitiated)
-    
-    init() {
+    nonisolated private let lineReaderOverride: LineReader?
+    /// Click and drag recognitions under way; `isProcessing` stays true until the last one ends.
+    private(set) var recognitionsInFlight = 0
+
+    /// `lineReader` is for tests; the app passes nothing and reads with Vision.
+    init(lineReader: LineReader? = nil) {
+        lineReaderOverride = lineReader
         setupOCRRequests()
     }
     
     private func setupOCRRequests() {
-        // Setup text recognition request for Live Text-style OCR
-        textRecognitionRequest = VNRecognizeTextRequest { [weak self] request, error in
-            Task { @MainActor in
-                self?.handleTextRecognition(request: request, error: error)
-            }
-        }
+        // No completion handlers: `perform` runs synchronously on the OCR queue and the results
+        // are read off the request right after, so each result has one owner.
+        textRecognitionRequest = VNRecognizeTextRequest()
         
         // Configure for high accuracy
         textRecognitionRequest?.recognitionLevel = .accurate
@@ -33,11 +42,7 @@ class OCRManager: ObservableObject {
         textRecognitionRequest?.automaticallyDetectsLanguage = true
         
         // Setup text observation request for real-time text detection
-        textObservationRequest = VNRecognizeTextRequest { [weak self] request, error in
-            Task { @MainActor in
-                self?.handleTextObservation(request: request, error: error)
-            }
-        }
+        textObservationRequest = VNRecognizeTextRequest()
         
         textObservationRequest?.recognitionLevel = .fast
         textObservationRequest?.usesLanguageCorrection = false
@@ -45,66 +50,60 @@ class OCRManager: ObservableObject {
         textObservationRequest?.automaticallyDetectsLanguage = true
     }
     
+    /// The text in an 800-pixel square around `point` (frame fractions, origin bottom-left).
+    /// Throws `OCRError.noTextFound` when there is none.
     func recognizeText(at point: CGPoint, in pixelBuffer: CVPixelBuffer?) async throws -> String {
         guard let pixelBuffer = pixelBuffer else {
             throw OCRError.noVideoFrame
         }
 
-        let pixelBufferBox = PixelBufferBox(pixelBuffer)
-        return try await withCheckedThrowingContinuation { continuation in
-            ocrQueue.async { [weak self] in
-                self?.performTextRecognition(at: point, in: pixelBufferBox.pixelBuffer) { result in
-                    continuation.resume(with: result)
-                }
-            }
+        let frame = PixelBufferBox(pixelBuffer)
+        let text = try await recognize { [self] in
+            let roi = createRegionOfInterest(around: point, in: frame.pixelBuffer)
+            return try readLines(in: cropPixelBuffer(frame.pixelBuffer, to: roi))
         }
+        if text.isEmpty {
+            throw OCRError.noTextFound
+        }
+        return text
     }
-    
-    nonisolated private func performTextRecognition(at point: CGPoint, in pixelBuffer: CVPixelBuffer, completion: @escaping (Result<String, Error>) -> Void) {
+
+    /// Runs `read` on the OCR queue and joins the lines it found with spaces. Every way out —
+    /// text, no text, an error, the caller's task cancelled — clears `isProcessing` on the main
+    /// actor (once no other recognition is still running).
+    private func recognize(_ read: @escaping @Sendable () throws -> [String]) async throws -> String {
+        try Task.checkCancellation()
+        recognitionsInFlight += 1
+        isProcessing = true
+        defer {
+            recognitionsInFlight -= 1
+            isProcessing = recognitionsInFlight > 0
+        }
+
+        let lines = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String], Error>) in
+            ocrQueue.async {
+                continuation.resume(with: Result { try read() })
+            }
+        }
+        try Task.checkCancellation()
+
+        let text = lines.joined(separator: " ")
+        lastRecognizedText = text
+        return text
+    }
+
+    /// The lines of text in `pixelBuffer`, best candidate each, top to bottom.
+    nonisolated private func readLines(in pixelBuffer: CVPixelBuffer) throws -> [String] {
+        if let lineReaderOverride {
+            return try lineReaderOverride(pixelBuffer)
+        }
         guard let request = textRecognitionRequest else {
-            completion(.failure(OCRError.requestNotInitialized))
-            return
+            throw OCRError.requestNotInitialized
         }
-        
-        // Create a region of interest around the click point
-        let roi = createRegionOfInterest(around: point, in: pixelBuffer)
-        let croppedBuffer = cropPixelBuffer(pixelBuffer, to: roi)
-        
-        let handler = VNImageRequestHandler(cvPixelBuffer: croppedBuffer, options: [:])
-        
-        Task { @MainActor in
-            isProcessing = true
-        }
-        
-        do {
-            try handler.perform([request])
-            
-            // Get the recognized text from the request
-            guard let observations = request.results else {
-                completion(.failure(OCRError.noTextFound))
-                return
-            }
-            
-            let recognizedText = observations.compactMap { observation in
-                observation.topCandidates(1).first?.string
-            }.joined(separator: " ")
-            
-            Task { @MainActor in
-                lastRecognizedText = recognizedText
-                isProcessing = false
-            }
-            
-            if recognizedText.isEmpty {
-                completion(.failure(OCRError.noTextFound))
-            } else {
-                completion(.success(recognizedText))
-            }
-            
-        } catch {
-            Task { @MainActor in
-                isProcessing = false
-            }
-            completion(.failure(error))
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+        try handler.perform([request])
+        return (request.results ?? []).compactMap { observation in
+            observation.topCandidates(1).first?.string
         }
     }
     
@@ -216,115 +215,25 @@ class OCRManager: ObservableObject {
         return outputBuffer
     }
     
-    private func handleTextRecognition(request: VNRequest, error: Error?) {
-        if let error = error {
-            print("Text recognition error: \(error)")
-            return
-        }
-        
-        guard let request = request as? VNRecognizeTextRequest,
-              let observations = request.results else {
-            return
-        }
-        
-        let recognizedText = observations.compactMap { observation in
-            observation.topCandidates(1).first?.string
-        }.joined(separator: "\n")
-        
-        Task { @MainActor in
-            lastRecognizedText = recognizedText
-            isProcessing = false
-        }
-    }
-    
-    private func handleTextObservation(request: VNRequest, error: Error?) {
-        if let error = error {
-            print("Text observation error: \(error)")
-            return
-        }
-        
-        guard let request = request as? VNRecognizeTextRequest,
-              let observations = request.results else {
-            return
-        }
-        
-        let regions = observations.compactMap { observation -> TextRegion? in
-            guard let candidate = observation.topCandidates(1).first else { return nil }
-            
-            return TextRegion(
-                text: candidate.string,
-                boundingBox: observation.boundingBox,
-                confidence: candidate.confidence
-            )
-        }
-        
-        Task { @MainActor in
-            recognizedRegions = regions
-        }
-    }
-    
     // MARK: - Advanced OCR Features
     
+    /// The text in `region` (frame fractions, origin bottom-left); empty when there is none.
     func recognizeTextInRegion(_ region: CGRect, in pixelBuffer: CVPixelBuffer?) async throws -> String {
         guard let pixelBuffer = pixelBuffer else {
             throw OCRError.noVideoFrame
         }
         
-        let pixelBufferBox = PixelBufferBox(pixelBuffer)
-        return try await withCheckedThrowingContinuation { continuation in
-            ocrQueue.async { [weak self] in
-                self?.performRegionTextRecognition(region: region, in: pixelBufferBox.pixelBuffer) { result in
-                    continuation.resume(with: result)
-                }
-            }
-        }
-    }
-    
-    nonisolated private func performRegionTextRecognition(region: CGRect, in pixelBuffer: CVPixelBuffer, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let request = textRecognitionRequest else {
-            completion(.failure(OCRError.requestNotInitialized))
-            return
-        }
-        
-        let bufferSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
-        let normalizedRegion = CGRect(
-            x: region.origin.x * bufferSize.width,
-            y: region.origin.y * bufferSize.height,
-            width: region.size.width * bufferSize.width,
-            height: region.size.height * bufferSize.height
-        )
-        
-        let croppedBuffer = cropPixelBuffer(pixelBuffer, to: normalizedRegion)
-        let handler = VNImageRequestHandler(cvPixelBuffer: croppedBuffer, options: [:])
-        
-        Task { @MainActor in
-            isProcessing = true
-        }
-        
-        do {
-            try handler.perform([request])
-            
-            guard let observations = request.results else {
-                completion(.failure(OCRError.noTextFound))
-                return
-            }
-            
-            let recognizedText = observations.compactMap { observation in
-                observation.topCandidates(1).first?.string
-            }.joined(separator: " ")
-            
-            Task { @MainActor in
-                lastRecognizedText = recognizedText
-                isProcessing = false
-            }
-            
-            completion(.success(recognizedText))
-            
-        } catch {
-            Task { @MainActor in
-                isProcessing = false
-            }
-            completion(.failure(error))
+        let frame = PixelBufferBox(pixelBuffer)
+        return try await recognize { [self] in
+            let buffer = frame.pixelBuffer
+            let bufferSize = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+            let pixelRegion = CGRect(
+                x: region.origin.x * bufferSize.width,
+                y: region.origin.y * bufferSize.height,
+                width: region.size.width * bufferSize.width,
+                height: region.size.height * bufferSize.height
+            )
+            return try readLines(in: cropPixelBuffer(buffer, to: pixelRegion))
         }
     }
     
@@ -381,6 +290,36 @@ private struct PixelBufferBox: @unchecked Sendable {
 
     init(_ pixelBuffer: CVPixelBuffer) {
         self.pixelBuffer = pixelBuffer
+    }
+}
+
+/// What a click or drag recognition comes to for the operator: text opens the results sheet;
+/// no text (nothing, or only whitespace) and a failure each get a short notice instead of an
+/// empty sheet; a cancelled recognition shows nothing.
+enum OCROutcome: Equatable {
+    case text(String)
+    case noText
+    case failed(String)
+    case cancelled
+
+    init(_ result: Result<String, Error>) {
+        switch result {
+        case .success(let text):
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            self = trimmed.isEmpty ? .noText : .text(trimmed)
+        case .failure(let error as OCRError) where error == .noTextFound:
+            self = .noText
+        case .failure(is CancellationError):
+            self = .cancelled
+        case .failure(let error):
+            self = .failed(error.localizedDescription)
+        }
+    }
+
+    /// The text for the results sheet, or nil when the sheet should stay closed.
+    var sheetText: String? {
+        if case .text(let text) = self { return text }
+        return nil
     }
 }
 

@@ -30,7 +30,7 @@ struct KeyCodeTableTests {
         65: "NumpadDecimal", 67: "NumpadMultiply", 69: "NumpadAdd", 78: "NumpadSubtract",
         75: "NumpadDivide", 76: "NumpadEnter", 81: "NumpadEqual",
         // Navigation
-        114: "Help", 115: "Home", 119: "End", 116: "PageUp", 121: "PageDown", 117: "Delete",
+        114: "Insert", 115: "Home", 119: "End", 116: "PageUp", 121: "PageDown", 117: "Delete",
         123: "ArrowLeft", 124: "ArrowRight", 125: "ArrowDown", 126: "ArrowUp",
         // Modifiers
         55: "MetaLeft", 54: "MetaRight", 56: "ShiftLeft", 60: "ShiftRight", 58: "AltLeft",
@@ -61,9 +61,9 @@ struct KeyCodeTableTests {
         "F23", "F24", "F13", "F14", "F15", "F16", "F17", "F18", "F19",
     ]
 
-    /// Names Overlook sends that kvmd has no entry for. They predate this table and are kept as
-    /// they were; the device ignores them.
-    static let namesKvmdDoesNotKnow: Set<String> = ["Help", "NumpadEqual"]
+    /// Names Overlook sends that kvmd has no entry for. It predates this table and is kept as it
+    /// was; the device ignores it.
+    static let namesKvmdDoesNotKnow: Set<String> = ["NumpadEqual"]
 
     @Test func everyKeyCodeMapsAsTheTableSays() {
         for code in UInt16(0)...UInt16(255) {
@@ -90,7 +90,7 @@ struct KeyCodeTableTests {
 
     @Test(arguments: [
         (UInt16(10), "IntlBackslash"), (93, "IntlYen"), (94, "IntlRo"),
-        (79, "F18"), (80, "F19"), (90, "F20"),
+        (79, "F18"), (80, "F19"), (90, "F20"), (114, "Insert"),
     ])
     func newlyMappedKeys(code: UInt16, name: String) {
         #expect(InputManager.glkvmKey(forMacKeyCode: code, isISOKeyboard: false) == name)
@@ -103,6 +103,16 @@ struct KeyCodeTableTests {
             #expect(InputManager.glkvmKey(forMacKeyCode: code, isISOKeyboard: false) == nil, "key code \(code)")
             #expect(InputManager.glkvmKey(forMacKeyCode: code, isISOKeyboard: true) == nil, "key code \(code)")
         }
+    }
+
+    /// The Mac's Help key (where a PC keyboard has Insert) goes as Insert, which kvmd knows; it
+    /// used to go as "Help", which the device dropped.
+    @Test func theHelpKeyIsInsert() {
+        for iso in [false, true] {
+            #expect(InputManager.glkvmKey(forMacKeyCode: 114, isISOKeyboard: iso) == "Insert")
+        }
+        #expect(Self.kvmdNames.contains("Insert"))
+        #expect(!Self.table.values.contains("Help"))
     }
 
     @Test func everyNameSentIsOneKvmdKnows() {

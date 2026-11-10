@@ -94,21 +94,33 @@ struct InterceptedChordTests {
         }
 
         func press(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) {
-            for down in [true, false] {
-                let event = NSEvent.keyEvent(
-                    with: down ? .keyDown : .keyUp,
-                    location: .zero,
-                    modifierFlags: flags,
-                    timestamp: 0,
-                    windowNumber: Self.window,
-                    context: nil,
-                    characters: "x",
-                    charactersIgnoringModifiers: "x",
-                    isARepeat: false,
-                    keyCode: keyCode
-                )!
-                #expect(input.routeMonitoredKeyEvent(event) == nil)
+            hold(keyCode, flags, repeats: 0)
+        }
+
+        /// A key-down, `repeats` auto-repeats of it (as macOS sends while the key is held), and
+        /// the key-up. Every one of them must be kept from the window.
+        func hold(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, repeats: Int) {
+            send(.keyDown, keyCode, flags, isARepeat: false)
+            for _ in 0..<repeats {
+                send(.keyDown, keyCode, flags, isARepeat: true)
             }
+            send(.keyUp, keyCode, flags, isARepeat: false)
+        }
+
+        private func send(_ type: NSEvent.EventType, _ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, isARepeat: Bool) {
+            let event = NSEvent.keyEvent(
+                with: type,
+                location: .zero,
+                modifierFlags: flags,
+                timestamp: 0,
+                windowNumber: Self.window,
+                context: nil,
+                characters: "x",
+                charactersIgnoringModifiers: "x",
+                isARepeat: isARepeat,
+                keyCode: keyCode
+            )!
+            #expect(input.routeMonitoredKeyEvent(event) == nil)
         }
     }
 
@@ -145,5 +157,80 @@ struct InterceptedChordTests {
         capture.press(15, [.command, .shift, .option])
         #expect(capture.shortcuts.isEmpty)
         #expect(capture.sent == [.key(15, isDown: true), .key(15, isDown: false)])
+    }
+
+    // MARK: - Held chords act once
+
+    @Test func aHeldCommandCTogglesCopyModeOnce() {
+        let capture = Capture()
+        capture.hold(8, .command, repeats: 5)
+        #expect(capture.shortcuts == [.toggleCopyMode])
+        #expect(capture.sent.isEmpty)
+    }
+
+    @Test func aHeldShiftCommandSSavesOneScreenshot() {
+        let capture = Capture()
+        capture.hold(1, [.command, .shift], repeats: 5)
+        #expect(capture.shortcuts == [.saveScreenshot])
+        #expect(capture.sent.isEmpty)
+    }
+
+    @Test func aHeldShiftCommandRTogglesRecordingOnce() {
+        let capture = Capture()
+        capture.hold(15, [.command, .shift], repeats: 5)
+        #expect(capture.shortcuts == [.toggleRecording])
+        #expect(capture.sent.isEmpty)
+    }
+
+    @Test func aHeldCommandQQuitsOnce() {
+        let capture = Capture()
+        var quits = 0
+        capture.input.terminateApp = { quits += 1 }
+        capture.hold(12, .command, repeats: 5)
+        #expect(quits == 1)
+        #expect(capture.sent.isEmpty)
+    }
+
+    /// Two separate presses are two actions: only the repeats in between are dropped.
+    @Test func eachPressStillCounts() {
+        let capture = Capture()
+        capture.hold(8, .command, repeats: 3)
+        capture.hold(8, .command, repeats: 3)
+        #expect(capture.shortcuts == [.toggleCopyMode, .toggleCopyMode])
+    }
+
+    /// A held key that is not one of Overlook's chords still repeats on the target.
+    @Test func aHeldOrdinaryKeyStillRepeatsOnTheTarget() {
+        let capture = Capture()
+        capture.hold(0, [], repeats: 3)
+        #expect(capture.sent == [
+            .key(0, isDown: true), .key(0, isDown: true), .key(0, isDown: true), .key(0, isDown: true),
+            .key(0, isDown: false),
+        ])
+        #expect(capture.shortcuts.isEmpty)
+    }
+
+    /// ⌘V with a stubbed device and clipboard: one press held through its repeats reads the
+    /// clipboard once and types it once.
+    @Test func aHeldCommandVPastesOnce() async throws {
+        let capture = Capture()
+        let device = StubDevice()
+        capture.input.transportMode = .webRTC
+        capture.input.setGLKVMClient(try device.makeClient())
+        var reads = 0
+        capture.input.readClipboardText = {
+            reads += 1
+            return "echo hello"
+        }
+
+        capture.hold(9, .command, repeats: 6)
+
+        #expect(reads == 1)
+        #expect(capture.sent.isEmpty)
+        #expect(await waitUntil { device.requests(to: "/api/hid/print").count == 1 })
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let prints = device.requests(to: "/api/hid/print")
+        #expect(prints.count == 1)
+        #expect(prints.first?.bodyText == "echo hello")
     }
 }

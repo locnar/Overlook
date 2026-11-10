@@ -76,6 +76,11 @@ class InputManager: ObservableObject {
     /// it: with no device attached, it is the one place a send can be observed.
     var sentInputObserver: ((SentInput) -> Void)?
 
+    /// Where ⌘V reads the Mac's clipboard, and what ⌘Q does. Only the tests replace them, so a
+    /// chord can be driven without touching the real pasteboard or quitting the test host.
+    var readClipboardText: () -> String? = { NSPasteboard.general.string(forType: .string) }
+    var terminateApp: () -> Void = { NSApp.terminate(nil) }
+
     /// Whether this session's window is key, and which presses it took; see `InputFocusGate`.
     /// Every keyboard and mouse path checks it before anything goes to the target.
     private(set) var focusGate = InputFocusGate()
@@ -721,6 +726,10 @@ class InputManager: ObservableObject {
             if isKeyDown, modifiers.contains(.command) {
                 // Overlook's own chords, kept rather than sent; see `InterceptedChord`.
                 if let chord = Self.interceptedChord(keyCode: keyCode, modifiers: modifiers) {
+                    // Once per physical press: the auto-repeats of a held chord are swallowed
+                    // here, so a held ⌘V pastes once, ⌘C toggles copy mode once and ⇧⌘R cannot
+                    // toggle twice. They still never reach the target.
+                    guard !event.isARepeat else { return }
                     prepareForLocalCommandShortcut()
                     suppressedKeyUps.insert(keyCode)
                     switch chord {
@@ -728,15 +737,14 @@ class InputManager: ObservableObject {
                         onLocalShortcut?(.toggleCopyMode)
                     case .paste:
                         pasteClipboardToRemote()
-                    // Key repeat is ignored so a held ⇧⌘R cannot toggle twice.
                     case .saveScreenshot:
-                        if !event.isARepeat { onLocalShortcut?(.saveScreenshot) }
+                        onLocalShortcut?(.saveScreenshot)
                     case .toggleRecording:
-                        if !event.isARepeat { onLocalShortcut?(.toggleRecording) }
+                        onLocalShortcut?(.toggleRecording)
                     // The termination path releases held keys and hangs up before the process
                     // exits.
                     case .quit:
-                        if !event.isARepeat { NSApp.terminate(nil) }
+                        terminateApp()
                     }
                     return
                 }
@@ -1016,7 +1024,7 @@ class InputManager: ObservableObject {
 
     private func pasteClipboardToRemote() {
         guard glkvmClient != nil else { return }
-        guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        guard let text = readClipboardText() else { return }
         pasteToRemote(text)
     }
 
@@ -1811,7 +1819,9 @@ class InputManager: ObservableObject {
         case 76: return "NumpadEnter"
         case 81: return "NumpadEqual"
 
-        case 114: return "Help"
+        // kVK_Help sits where a PC keyboard has Insert, and browsers report it as Insert;
+        // kvmd has no "Help".
+        case 114: return "Insert"
 
         case 115: return "Home"
         case 119: return "End"

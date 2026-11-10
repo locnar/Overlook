@@ -137,9 +137,11 @@ struct DisplayNameTests {
     @Test func theWindowTitleUsesTheNicknameOrTheAddress() {
         let named = Fixtures.device(nickname: "Desk", host: "192.168.0.131")
         let unnamed = Fixtures.device(nickname: nil, host: "192.168.0.131")
-        #expect(ContentView.windowTitlePrefix(device: named, isConnected: true) == "Overlook - Desk / Connected")
-        #expect(ContentView.windowTitlePrefix(device: unnamed, isConnected: true) == "Overlook - 192.168.0.131 / Connected")
-        #expect(ContentView.windowTitlePrefix(device: named.via(Self.tailnet), isConnected: true) == "Overlook - Desk / Connected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: named, selectedDevice: nil, isConnected: true) == "Overlook - Desk / Connected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: unnamed, selectedDevice: nil, isConnected: true) == "Overlook - 192.168.0.131 / Connected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: named.via(Self.tailnet), selectedDevice: nil, isConnected: true) == "Overlook - Desk / Connected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: nil, selectedDevice: named, isConnected: false) == "Overlook - Desk / Disconnected")
+        #expect(ContentView.windowTitlePrefix(connectedDevice: nil, selectedDevice: unnamed, isConnected: false) == "Overlook - 192.168.0.131 / Disconnected")
     }
 
     @Test func theRecordingQuestionNamesTheDeviceTheSameWay() {

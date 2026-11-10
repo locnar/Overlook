@@ -94,6 +94,12 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **Stale listeners**: a signaling listener belonging to a torn-down socket could act on its successor's state.
 - **URLSession leak**: the signaling session retains itself until invalidated and was leaked on every connect.
 - **Superseded connects**: an attempt superseded by a newer connect tore down its successor from its own error path.
+- **Janus waiter**: create and attach registered their waiter only after sending, so a fast answer on the LAN was missed and the connect timed out after 8 s.
+- **Stale candidates**: a candidate gathered just before a reconnect could be trickled to the new connection's video handle.
+- **Stale stats**: a stats tick that outlived its connection wrote the old peer's counters over the new one's: a kbps spike, and the old connection's numbers shown for the new one.
+- **Signaling sends**: keepalives, candidates and the SDP answer went to the socket all at once with no deadline. They now go one at a time, each with a deadline, and a missed deadline reconnects.
+- **Unknown senders**: a candidate or offer from a handle other than the current audio or video one was applied to the video peer. It is now dropped and logged.
+- **Old video tracks**: the video view stayed attached to every earlier connection's video track, so late frames from it fed the next connection's freeze detection, frame rate and screenshots.
 
 #### Input and HID
 
@@ -108,6 +114,11 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **Device switching**: switching devices from the menu bar kept a live HID socket open to the previous device.
 - **Quit**: quitting with a key or button held left it held on the target, and the video session lingered on the device until its keepalive expired.
 - **⌘Q**: reached the target as Meta+Q while input was captured, leaving no keyboard way to quit.
+- **HID send deadlines**: a frame the HID socket never took stalled all input behind it, and quit waited on it. Each frame now has a deadline, and a socket whose pongs stop coming back is closed and reconnected.
+- **ISO, JIS and F18–F20 keys**: the extra ISO key, JIS Yen and Ro, and F18–F20 were dropped. On an ISO keyboard the key left of 1 and the key by left Shift are swapped back, so each reaches the target at its position.
+- **Exact-modifier shortcuts**: Overlook's chords fired whenever ⌘ was held, so `⌃⌘V`, `⌥⌘C` or `⇧⌘V` never reached the target.
+- **Held chords**: holding `⌘V` pasted the clipboard again on every key repeat, and holding `⌘C` toggled copy mode on and off. Each chord now acts once per press.
+- **Help key**: the Mac's Help key, where a PC keyboard has Insert, was sent as "Help", which the device drops. It is now sent as Insert.
 
 #### Audio
 
@@ -119,6 +130,21 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **CoreAudio capture buffer**: the capture buffer was reused with a byte size that shrank to the first callback's frame count.
 - **Audio toggles**: Audio and Microphone reset to off at every launch while the device choices persisted.
 - **Handle collision**: video offered on the audio handle was also rendered, so the two sessions fought over the view.
+- **Audio unit setup**: a playout or recording unit that failed setup stayed stored, so the next call reported success and audio never played or captured. A failed unit is now discarded and the next call sets it up again.
+
+#### Device settings
+
+- **Settings writes**: the device replaces its whole settings file on each write, and Overlook sent only the keys it knows, so every change erased the keys the device's web UI keeps for itself. A change now reads the device's settings first and writes them back with only its own keys changed.
+- **Long paste**: `⌘V` text was cut at 1,024 characters by the device, and a long paste timed out partway through typing.
+- **Mouse jiggler**: the toggle only wrote the web UI's record of its own switch, so the device's jiggler never started or stopped. It now drives the jiggler and shows what the device reports.
+
+#### Devices and discovery
+
+- **Nicknames and addresses**: a saved device can have a nickname, shown wherever the device is named, and several addresses (a LAN address and a Tailscale name, for example). **Connect** uses the last address used; its **Connect via** menu picks a specific one. A connect tries only that one address.
+- **192.168.200.x**: Scan always swept 192.168.200.x (the GLKVM's setup network) and listed anything answering on .1 or .5 as a GLKVM. It is now swept only when the Mac is on that network.
+- **Interfaces swept**: Scan swept VM bridges and Internet Sharing networks, and guessed at common subnets when it found none. It now sweeps only the Mac's own Ethernet and Wi-Fi (en*) networks.
+- **Local Network**: the app did not declare its local network use or the Bonjour services it browses, which macOS 15 requires.
+- **Duplicate results**: one KVM could be listed several times after a scan (two Bonjour services, a sweep hit, ports 443 and 80). Each host is now listed once.
 
 #### Telemetry and UI
 
@@ -130,6 +156,10 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **Release builds**: hardened-runtime library validation rejected the vendor-signed WebRTC.framework, so any m ID died at launch with a dyld Team ID mismatch.
 - **Scan cancellation**: a scan could not be cancelled, and results from an abandoned scan still landed in the device list.
 - **Scan probes**: 64 concurrent probes tripped router rate limiting and starved the mDNS browsers; each dead P timeouts.
+- **OCR busy state**: an OCR that found no text left the busy state set.
+- **Empty OCR result**: a drag over an area with no text opened an empty Recognized Text sheet. It now shows a "No text found" notice instead.
+- **Disconnected title**: a disconnected window was titled "Overlook - Overlook / Disconnected". It now names the device chosen in that window ("Overlook - mdesktop / Disconnected"), or is just "Overlook" when none is.
+- **Unused code**: removed `HardwareControlManager` and `ContentControlBar`, which nothing used.
 
 ---
 
@@ -276,6 +306,8 @@ Overlook then shows a “Recognized Text” sheet where you can:
 - Copy the recognized text to your macOS clipboard.
 - Close the sheet.
 
+If the area holds no text, a “No text found” notice appears in the bottom-right corner instead of the sheet.
+
 ### Notes / limitations
 
 - OCR accuracy depends on resolution, compression, font size, and contrast.
@@ -321,6 +353,8 @@ Overlook includes a few “quality of life” shortcuts.
 - `⌘Q`: quits Overlook (releases any held keys and hangs up first).
 
 All five are intercepted before they reach the target, so the target never receives them — on a Windows target that means Win+Shift+S (Snipping Tool), Win+Shift+R and Win+Q are not reachable through Overlook. `⇧⌘S` and `⇧⌘R` are also the **Capture** menu's shortcuts, so they work when keyboard capture is off as well.
+
+Each acts once per press: holding the keys down does not repeat it.
 
 Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⌘V`, `⌥⌘C`, `⌥⇧⌘S`), or `⇧` added to `⌘C`, `⌘V` or `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
 

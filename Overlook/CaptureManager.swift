@@ -66,6 +66,8 @@ final class CaptureManager: ObservableObject {
         let detail: String?
         let fileURL: URL?
         let isError: Bool
+        /// Replaces the success/failure symbol, for a notice that is neither.
+        var systemImage: String? = nil
     }
 
     enum Folder {
@@ -441,15 +443,28 @@ final class CaptureManager: ObservableObject {
 
     // MARK: Notices
 
+    /// The notice for an OCR click or drag that opens no results sheet: "No text found" when the
+    /// area held none, or why recognition failed. Text and a cancelled recognition show nothing.
+    func showOCRNotice(for outcome: OCROutcome) {
+        switch outcome {
+        case .noText:
+            showNotice(title: "No text found", detail: nil, fileURL: nil, isError: false, systemImage: "text.viewfinder")
+        case .failed(let reason):
+            showNotice(title: "Text recognition failed", detail: reason, fileURL: nil, isError: true)
+        case .text, .cancelled:
+            break
+        }
+    }
+
     func dismissNotice() {
         noticeDismissTask?.cancel()
         noticeDismissTask = nil
         notice = nil
     }
 
-    private func showNotice(title: String, detail: String?, fileURL: URL?, isError: Bool) {
+    private func showNotice(title: String, detail: String?, fileURL: URL?, isError: Bool, systemImage: String? = nil) {
         noticeDismissTask?.cancel()
-        let shown = Notice(title: title, detail: detail, fileURL: fileURL, isError: isError)
+        let shown = Notice(title: title, detail: detail, fileURL: fileURL, isError: isError, systemImage: systemImage)
         notice = shown
         noticeDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: isError ? 8_000_000_000 : 5_000_000_000)

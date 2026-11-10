@@ -286,7 +286,8 @@ struct CaptureRegionOutline: View {
     }
 }
 
-/// Bottom-right toast after a save (or a failure), with Show for the file and a close button.
+/// Bottom-right toast after a save (or a failure, or an OCR that found no text), with Show for
+/// the file and a close button.
 struct CaptureNoticeView: View {
     let notice: CaptureManager.Notice
     let onShow: (URL) -> Void
@@ -294,8 +295,8 @@ struct CaptureNoticeView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .foregroundStyle(notice.isError ? Color.orange : Color.green)
+            Image(systemName: notice.systemImage ?? (notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
+                .foregroundStyle(notice.systemImage != nil ? Color.secondary : (notice.isError ? Color.orange : Color.green))
                 .font(.title3)
 
             VStack(alignment: .leading, spacing: 2) {

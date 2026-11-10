@@ -103,22 +103,34 @@ struct ContentView: View {
     /// `WindowTitleTelemetryHost`, which observes `StreamTelemetryModel` on its own, so a stats
     /// tick never re-evaluates this view's body.
     private var windowTitlePrefix: String {
-        Self.windowTitlePrefix(device: connection.connectedDevice, isConnected: isConnected)
+        Self.windowTitlePrefix(connectedDevice: connection.connectedDevice, selectedDevice: selectedDevice, isConnected: isConnected)
     }
 
     /// The device's name, not its type: with several windows open the title is what tells them
     /// apart (in the Window menu and Mission Control too), and every one of them is a GLKVM.
-    static func windowTitlePrefix(device: KVMDevice?, isConnected: Bool) -> String {
-        let deviceLabel = device?.displayName ?? "Overlook"
-
-        let connectionState: String
-        if device == nil || isConnected == false {
-            connectionState = "Disconnected"
-        } else {
-            connectionState = "Connected"
+    /// - Connected: "Overlook - <device> / Connected".
+    /// - Disconnected with a device chosen in this window: "Overlook - <device> / Disconnected".
+    /// - Nothing chosen: "Overlook".
+    static func windowTitlePrefix(connectedDevice: KVMDevice?, selectedDevice: KVMDevice?, isConnected: Bool) -> String {
+        if isConnected, let device = connectedDevice ?? selectedDevice {
+            return "Overlook - \(device.displayName) / Connected"
         }
+        if let device = selectedDevice {
+            return "Overlook - \(device.displayName) / Disconnected"
+        }
+        return "Overlook"
+    }
 
-        return "Overlook - \(deviceLabel) / \(connectionState)"
+    /// The whole title. The live HID round trip, kbps and fps follow the prefix only while
+    /// connected; a disconnected window has no numbers to show.
+    static func windowTitle(prefix: String, suffix: String, telemetry: StreamTelemetry, isConnected: Bool) -> String {
+        guard isConnected else { return prefix + suffix }
+        // The HID round trip takes the slot the guest resolution used to have: it is the number
+        // that says whether typing will feel right, and the resolution is in the Connections panel.
+        let rtt = telemetry.hidRoundTripMs.map { "\($0) ms RTT" } ?? "— ms RTT"
+        let kbps = telemetry.videoKbps.map { "\($0) kbps" } ?? "— kbps"
+        let fps = telemetry.videoFps.map { "\($0) fps dynamic" } ?? "— fps dynamic"
+        return "\(prefix) / \(rtt) / \(kbps) / \(fps)\(suffix)"
     }
 
     /// Trailing mouse-mode segment of the window title; empty when not connected.
@@ -386,7 +398,7 @@ struct ContentView: View {
             containerWidth = width
         }
         .background(WindowAspectRatioSetter(videoSize: webRTCManager.videoSize))
-        .background(WindowTitleTelemetryHost(titlePrefix: windowTitlePrefix, titleSuffix: windowTitleSuffix))
+        .background(WindowTitleTelemetryHost(titlePrefix: windowTitlePrefix, titleSuffix: windowTitleSuffix, isConnected: isConnected))
         .background(WindowReferenceSetter(window: $windowRef))
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
@@ -1038,7 +1050,7 @@ extension WindowAspectRatioSetter.Coordinator: WindowDelegateParticipant {
     }
 }
 
-/// Appends the live kbps/fps to the window title.
+/// Appends the live kbps/fps to the window title while connected.
 ///
 /// This is the only view in the window chrome that observes `StreamTelemetryModel`, so a stats
 /// tick re-evaluates this leaf and writes the title — nothing above it.
@@ -1047,15 +1059,15 @@ private struct WindowTitleTelemetryHost: View {
 
     let titlePrefix: String
     let titleSuffix: String
+    let isConnected: Bool
 
     var body: some View {
-        let telemetry = telemetryModel.snapshot
-        // The HID round trip takes the slot the guest resolution used to have: it is the number
-        // that says whether typing will feel right, and the resolution is in the Connections panel.
-        let rtt = telemetry.hidRoundTripMs.map { "\($0) ms RTT" } ?? "— ms RTT"
-        let kbps = telemetry.videoKbps.map { "\($0) kbps" } ?? "— kbps"
-        let fps = telemetry.videoFps.map { "\($0) fps dynamic" } ?? "— fps dynamic"
-        WindowTitleSetter(title: "\(titlePrefix) / \(rtt) / \(kbps) / \(fps)\(titleSuffix)")
+        WindowTitleSetter(title: ContentView.windowTitle(
+            prefix: titlePrefix,
+            suffix: titleSuffix,
+            telemetry: telemetryModel.snapshot,
+            isConnected: isConnected
+        ))
     }
 }
 

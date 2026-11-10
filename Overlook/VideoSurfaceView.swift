@@ -333,6 +333,16 @@ struct VideoSurfaceView: View {
 
     // MARK: OCR
 
+    /// Opens the results sheet for text; anything else gets a notice instead of an empty sheet.
+    private func showOCROutcome(_ outcome: OCROutcome) {
+        if let text = outcome.sheetText {
+            selectedText = text
+            isShowingOCRResult = true
+        } else {
+            captureManager.showOCRNotice(for: outcome)
+        }
+    }
+
     private func performOCR(at location: CGPoint, in geometry: GeometryProxy) {
         let normalized = inputManager.normalizePointInViewToVideo(
             pointInView: location,
@@ -341,15 +351,11 @@ struct VideoSurfaceView: View {
         )
         let videoPoint = CGPoint(x: normalized.x, y: 1.0 - normalized.y)
 
-        Task {
+        Task { @MainActor in
             do {
-                let text = try await ocrManager.recognizeText(at: videoPoint, in: webRTCManager.currentFrame)
-                await MainActor.run {
-                    selectedText = text
-                    isShowingOCRResult = true
-                }
+                showOCROutcome(OCROutcome(.success(try await ocrManager.recognizeText(at: videoPoint, in: webRTCManager.currentFrame))))
             } catch {
-                print("OCR failed: \(error)")
+                showOCROutcome(OCROutcome(.failure(error)))
             }
         }
     }
@@ -381,15 +387,11 @@ struct VideoSurfaceView: View {
         let region = CGRect(x: minX, y: minY, width: max(0, maxX - minX), height: max(0, maxY - minY))
         guard region.width > 0.001, region.height > 0.001 else { return }
 
-        Task {
+        Task { @MainActor in
             do {
-                let text = try await ocrManager.recognizeTextInRegion(region, in: webRTCManager.currentFrame)
-                await MainActor.run {
-                    selectedText = text
-                    isShowingOCRResult = true
-                }
+                showOCROutcome(OCROutcome(.success(try await ocrManager.recognizeTextInRegion(region, in: webRTCManager.currentFrame))))
             } catch {
-                print("OCR failed: \(error)")
+                showOCROutcome(OCROutcome(.failure(error)))
             }
         }
     }
