@@ -28,6 +28,8 @@ final class FakeCredentialStore: DeviceCredentialStore {
     var refusesWrites = false
     private(set) var deletedTokens: [String] = []
     private(set) var deletedPasswords: [String] = []
+    /// Every `setPassword`, by host:port, in order.
+    private(set) var savedPasswords: [String] = []
 
     static func key(host: String, port: Int) -> String {
         "\(host.lowercased()):\(port)"
@@ -57,6 +59,12 @@ final class FakeCredentialStore: DeviceCredentialStore {
 
     func password(host: String, port: Int) -> String? {
         passwords[Self.key(host: host, port: port)]
+    }
+
+    func setPassword(_ password: String, host: String, port: Int) {
+        let key = Self.key(host: host, port: port)
+        passwords[key] = password
+        savedPasswords.append(key)
     }
 
     func deletePassword(host: String, port: Int) {

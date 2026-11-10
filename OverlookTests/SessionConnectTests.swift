@@ -154,3 +154,122 @@ struct SessionConnectTests {
         #expect(link.steps.last == .shutDown)
     }
 }
+
+/// Where `SessionConnection.connectToDevice` keeps a typed password: in the catalog's credential
+/// store (memory here, the login keychain in the app), never the keychain directly. The TCP check
+/// is answered here and the device's API by a stub, so nothing reaches the network.
+@MainActor
+@Suite("Connect passwords")
+struct ConnectPasswordTests {
+    let scratch = ScratchDefaults()
+    let credentials = FakeCredentialStore()
+    let catalog: KVMDeviceManager
+
+    init() {
+        catalog = Fixtures.catalog(scratch, credentials: credentials)
+    }
+
+    /// kvmd's answer to a request without a valid token.
+    nonisolated static let unauthorized = StubDevice.Response(status: 401, body: Data("""
+    {"ok": false, "result": {"error": "UnauthorizedError", "error_msg": "Unauthorized"}}
+    """.utf8))
+
+    /// A device whose token has expired, and that signs in with `password` alone.
+    nonisolated static func device(acceptingPassword password: String) -> StubDevice {
+        StubDevice { request in
+            switch request.path {
+            case "/api/auth/check":
+                return Self.unauthorized
+            case "/api/auth/login":
+                guard request.bodyText.contains("\r\n\(password)\r\n") else { return Self.unauthorized }
+                return .ok(.object(["token": .string("fresh-token")]))
+            default:
+                return .ok()
+            }
+        }
+    }
+
+    func makeConnection(to stub: StubDevice) -> SessionConnection {
+        SessionConnection(
+            catalog: catalog,
+            reach: { _ in true },
+            makeClient: { device, log in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [StubURLProtocol.self]
+                return try GLKVMClient(
+                    host: device.host,
+                    port: device.port,
+                    authToken: device.authToken.isEmpty ? nil : device.authToken,
+                    log: log,
+                    sessionConfiguration: configuration
+                )
+            }
+        )
+    }
+
+    @Test func aTypedPasswordIsSavedThroughTheCatalogsStore() async throws {
+        let stub = Self.device(acceptingPassword: "hunter2")
+        let connection = makeConnection(to: stub)
+        let key = FakeCredentialStore.key(host: stub.host, port: 443)
+
+        let connected = try await connection.connectToDevice(
+            Fixtures.device(host: stub.host),
+            password: "hunter2",
+            savePassword: true
+        )
+
+        #expect(credentials.savedPasswords == [key])
+        #expect(credentials.passwords[key] == "hunter2")
+        #expect(connected.authToken == "fresh-token")
+        #expect(stub.requests(to: "/api/auth/login").count == 1)
+    }
+
+    @Test func aTypedPasswordIsNotSavedUnlessAsked() async throws {
+        let stub = Self.device(acceptingPassword: "hunter2")
+        _ = try await makeConnection(to: stub).connectToDevice(Fixtures.device(host: stub.host), password: "hunter2")
+        #expect(credentials.savedPasswords.isEmpty)
+        #expect(credentials.passwords.isEmpty)
+    }
+
+    @Test func aSavedPasswordTheDeviceRejectsIsDeletedThroughTheCatalogsStore() async {
+        let stub = Self.device(acceptingPassword: "the-new-one")
+        let key = FakeCredentialStore.key(host: stub.host, port: 443)
+        credentials.passwords[key] = "stale"
+
+        await #expect(throws: KVMError.authenticationFailed) {
+            try await makeConnection(to: stub).connectToDevice(Fixtures.device(host: stub.host))
+        }
+
+        #expect(credentials.deletedPasswords == [key])
+        #expect(credentials.passwords[key] == nil)
+        #expect(credentials.savedPasswords.isEmpty)
+    }
+
+    @Test func aWrongTypedPasswordLeavesASavedOneAlone() async {
+        let stub = Self.device(acceptingPassword: "right")
+        let key = FakeCredentialStore.key(host: stub.host, port: 443)
+        credentials.passwords[key] = "right"
+
+        await #expect(throws: KVMError.authenticationFailed) {
+            try await makeConnection(to: stub).connectToDevice(
+                Fixtures.device(host: stub.host),
+                password: "wrong",
+                savePassword: true
+            )
+        }
+
+        #expect(credentials.deletedPasswords.isEmpty)
+        #expect(credentials.savedPasswords.isEmpty)
+        #expect(credentials.passwords[key] == "right")
+    }
+
+    @Test func anUnreachableDeviceIsNotAskedAnything() async {
+        let stub = Self.device(acceptingPassword: "hunter2")
+        let connection = SessionConnection(catalog: catalog, reach: { _ in false })
+        await #expect(throws: KVMError.connectionFailed) {
+            try await connection.connectToDevice(Fixtures.device(host: stub.host), password: "hunter2", savePassword: true)
+        }
+        #expect(stub.requests.isEmpty)
+        #expect(credentials.savedPasswords.isEmpty)
+    }
+}

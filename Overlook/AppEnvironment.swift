@@ -76,6 +76,10 @@ final class InMemoryDeviceCredentials: DeviceCredentialStore {
         passwords[Self.key(host: host, port: port)]
     }
 
+    func setPassword(_ password: String, host: String, port: Int) {
+        passwords[Self.key(host: host, port: port)] = password
+    }
+
     func deletePassword(host: String, port: Int) {
         passwords.removeValue(forKey: Self.key(host: host, port: port))
     }

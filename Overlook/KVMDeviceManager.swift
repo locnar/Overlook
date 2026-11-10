@@ -11,6 +11,7 @@ protocol DeviceCredentialStore {
     func setToken(_ token: String, host: String, port: Int) -> Bool
     func deleteToken(host: String, port: Int)
     func password(host: String, port: Int) -> String?
+    func setPassword(_ password: String, host: String, port: Int)
     func deletePassword(host: String, port: Int)
 }
 
@@ -31,6 +32,10 @@ struct KeychainDeviceCredentials: DeviceCredentialStore {
 
     func password(host: String, port: Int) -> String? {
         DevicePasswordStore.load(host: host, port: port)
+    }
+
+    func setPassword(_ password: String, host: String, port: Int) {
+        DevicePasswordStore.save(password, host: host, port: port)
     }
 
     func deletePassword(host: String, port: Int) {

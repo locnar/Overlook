@@ -17,11 +17,24 @@ final class SessionConnection: ObservableObject {
     /// The session's log, handed to the HTTP client so a certificate pinned while signing in is
     /// logged against this session's device. Nil for a connection no session owns.
     private let log: SessionLog?
+    /// Whether the device accepts a TCP connection before anything is asked of it.
+    private let reach: (KVMDevice) async -> Bool
+    /// The HTTP client a connect signs in with.
+    private let makeClient: (KVMDevice, SessionLog?) throws -> GLKVMClient
     private var cancellables = Set<AnyCancellable>()
 
-    init(catalog: KVMDeviceManager, log: SessionLog? = nil) {
+    /// `reach` and `makeClient` are for tests, which answer the TCP check themselves and hand
+    /// back a client whose requests a stub answers. The app passes neither.
+    init(
+        catalog: KVMDeviceManager,
+        log: SessionLog? = nil,
+        reach: @escaping (KVMDevice) async -> Bool = { await SessionConnection.isReachable($0) },
+        makeClient: @escaping (KVMDevice, SessionLog?) throws -> GLKVMClient = { try GLKVMClient(device: $0, log: $1) }
+    ) {
         self.catalog = catalog
         self.log = log
+        self.reach = reach
+        self.makeClient = makeClient
 
         // What is cleared matches what the catalog cleared when it held the connection itself:
         // removing an entry drops only the device, forgetting an address drops the client too.
@@ -62,8 +75,7 @@ final class SessionConnection: ObservableObject {
         savePassword: Bool = false
     ) async throws -> KVMDevice {
         // Validate device connection
-        let isValid = try await validateDeviceConnection(device)
-        guard isValid else {
+        guard await reach(device) else {
             throw KVMError.connectionFailed
         }
         
@@ -81,7 +93,7 @@ final class SessionConnection: ObservableObject {
             finalDevice = device
         }
 
-        guard let client = try? GLKVMClient(device: finalDevice, log: log) else {
+        guard let client = try? makeClient(finalDevice, log) else {
             throw KVMError.connectionFailed
         }
 
@@ -112,8 +124,10 @@ final class SessionConnection: ObservableObject {
                 let token = try await client.authLogin(user: user, password: candidate)
                 client.authToken = token
 
+                // Through the catalog's credential store: the login keychain in the app, under
+                // the same service and account as always, and memory under the test host.
                 if provided != nil, savePassword {
-                    DevicePasswordStore.save(candidate, host: finalDevice.host, port: finalDevice.port)
+                    catalog.credentials.setPassword(candidate, host: finalDevice.host, port: finalDevice.port)
                 }
 
                 var updated = finalDevice
@@ -129,7 +143,7 @@ final class SessionConnection: ObservableObject {
                 if let saved {
                     // Stale saved password: drop it so the operator is re-prompted rather than
                     // looping on it.
-                    DevicePasswordStore.delete(host: saved.address.host, port: saved.address.port)
+                    catalog.credentials.deletePassword(host: saved.address.host, port: saved.address.port)
                 }
                 throw KVMError.authenticationFailed
             }
@@ -151,7 +165,8 @@ final class SessionConnection: ObservableObject {
         return false
     }
 
-    private func validateDeviceConnection(_ device: KVMDevice) async throws -> Bool {
+    /// Whether `device` accepts a TCP connection within 5 seconds.
+    nonisolated static func isReachable(_ device: KVMDevice) async -> Bool {
         guard let port = NWEndpoint.Port(rawValue: UInt16(device.port)) else {
             return false
         }
