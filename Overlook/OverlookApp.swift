@@ -99,8 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let terminationGraceNanoseconds: UInt64 = 3_000_000_000
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hosting the tests, the app adds no status item and no system-wide key monitor (⇧⌘V
-        // opens a modal Quick Connect), and leaves Xcode in front.
+        // Hosting the tests, the app adds no status item and leaves Xcode in front.
         guard !AppEnvironment.isHostingTests else { return }
 
         menuBarAgent = MenuBarAgent(

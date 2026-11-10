@@ -2071,34 +2071,6 @@ extension InputManager {
     }
 }
 
-// MARK: - Accessibility Permissions Helper
-extension InputManager {
-    func checkAccessibilityPermissions() -> Bool {
-        return AXIsProcessTrusted()
-    }
-    
-    func requestAccessibilityPermissions() {
-        let options = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true]
-        AXIsProcessTrustedWithOptions(options as CFDictionary)
-    }
-    
-    func showAccessibilityPermissionDialog() {
-        let alert = NSAlert()
-        alert.messageText = "Accessibility Permissions Required"
-        alert.informativeText = "Overlook needs accessibility permissions to capture keyboard and mouse input for remote control. Please grant permissions in System Preferences > Security & Privacy > Privacy > Accessibility."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open System Preferences")
-        alert.addButton(withTitle: "Cancel")
-        
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            // Open System Preferences to Accessibility section
-            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-            NSWorkspace.shared.open(url)
-        }
-    }
-}
-
 // MARK: - Input Validation and Filtering
 extension InputManager {
     private func shouldCaptureKeyEvent(_ event: NSEvent) -> Bool {

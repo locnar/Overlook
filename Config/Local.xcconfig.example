@@ -11,7 +11,7 @@
 // Signing with a real team is what makes a build stable. An empty team makes Xcode ad-hoc sign
 // ("Sign to Run Locally"), and an ad-hoc signature's designated requirement is the cdhash, which
 // changes on every build: macOS sees each build as a different app and throws away its TCC grants
-// (Input Monitoring, Accessibility, Microphone) and its keychain ACLs. A Team ID makes the
+// (such as Microphone) and its keychain ACLs. A Team ID makes the
 // requirement "this team, this bundle ID", which survives rebuilds. It also lets Xcode re-sign the
 // embedded WebRTC.framework with your identity, which is what the disable-library-validation
 // entitlement exists to work around.

@@ -78,7 +78,7 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **Auth errors**: any connection failure (timeout, refusal, 5xx) was reported as "Authentication failed" and prompted for a password; a wrong password surfaced as a generic connection error.
 - **Password retention**: typed passwords stayed in view state after a connect sheet closed, and reappeared in the field next time.
 - **Tailscale install**: installTailscale() downloaded a binary over the network, chmod +x'd it in a temp directory and ran it.
-- **Global key monitor**: the menu bar agent's global keyDown monitor was never stored or removed, so it received every keystroke system-wide for the life of the process.
+- **Global key monitor**: the menu bar agent's global keyDown monitor was never stored or removed, so it received every keystroke system-wide for the life of the process. It is gone altogether now: the menu bar has no global shortcuts (see “Menu bar menu” under Keyboard shortcuts).
 - **libwebrtc**: pinned to an early-2023 M109 build with memory-safety fixes outstanding.
 
 #### Signaling and connection
@@ -288,7 +288,7 @@ You can enable OCR mode from:
 - The main toolbar button (document/text icon).
 - The fullscreen hover controls.
 - **Edit › Toggle OCR Selection**, or `⇧⌘C` (also while keys are being sent to the target).
-- The menu bar item (also supports a global shortcut).
+- The menu bar item's **Enable OCR**.
 
 When OCR mode is enabled:
 
@@ -389,15 +389,11 @@ Each acts once per press: holding the keys down does not repeat it.
 
 Each one needs exactly its own modifiers. With `⌥` or `⌃` also held (`⌃⇧⌘V`, `⌥⇧⌘C`, `⌥⇧⌘S`, `⌥⇧⌘T`), or `⇧` dropped from a `⇧⌘` chord (`⌘C`, `⌘V`, `⌘S`, `⌘T`), or added to `⌘Q`, the keystroke goes to the target as usual. Caps Lock and Fn don't count either way.
 
-### Menu bar global shortcuts
+### Menu bar menu
 
-The menu bar agent listens for global shortcuts using `⌘⇧` modifiers:
+Overlook has no global shortcuts: nothing it does is triggered by keys pressed while another app is in front. The menu bar item's menu (right-click the item) has **Quick Connect**, **Scan for Devices**, **Enable OCR** and the rest; choose them with the mouse. The key equivalents shown next to them (`⌘K` Quick Connect, `⇧⌘D` Scan for Devices, `⌘O` Enable OCR) only work while that menu is open.
 
-- `⌘⇧O`: Toggle OCR.
-- `⌘⇧D`: Scan for devices.
-- `⌘⇧V`: Open Quick Connect.
-
-(These are intended as fast, “from anywhere” actions.)
+Earlier versions had `⇧⌘V` (Quick Connect), `⇧⌘O` (OCR) and `⇧⌘D` (scan) as global shortcuts. They were removed because they could not stop the keystroke reaching the app in front, so they fired alongside that app's own shortcuts.
 
 ---
 

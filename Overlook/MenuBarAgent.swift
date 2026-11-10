@@ -5,10 +5,10 @@ import Combine
 @MainActor
 class MenuBarAgent: NSObject, ObservableObject {
     private var statusItem: NSStatusItem?
-    private var menu: NSMenu?
+    /// The status menu, built by `createMenu`.
+    private(set) var menu: NSMenu?
     private var popover: NSPopover?
     private var monitoringWindow: NSWindow?
-    private var globalKeyMonitor: Any?
 
     private let kvmDeviceManager: KVMDeviceManager
     private let registry: SessionRegistry
@@ -56,7 +56,6 @@ class MenuBarAgent: NSObject, ObservableObject {
     func setup() {
         createStatusItem()
         createMenu()
-        setupKeyboardShortcuts()
         bindManagers()
     }
 
@@ -191,7 +190,12 @@ class MenuBarAgent: NSObject, ObservableObject {
     
     /// Show Overlook; the connected sessions; the actions on the active one; then connecting and
     /// managing devices, OCR, Preferences and Quit. The session part is filled in by `apply`.
-    private func createMenu() {
+    ///
+    /// Every item works by clicking it. None of the key equivalents is global: Overlook installs no
+    /// system-wide key monitor, so they never act while another app is in front. (It once had one
+    /// for ⇧⌘V, ⇧⌘O and ⇧⌘D; a global monitor cannot keep the keystroke from the frontmost app, so
+    /// it fired alongside that app's own shortcuts.)
+    func createMenu() {
         let menu = NSMenu()
         // Enabled states come from the model (`apply`), not from validation as the menu opens.
         menu.autoenablesItems = false
@@ -729,30 +733,6 @@ class MenuBarAgent: NSObject, ObservableObject {
         }
     }
     
-    private func setupKeyboardShortcuts() {
-        // Global keyboard shortcuts for quick actions. Kept so cleanup() can remove it; a global
-        // monitor that is never removed keeps receiving every keystroke system-wide.
-        guard globalKeyMonitor == nil else { return }
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleGlobalKeyEvent(event)
-        }
-    }
-    
-    private func handleGlobalKeyEvent(_ event: NSEvent) {
-        guard event.modifierFlags.contains([.command, .shift]) else { return }
-        
-        switch event.keyCode {
-        case 9: // V key - Quick connect
-            showQuickConnect()
-        case 31: // O key - Toggle OCR
-            toggleOCR()
-        case 2: // D key - Scan devices (was R; ⇧⌘R starts and stops a recording in the app now)
-            scanForDevices()
-        default:
-            break
-        }
-    }
-    
     func updateAvailableDevices(_ devices: [KVMDevice]) {
         availableDevices = devices
         
@@ -762,10 +742,6 @@ class MenuBarAgent: NSObject, ObservableObject {
     }
     
     func cleanup() {
-        if let globalKeyMonitor {
-            NSEvent.removeMonitor(globalKeyMonitor)
-            self.globalKeyMonitor = nil
-        }
         statusItem = nil
         menu = nil
         popover = nil

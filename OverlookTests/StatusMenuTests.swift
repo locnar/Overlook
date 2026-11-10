@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Overlook
@@ -157,5 +158,104 @@ struct StatusMenuTests {
         #expect(menu.model.connected.map(\.title) == ["Rack 2"])
         #expect(menu.model.connected.map(\.isActive) == [true])
         #expect(menu.model.disconnectTitle == "Disconnect Rack 2")
+    }
+}
+
+/// The menu bar agent has no system-wide shortcuts. It once installed a global keyDown monitor for
+/// ⇧⌘V, ⇧⌘O and ⇧⌘D, which could not keep the keystroke from the app in front and so clashed with
+/// that app's own shortcuts. The status menu's items work by clicking; their key equivalents act
+/// only while the menu is open.
+@MainActor
+@Suite("Menu bar agent")
+struct MenuBarAgentTests {
+    let scratch = ScratchDefaults()
+    let registry: SessionRegistry
+
+    init() {
+        let catalog = KVMDeviceManager(
+            defaults: scratch.defaults,
+            credentials: FakeCredentialStore(),
+            trustStore: Fixtures.trustStore(scratch)
+        )
+        let scratch = self.scratch
+        registry = SessionRegistry(catalog: catalog) { catalog in
+            ConsoleSession(
+                catalog: catalog,
+                defaults: scratch.defaults,
+                link: RecordingSessionLink(catalog: catalog),
+                audioPreferences: AudioPreferences(defaults: scratch.defaults),
+                connectionLog: .inMemory()
+            )
+        }
+    }
+
+    /// An agent with its status menu built. No status item is added to the menu bar.
+    private func makeAgent() -> MenuBarAgent {
+        let agent = MenuBarAgent(registry: registry, showMainWindow: {})
+        agent.createMenu()
+        return agent
+    }
+
+    @Test func keepsNoKeyMonitor() {
+        let agent = makeAgent()
+        var mirror: Mirror? = Mirror(reflecting: agent)
+        var labels: [String] = []
+        while let current = mirror {
+            labels += current.children.compactMap(\.label)
+            mirror = current.superclassMirror
+        }
+        #expect(labels.contains("menu"), "the mirror should see the agent's stored properties")
+        // Matches the old `globalKeyMonitor` or any other key or event monitor, but not
+        // `monitoringWindow`, an unrelated window property.
+        let monitors = labels.filter { label in
+            ["keymonitor", "eventmonitor", "globalmonitor"].contains { label.lowercased().contains($0) }
+        }
+        #expect(monitors.isEmpty, "\(monitors)")
+    }
+
+    /// No source file in the app installs a global event monitor. (Local monitors, which see only
+    /// Overlook's own events, are fine.)
+    @Test func theAppInstallsNoGlobalEventMonitor() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Overlook", isDirectory: true)
+        let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "swift" }
+        #expect(files.contains { $0.lastPathComponent == "MenuBarAgent.swift" })
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            #expect(!text.contains("addGlobalMonitorForEvents"), "\(file.lastPathComponent)")
+        }
+    }
+
+    @Test func theStatusMenuItemsStillHaveTheirActions() throws {
+        let agent = makeAgent()
+        let menu = try #require(agent.menu)
+        let titles = [
+            StatusMenuModel.showTitle, StatusMenuModel.screenshotTitle, "Start Recording", "Disconnect",
+            "Quick Connect", "Scan for Devices", "Enable OCR", "Preferences...", "Quit Overlook",
+        ]
+        for title in titles {
+            let item = try #require(menu.items.first { $0.title == title }, "\(title) is missing")
+            let action = try #require(item.action, "\(title) has no action")
+            #expect(item.target === agent, "\(title)")
+            #expect(agent.responds(to: action), "\(title)")
+        }
+        #expect(menu.items.first { $0.title == "Devices" }?.submenu != nil)
+    }
+
+    /// The key equivalents are unchanged; they act only while the menu is open.
+    @Test func theMenuKeyEquivalentsAreUnchanged() throws {
+        let menu = try #require(makeAgent().menu)
+        func item(_ title: String) throws -> NSMenuItem {
+            try #require(menu.items.first { $0.title == title }, "\(title) is missing")
+        }
+        #expect(try item("Quick Connect").keyEquivalent == "k")
+        #expect(try item("Quick Connect").keyEquivalentModifierMask == [.command])
+        #expect(try item("Scan for Devices").keyEquivalent == "d")
+        #expect(try item("Scan for Devices").keyEquivalentModifierMask == [.command, .shift])
+        #expect(try item("Enable OCR").keyEquivalent == "o")
+        #expect(try item("Enable OCR").keyEquivalentModifierMask == [.command])
     }
 }
