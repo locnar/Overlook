@@ -41,6 +41,13 @@ final class ConsoleSession: ObservableObject {
     /// The registry listing this session, which a connect asks whether another window already
     /// shows the device.
     weak var registry: SessionRegistry?
+    /// The device catalog every session shares.
+    let catalog: KVMDeviceManager
+    /// A notice for this window that stays until it is dismissed or the window connects again:
+    /// "<device> is already open in another window." after linking an address (`answerLink`).
+    @Published var sessionNotice: CaptureManager.Notice?
+    /// Sees every `bringWindowForward`. Only the tests set it: a session in a test has no window.
+    var bringForwardObserver: (() -> Void)?
     /// The window showing this session, once it exists.
     private(set) weak var window: NSWindow?
     /// The device a connect is signing in to, from the moment it starts until the device has
@@ -80,6 +87,7 @@ final class ConsoleSession: ObservableObject {
     ) {
         // Made here rather than as the default argument, which is evaluated outside the main actor.
         self.link = link ?? LiveSessionLink()
+        self.catalog = catalog
         let log = SessionLog(destination: connectionLog ?? .shared)
         self.log = log
         let connection = SessionConnection(catalog: catalog, log: log)
@@ -290,6 +298,8 @@ final class ConsoleSession: ObservableObject {
             return .openElsewhere(other)
         }
 
+        sessionNotice = nil
+
         // From here on this session's lines name this device, the hang-up of a previous one
         // included: the device it is talking to now is the one an operator would look for.
         log.deviceLabel = SessionLog.label(host: device.host, port: device.port)
@@ -398,6 +408,48 @@ final class ConsoleSession: ObservableObject {
         connection.connectedDevice == nil && connectingAddress == nil
     }
 
+    // MARK: - Linking an address
+
+    /// What the operator's answer to "This is <device>" did.
+    enum LinkOutcome {
+        /// Keep separate, or the device is no longer saved: nothing changed.
+        case unchanged
+        /// The address is the device's now, and so is this session.
+        case linked(KVMDevice)
+        /// The address is the device's now, but `other`'s window already had the device open: that
+        /// window came forward, and this session disconnected and shows a notice.
+        case openElsewhere(KVMDevice, other: ConsoleSession)
+    }
+
+    /// Carries out the answer to the link prompt shown after this session connected. Add address
+    /// adds the address to the device (`DeviceLinkPrompt.answer`). If the device is open in another
+    /// window, one window per device holds: that window comes forward, and this one disconnects as
+    /// the operator's Disconnect does (a recording is stopped and saved) and stays open,
+    /// disconnected, with "<device> is already open in another window."
+    @discardableResult
+    func answerLink(_ prompt: DeviceLinkPrompt, _ answer: DeviceLinkPrompt.Answer) -> LinkOutcome {
+        // Asked before linking: once linked, this session is the device's too.
+        let other = answer == .addAddress ? registry?.session(showing: prompt.candidate, excluding: self) : nil
+        guard let linked = prompt.answer(answer, catalog: catalog) else { return .unchanged }
+        guard let other else { return .linked(linked) }
+
+        log.notice(.lifecycle, "\(linked.displayName) is already open in another window; disconnecting this one")
+        disconnect()
+        sessionNotice = Self.alreadyOpenNotice(deviceName: linked.displayName)
+        other.bringWindowForward()
+        return .openElsewhere(linked, other: other)
+    }
+
+    static func alreadyOpenNotice(deviceName: String) -> CaptureManager.Notice {
+        CaptureManager.Notice(
+            title: "\(deviceName) is already open in another window.",
+            detail: nil,
+            fileURL: nil,
+            isError: false,
+            systemImage: "macwindow.on.rectangle"
+        )
+    }
+
     // MARK: - The window
 
     /// Tells the session which window shows it. Keyboard and mouse follow that window's key
@@ -409,6 +461,7 @@ final class ConsoleSession: ObservableObject {
 
     /// Brings this session's window to the front, and the app with it.
     func bringWindowForward() {
+        bringForwardObserver?()
         guard let window else { return }
         NSApp.activate()
         if window.isMiniaturized {

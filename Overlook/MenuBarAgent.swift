@@ -540,7 +540,9 @@ class MenuBarAgent: NSObject, ObservableObject {
                 showError(title: "WebRTC connect failed", message: String(describing: streamError))
             }
             if let prompt = DeviceLinkPrompt.after(connecting: connected, savedBefore: savedBefore, catalog: kvmDeviceManager) {
-                prompt.answer(askToLink(prompt), catalog: kvmDeviceManager)
+                // Add address while the device is open in another window brings that window
+                // forward and disconnects this one (`ConsoleSession.answerLink`).
+                session.answerLink(prompt, askToLink(prompt))
             }
         case .needsPassword:
             guard password == nil else {

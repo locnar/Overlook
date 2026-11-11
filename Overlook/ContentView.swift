@@ -271,16 +271,30 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            if let notice = captureManager.notice {
-                CaptureNoticeView(
-                    notice: notice,
-                    onShow: { url in captureManager.revealInFinder(url) },
-                    onShowText: { text in session.showRecognizedText(text) },
-                    onDismiss: { captureManager.dismissNotice() }
-                )
+            // The session's own notice (the device is open in another window) stays until
+            // dismissed; a capture notice can come and go under it.
+            if session.sessionNotice != nil || captureManager.notice != nil {
+                VStack(alignment: .trailing, spacing: 8) {
+                    if let notice = session.sessionNotice {
+                        CaptureNoticeView(
+                            notice: notice,
+                            onShow: { _ in },
+                            onDismiss: { session.sessionNotice = nil }
+                        )
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    if let notice = captureManager.notice {
+                        CaptureNoticeView(
+                            notice: notice,
+                            onShow: { url in captureManager.revealInFinder(url) },
+                            onShowText: { text in session.showRecognizedText(text) },
+                            onDismiss: { captureManager.dismissNotice() }
+                        )
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
                 .padding(14)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             if panels.isAnyOpen {
@@ -378,6 +392,7 @@ struct ContentView: View {
         // which also covers call sites that flip the flags without `withAnimation`.
         .animation(.easeInOut(duration: 0.2), value: panels.openPanel)
         .animation(.easeInOut(duration: 0.2), value: captureManager.notice)
+        .animation(.easeInOut(duration: 0.2), value: session.sessionNotice)
         .animation(.easeInOut(duration: 0.2), value: captureManager.isRecording)
         .background(
             GeometryReader { proxy in
@@ -533,12 +548,17 @@ struct ContentView: View {
             presenting: linkPrompt
         ) { prompt in
             Button(DeviceLinkPrompt.keepTitle, role: .cancel) {
-                prompt.answer(.keepSeparate, catalog: kvmDeviceManager)
+                session.answerLink(prompt, .keepSeparate)
                 linkPrompt = nil
             }
             Button(DeviceLinkPrompt.addTitle) {
-                if let linked = prompt.answer(.addAddress, catalog: kvmDeviceManager) {
+                switch session.answerLink(prompt, .addAddress) {
+                case .linked(let linked), .openElsewhere(let linked, _):
+                    // Open elsewhere: this window is disconnected now, with the device still
+                    // chosen in it and a notice saying where it is open.
                     selectedAddress = linked.address
+                case .unchanged:
+                    break
                 }
                 linkPrompt = nil
             }
