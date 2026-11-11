@@ -78,6 +78,29 @@ struct QualityPresetTests {
     func anyOtherStoredValueShowsCustom(_ streamQuality: Int) {
         #expect(WebUISettingsActions.videoQualityPresetTag(forStreamQuality: streamQuality) == WebUISettingsPanelModel.videoQualityCustomTag)
     }
+
+    @Test func noStoredValueShowsCustom() {
+        #expect(WebUISettingsActions.videoQualityPresetTag(forStreamQuality: nil) == WebUISettingsPanelModel.videoQualityCustomTag)
+    }
+
+    /// A missing value, or one that is not a whole number, reads as none rather than as Medium.
+    @Test(arguments: [nil, JSONValue.string("medium"), .string("1"), .double(2.5), .bool(true), .null])
+    func aMissingOrUnreadableValueDecodesAsNone(_ stored: JSONValue?) throws {
+        var file: GLKVMJSONObject = ["theme_mode": .string("0")]
+        if let stored {
+            file["stream_quality"] = stored
+        }
+        let config = try JSONDecoder().decode(GLKVMSystemConfig.self, from: JSONEncoder().encode(file))
+        #expect(config.streamQuality == nil)
+        // And is not written back as anything.
+        #expect(try config.jsonObject()["stream_quality"] == nil)
+    }
+
+    @Test func aWholeNumberDecodesAsItself() throws {
+        let file: GLKVMJSONObject = ["stream_quality": .int(3)]
+        let config = try JSONDecoder().decode(GLKVMSystemConfig.self, from: JSONEncoder().encode(file))
+        #expect(config.streamQuality == 3)
+    }
 }
 
 /// A device for the settings panel: the user config, a streamer that reports `streamerParams`,
@@ -244,6 +267,46 @@ struct QualityPresetApplyTests {
         await fixture.actions.load()
 
         #expect(fixture.model.selectedVideoQualityPreset == WebUISettingsPanelModel.videoQualityCustomTag)
+    }
+
+    @Test(arguments: [nil, JSONValue.string("medium"), .double(2.5)])
+    func loadingAMissingOrUnreadableValueSelectsCustom(_ stored: JSONValue?) async throws {
+        config.stored["stream_quality"] = stored
+        let fixture = try makeFixture()
+        fixture.model.selectedVideoQualityPreset = QualityPreset.medium.rawValue
+
+        await fixture.actions.load()
+
+        #expect(fixture.model.selectedVideoQualityPreset == WebUISettingsPanelModel.videoQualityCustomTag)
+        #expect(fixture.model.errorHistory.isEmpty)
+        #expect(setParamsQueries(fixture).isEmpty)
+        #expect(fixture.device.requests(to: "/api/system/set_config").isEmpty)
+    }
+
+    @Test(arguments: [nil, JSONValue.string("medium"), .double(2.5)])
+    func anotherSettingsWriteKeepsTheDevicesValue(_ stored: JSONValue?) async throws {
+        config.stored["stream_quality"] = stored
+        let fixture = try makeFixture()
+        await fixture.actions.load()
+
+        fixture.actions.updateConfig { $0.themeMode = "1" }
+
+        #expect(await waitUntil { config.stored["theme_mode"] == .string("1") && !fixture.model.isApplying })
+        #expect(config.stored["stream_quality"] == stored)
+        #expect(config.stored["language"] == .string("de"))
+    }
+
+    @Test(arguments: [nil, JSONValue.string("medium")])
+    func pickingAPresetReplacesAMissingOrUnreadableValue(_ stored: JSONValue?) async throws {
+        config.stored["stream_quality"] = stored
+        let fixture = try makeFixture()
+        await fixture.actions.load()
+
+        // Medium, which an unreadable value used to be shown as, and so was never written.
+        await fixture.actions.applyVideoQualityPreset(QualityPreset.medium.rawValue)
+
+        #expect(await waitUntil { config.stored["stream_quality"] == .int(1) && !fixture.model.isApplying })
+        #expect(fixture.model.config?.streamQuality == 1)
     }
 
     @Test func streamerParamsNoLongerPickThePreset() async throws {

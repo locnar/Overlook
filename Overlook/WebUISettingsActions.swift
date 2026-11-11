@@ -159,9 +159,9 @@ extension WebUISettingsActions {
     // MARK: - Video quality presets
 
     /// The Quality picker entry for a stored `stream_quality`: the preset with that value, or
-    /// Custom for any other value (Auto, 5, among them).
-    nonisolated static func videoQualityPresetTag(forStreamQuality streamQuality: Int) -> Int {
-        QualityPreset(rawValue: streamQuality)?.rawValue ?? WebUISettingsPanelModel.videoQualityCustomTag
+    /// Custom for any other value (Auto, 5, among them) and for none (missing, or not a number).
+    nonisolated static func videoQualityPresetTag(forStreamQuality streamQuality: Int?) -> Int {
+        streamQuality.flatMap { QualityPreset(rawValue: $0)?.rawValue } ?? WebUISettingsPanelModel.videoQualityCustomTag
     }
 
     /// Whether the device's current EDID, as last read from it, is a 4K catalog entry. False

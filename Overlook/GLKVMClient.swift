@@ -37,7 +37,10 @@ struct GLKVMSystemConfigShortcut: Codable, Hashable {
 struct GLKVMSystemConfig: Codable, Hashable {
     var shortcuts: [GLKVMSystemConfigShortcut]
     var orientation: Int
-    var streamQuality: Int
+    /// Nil when the device has no `stream_quality` or holds something other than a whole number.
+    /// It is then left out of the JSON this model writes, so a settings write keeps the device's
+    /// own value until the operator picks a Quality preset.
+    var streamQuality: Int?
     var videoMode: String
     var showCursor: Bool
     var mousePolling: Int
@@ -79,7 +82,7 @@ struct GLKVMSystemConfig: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         shortcuts = (try? container.decode([GLKVMSystemConfigShortcut].self, forKey: .shortcuts)) ?? []
         orientation = (try? container.decode(Int.self, forKey: .orientation)) ?? 0
-        streamQuality = (try? container.decode(Int.self, forKey: .streamQuality)) ?? 1
+        streamQuality = try? container.decode(Int.self, forKey: .streamQuality)
         videoMode = (try? container.decode(String.self, forKey: .videoMode)) ?? ""
         showCursor = (try? container.decode(Bool.self, forKey: .showCursor)) ?? true
         mousePolling = (try? container.decode(Int.self, forKey: .mousePolling)) ?? 10
