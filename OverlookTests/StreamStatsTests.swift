@@ -123,3 +123,63 @@ struct StreamStatsTests {
         #expect(snapshot.audioKbps == nil)
     }
 }
+
+/// Two ticks of one connection whose reads overlap: the one that started first and finished last
+/// is dropped, not applied over the newer numbers.
+@MainActor
+@Suite("Stream stats tick order")
+struct StreamStatsTickOrderTests {
+    let scratch = ScratchDefaults()
+    let manager: WebRTCManager
+
+    init() {
+        manager = WebRTCManager(
+            audioPreferences: AudioPreferences(defaults: scratch.defaults),
+            log: SessionLog(destination: .inMemory())
+        )
+    }
+
+    private func video(bytes: Int64, packetsLost: Int) -> [String: StatsEntry] {
+        ["IT01V": StatsEntry(type: "inbound-rtp", values: [
+            "kind": "video",
+            "bytesReceived": NSNumber(value: bytes),
+            "packetsLost": NSNumber(value: packetsLost),
+        ])]
+    }
+
+    private var snapshot: StreamTelemetry { manager.telemetry.snapshot }
+
+    @Test func aSlowTickOvertakenByTheNextIsDropped() async throws {
+        let held = StreamStatsTests.HeldRead()
+        // `statistics()` taking more than the 1 s interval: this tick is still reading when the
+        // next one starts.
+        let slowTick = Task {
+            await manager.measureStreamStats(
+                readVideo: { await held.read(video(bytes: 1_000, packetsLost: 7)) },
+                readAudio: nil
+            )
+        }
+        #expect(await waitUntil { held.hasStarted })
+
+        await manager.measureStreamStats(readVideo: { video(bytes: 9_000_000, packetsLost: 8) }, readAudio: nil)
+        #expect(snapshot.videoPacketsLost == 8)
+
+        await held.latch.open()
+        await slowTick.value
+        #expect(snapshot.videoPacketsLost == 8, "the older numbers did not replace the newer")
+
+        // The baseline is still the newer tick's: had the slow tick's 1 kB become it, this would
+        // show a burst of tens of thousands of kbps.
+        try await Task.sleep(for: .milliseconds(200))
+        await manager.measureStreamStats(readVideo: { video(bytes: 9_025_000, packetsLost: 8) }, readAudio: nil)
+        let kbps = try #require(snapshot.videoKbps)
+        #expect(kbps < 10_000)
+    }
+
+    @Test func ticksThatFinishInOrderAreAllApplied() async {
+        await manager.measureStreamStats(readVideo: { video(bytes: 0, packetsLost: 1) }, readAudio: nil)
+        #expect(snapshot.videoPacketsLost == 1)
+        await manager.measureStreamStats(readVideo: { video(bytes: 1_000, packetsLost: 2) }, readAudio: nil)
+        #expect(snapshot.videoPacketsLost == 2)
+    }
+}

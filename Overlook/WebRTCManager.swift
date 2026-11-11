@@ -410,6 +410,11 @@ class WebRTCManager: NSObject, ObservableObject {
     private var connectionTimer: Timer?
 
     private var lastConnectedDevice: KVMDevice?
+    /// Stats ticks in the order they started, and the newest one applied. A tick whose reads take
+    /// longer than the 1 s interval can finish after the next one; it is then dropped rather than
+    /// applied over newer numbers (and made the kbps baseline).
+    private var statsTicksStarted = 0
+    private var newestStatsTickApplied = 0
 
     private let audioDevicesListenerQueue = DispatchQueue(label: "com.overlook.audio-device-change")
     private var audioDevicesListenerBlock: AudioObjectPropertyListenerBlock?
@@ -2102,6 +2107,8 @@ class WebRTCManager: NSObject, ObservableObject {
         // connection's numbers in the new session's panel. So nothing is read from or written to
         // that state until both reports are in, and then only if the connection is the same one.
         let generation = connectionGeneration
+        statsTicksStarted += 1
+        let tick = statsTicksStarted
         let videoReport = await readVideo()
         var audioReport: [String: StatsEntry]?
         if let readAudio {
@@ -2111,6 +2118,11 @@ class WebRTCManager: NSObject, ObservableObject {
             self.log.debug(.stream, "Dropped a stats sample from a connection that has since been replaced")
             return
         }
+        guard tick > newestStatsTickApplied else {
+            self.log.debug(.stream, "Dropped a stats sample that finished after a newer one")
+            return
+        }
+        newestStatsTickApplied = tick
 
         let video = inboundVideoSample(from: videoReport)
 

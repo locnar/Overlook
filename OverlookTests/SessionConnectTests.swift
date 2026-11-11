@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import Overlook
 
@@ -418,5 +419,101 @@ struct VideoModeTests {
         session.connection.glkvmClient = try stub.makeClient()
         #expect(await reader() == "gl_webrtc")
         #expect(stub.requests(to: "/api/system/get_config").count == 1)
+    }
+}
+
+// MARK: - Certificate pins
+
+/// `SessionConnection` keeps certificate pins in its catalog's trust store, as it keeps passwords
+/// in the catalog's credential store, so a test's connection uses the test's own store and never
+/// the app's.
+@MainActor
+@Suite("Connection trust store")
+struct ConnectionTrustStoreTests {
+    let scratch = ScratchDefaults()
+
+    /// Hands a value that is not `Sendable` to a stub's handler.
+    final class Carried<Value>: @unchecked Sendable {
+        let value: Value
+        init(_ value: Value) { self.value = value }
+    }
+
+    /// A self-signed certificate made for these tests (CN overlook-test.invalid); no system trusts it.
+    nonisolated static let certificateDER = Data(base64Encoded: """
+        MIIBlzCCAT2gAwIBAgIUbXObFBwfJ0n3Vmib10k4Br64nW8wCgYIKoZIzj0EAwIwIDEeMBwGA1UEAwwVb3Zlcmxvb2stdGVzdC5p\
+        bnZhbGlkMCAXDTI2MTExMTAwNTUwOVoYDzIxMjYxMDE4MDA1NTA5WjAgMR4wHAYDVQQDDBVvdmVybG9vay10ZXN0LmludmFsaWQw\
+        WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQjMObOx8Cye8YYgDmGlRcKmlSK9BD6Ha8wCz6oGxAe3MO6jYf/m6YEZaLJuoWSAszT\
+        z5DGAMy7amvMpKQxjC13o1MwUTAdBgNVHQ4EFgQUCNNOf6qcxUqd1ZPjpWOt61FkyKkwHwYDVR0jBBgwFoAUCNNOf6qcxUqd1ZPj\
+        pWOt61FkyKkwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAyHOm1i8CqlQh5AKfGEqYzs7Dpn0o/xsQsXI24WPc\
+        6VoCIDDbKdfyn6ftXVW7ycceoiXzEswtnWnyQaOxC+X9Tdtw
+        """)!
+
+    /// The test certificate as a server would present it, evaluated without the network.
+    private static func presented() throws -> (trust: SecTrust, fingerprint: String) {
+        let certificate = try #require(SecCertificateCreateWithData(nil, certificateDER as CFData))
+        var trust: SecTrust?
+        #expect(SecTrustCreateWithCertificates(certificate, SecPolicyCreateBasicX509(), &trust) == errSecSuccess)
+        let made = try #require(trust)
+        SecTrustSetNetworkFetchAllowed(made, false)
+        return (made, DeviceTrustStore.fingerprint(of: certificate))
+    }
+
+    /// A stub device, pinned under another certificate in a trust store of the test's own, and a
+    /// catalog with that store.
+    private func pinnedDevice() -> (StubDevice, DeviceTrustStore, KVMDeviceManager) {
+        let stub = StubDevice()
+        scratch.defaults.set([DeviceTrustStore.key(host: stub.host, port: 443): "aa"], forKey: "overlook.trusted_certificates.v1")
+        let trust = DeviceTrustStore(defaults: scratch.defaults)
+        return (stub, trust, Fixtures.catalog(scratch, trust: trust))
+    }
+
+    private func makeConnection(catalog: KVMDeviceManager) -> SessionConnection {
+        SessionConnection(
+            catalog: catalog,
+            reach: { _ in true },
+            makeClient: { device, log in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [StubURLProtocol.self]
+                return try GLKVMClient(host: device.host, port: device.port, log: log, sessionConfiguration: configuration)
+            }
+        )
+    }
+
+    @Test func aChangedCertificateIsFoundInTheCatalogsStore() async throws {
+        let (stub, trust, catalog) = pinnedDevice()
+        #expect(trust.pinnedFingerprint(host: stub.host, port: 443) == "aa")
+        let presented = try Self.presented()
+        let carried = Carried((trust, presented.trust))
+        let host = stub.host
+        // At sign-in the device presents another certificate. The stub records the mismatch where
+        // the client's TLS check would, in the catalog's store, and the request fails.
+        stub.setHandler { _ in
+            _ = carried.value.0.evaluate(carried.value.1, host: host, port: 443)
+            return StubDevice.Response(status: 502, body: Data())
+        }
+
+        await #expect(throws: KVMError.certificateChanged(host: host, port: 443, fingerprint: presented.fingerprint)) {
+            try await makeConnection(catalog: catalog).connectToDevice(Fixtures.device(host: host))
+        }
+
+        #expect(trust.pendingMismatch(host: host, port: 443)?.actual == presented.fingerprint)
+        // The app's store was never asked.
+        #expect(DeviceTrustStore.shared.pendingMismatch(host: host, port: 443) == nil)
+        #expect(DeviceTrustStore.shared.pinnedFingerprint(host: host, port: 443) == nil)
+    }
+
+    @Test func aConnectClearsAStaleMismatchInTheCatalogsStore() async throws {
+        let (stub, trust, catalog) = pinnedDevice()
+        let presented = try Self.presented()
+        _ = trust.evaluate(presented.trust, host: stub.host, port: 443)
+        #expect(trust.pendingMismatch(host: stub.host, port: 443) != nil)
+        stub.setHandler { _ in .ok() }
+
+        let connected = try await makeConnection(catalog: catalog).connectToDevice(Fixtures.device(host: stub.host))
+
+        #expect(connected.host == stub.host)
+        #expect(trust.pendingMismatch(host: stub.host, port: 443) == nil)
+        #expect(trust.pinnedFingerprint(host: stub.host, port: 443) == "aa")
+        #expect(stub.requests(to: "/api/auth/check").count == 1)
     }
 }

@@ -413,12 +413,14 @@ final class GLKVMClient {
     /// `log` is the session's, for certificate pinning and for settings writes.
     /// `sessionConfiguration` is the starting point for this client's URLSession. Tests pass one
     /// whose protocol classes answer in place of a device, so no request reaches the network.
+    /// `trustStore` holds the certificate pins; a connection passes its catalog's.
     init(
         host: String,
         port: Int = 443,
         authToken: String? = nil,
         log: SessionLog? = nil,
-        sessionConfiguration: URLSessionConfiguration = .default
+        sessionConfiguration: URLSessionConfiguration = .default,
+        trustStore: DeviceTrustStore = .shared
     ) throws {
         let scheme = Self.defaultHTTPScheme(for: port)
         guard let url = URL(string: "\(scheme)://\(host):\(port)") else {
@@ -435,7 +437,7 @@ final class GLKVMClient {
 
         // Self-signed device certificates are pinned on first use; see DeviceTrustStore.
         self.urlSession = GLKVMURLSession(
-            URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
+            URLSession(configuration: config, delegate: DeviceTrustSessionDelegate(trustStore: trustStore, log: log), delegateQueue: nil)
         )
 
         // A print request sends nothing back until the text is typed, so the request timeout,
@@ -446,7 +448,7 @@ final class GLKVMClient {
         printConfig.timeoutIntervalForRequest = Self.printRequestTimeout
         printConfig.timeoutIntervalForResource = Self.printResourceTimeout
         self.printURLSession = GLKVMURLSession(
-            URLSession(configuration: printConfig, delegate: DeviceTrustSessionDelegate(log: log), delegateQueue: nil)
+            URLSession(configuration: printConfig, delegate: DeviceTrustSessionDelegate(trustStore: trustStore, log: log), delegateQueue: nil)
         )
     }
 
@@ -466,8 +468,14 @@ final class GLKVMClient {
         defaultHTTPScheme(for: port) == "https" ? "wss" : "ws"
     }
 
-    convenience init(device: KVMDevice, log: SessionLog? = nil) throws {
-        try self.init(host: device.host, port: device.port, authToken: device.authToken.isEmpty ? nil : device.authToken, log: log)
+    convenience init(device: KVMDevice, log: SessionLog? = nil, trustStore: DeviceTrustStore = .shared) throws {
+        try self.init(
+            host: device.host,
+            port: device.port,
+            authToken: device.authToken.isEmpty ? nil : device.authToken,
+            log: log,
+            trustStore: trustStore
+        )
     }
 
     private func makeURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {

@@ -23,18 +23,24 @@ final class SessionConnection: ObservableObject {
     private let makeClient: (KVMDevice, SessionLog?) throws -> GLKVMClient
     private var cancellables = Set<AnyCancellable>()
 
+    /// The catalog's certificate pins, as its credential store is the catalog's: the app's
+    /// `DeviceTrustStore.shared`, and a scratch store under a test.
+    private var trustStore: DeviceTrustStore { catalog.trustStore }
+
     /// `reach` and `makeClient` are for tests, which answer the TCP check themselves and hand
-    /// back a client whose requests a stub answers. The app passes neither.
+    /// back a client whose requests a stub answers. The app passes neither; its client pins
+    /// certificates in the catalog's trust store.
     init(
         catalog: KVMDeviceManager,
         log: SessionLog? = nil,
         reach: @escaping (KVMDevice) async -> Bool = { await SessionConnection.isReachable($0) },
-        makeClient: @escaping (KVMDevice, SessionLog?) throws -> GLKVMClient = { try GLKVMClient(device: $0, log: $1) }
+        makeClient: ((KVMDevice, SessionLog?) throws -> GLKVMClient)? = nil
     ) {
         self.catalog = catalog
         self.log = log
         self.reach = reach
-        self.makeClient = makeClient
+        let trustStore = catalog.trustStore
+        self.makeClient = makeClient ?? { try GLKVMClient(device: $0, log: $1, trustStore: trustStore) }
 
         // What is cleared matches what the catalog cleared when it held the connection itself:
         // removing an entry drops only the device, forgetting an address drops the client too.
@@ -97,12 +103,12 @@ final class SessionConnection: ObservableObject {
             throw KVMError.connectionFailed
         }
 
-        DeviceTrustStore.shared.clearMismatch(host: finalDevice.host, port: finalDevice.port)
+        trustStore.clearMismatch(host: finalDevice.host, port: finalDevice.port)
 
         do {
             try await client.authCheck()
         } catch {
-            if let mismatch = DeviceTrustStore.shared.pendingMismatch(host: finalDevice.host, port: finalDevice.port) {
+            if let mismatch = trustStore.pendingMismatch(host: finalDevice.host, port: finalDevice.port) {
                 throw KVMError.certificateChanged(host: mismatch.host, port: mismatch.port, fingerprint: mismatch.actual)
             }
             // Only a genuine rejection from the device means the token is missing or expired.

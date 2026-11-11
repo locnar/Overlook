@@ -144,12 +144,16 @@ final class DeviceTrustStore {
     }
 }
 
-/// URLSession delegate that applies `DeviceTrustStore` to server-trust challenges.
+/// URLSession delegate that applies a `DeviceTrustStore` to server-trust challenges.
 final class DeviceTrustSessionDelegate: NSObject, URLSessionDelegate {
     /// The session whose connection this is, for logging a pin against its device.
     private let log: SessionLog?
+    /// Where pins are kept and mismatches recorded: the app's `shared` store unless a caller (a
+    /// test, through the catalog) hands in its own.
+    private let trustStore: DeviceTrustStore
 
-    init(log: SessionLog? = nil) {
+    init(trustStore: DeviceTrustStore = .shared, log: SessionLog? = nil) {
+        self.trustStore = trustStore
         self.log = log
         super.init()
     }
@@ -159,7 +163,7 @@ final class DeviceTrustSessionDelegate: NSObject, URLSessionDelegate {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        let (disposition, credential) = DeviceTrustStore.shared.resolve(challenge, log: log)
+        let (disposition, credential) = trustStore.resolve(challenge, log: log)
         completionHandler(disposition, credential)
     }
 }
