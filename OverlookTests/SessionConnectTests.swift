@@ -273,3 +273,150 @@ struct ConnectPasswordTests {
         #expect(credentials.savedPasswords.isEmpty)
     }
 }
+
+// MARK: - The KVM's video mode
+
+/// A KVM in the WebRTC (Native) video mode stops Janus, which Overlook streams through. A connect
+/// that fails at Janus reads the mode and says so; one to a device already known to be in that
+/// mode is refused before Janus is tried. The device is a stub; nothing reaches the network.
+@MainActor
+@Suite("KVM video mode")
+struct VideoModeTests {
+    let scratch = ScratchDefaults()
+
+    static let expectedMessage = "This KVM is set to the WebRTC (Native) video mode, which Overlook can't use. "
+        + "In the KVM's web page, change Video › Mode to another mode, then connect again."
+
+    private func device(mode: String?) -> StubDevice {
+        var file: GLKVMJSONObject = ["stream_quality": .int(1), "language": .string("en")]
+        if let mode {
+            file["video_mode"] = .string(mode)
+        }
+        return StubDevice(config: FakeUserConfig(file))
+    }
+
+    private func isSignalingLost(_ error: Error) -> Bool {
+        if case WebRTCError.signalingConnectionLost = error { return true }
+        return false
+    }
+
+    private func messages(in log: SessionLog, containing text: String) async -> [String] {
+        let marker = "flush-\(UUID().uuidString)"
+        log.debug(.lifecycle, marker)
+        await waitUntil { log.store.events(in: .allDevices).contains { $0.message.contains(marker) } }
+        return log.store.events(in: .allDevices).map(\.message).filter { $0.contains(text) }
+    }
+
+    @Test func theMessageIsTheOneAskedFor() {
+        #expect(NativeWebRTCVideoModeError.message == Self.expectedMessage)
+        #expect(NativeWebRTCVideoModeError().localizedDescription == Self.expectedMessage)
+        #expect(String(describing: NativeWebRTCVideoModeError()) == Self.expectedMessage)
+    }
+
+    @Test func theSystemConfigCarriesTheVideoMode() async throws {
+        let stub = device(mode: "gl_webrtc")
+        let client = try stub.makeClient()
+        #expect(try await client.getSystemConfig().videoMode == "gl_webrtc")
+        #expect(await client.readVideoMode() == "gl_webrtc")
+        // Also keeps the stub alive until here: a request to a stub that has gone fails.
+        #expect(stub.requests(to: "/api/system/get_config").count == 2)
+    }
+
+    @Test func aJanusFailureInNativeModeGetsTheMessage() async throws {
+        let stub = device(mode: "gl_webrtc")
+        let client = try stub.makeClient()
+
+        let result = await GLKVMVideoMode.explain(WebRTCError.signalingConnectionLost) { await client.readVideoMode() }
+
+        #expect(result.error is NativeWebRTCVideoModeError)
+        #expect(result.error.localizedDescription == Self.expectedMessage)
+        #expect(result.mode == "gl_webrtc")
+        #expect(stub.requests(to: "/api/system/get_config").count == 1)
+        // Only read: nothing is written to the device.
+        #expect(stub.requests(to: "/api/system/set_config").isEmpty)
+    }
+
+    @Test(arguments: ["webrtc", "direct_h264", "flex_fec"])
+    func aJanusFailureInAnyOtherModeIsReportedAsBefore(_ mode: String) async throws {
+        let stub = device(mode: mode)
+        let client = try stub.makeClient()
+
+        let result = await GLKVMVideoMode.explain(WebRTCError.signalingConnectionLost) { await client.readVideoMode() }
+
+        #expect(isSignalingLost(result.error))
+        #expect(result.mode == mode)
+        #expect(stub.requests(to: "/api/system/get_config").count == 1)
+    }
+
+    @Test func noModeOrNoAnswerIsReportedAsBefore() async throws {
+        // Firmware without the key.
+        let olderStub = device(mode: nil)
+        let older = try olderStub.makeClient()
+        let olderResult = await GLKVMVideoMode.explain(WebRTCError.signalingConnectionLost) { await older.readVideoMode() }
+        #expect(isSignalingLost(olderResult.error))
+        #expect(olderResult.mode == "")
+        #expect(olderStub.requests(to: "/api/system/get_config").count == 1)
+
+        // A device that does not answer the config read.
+        let failing = StubDevice { _ in StubDevice.Response(status: 500, body: Data()) }
+        let client = try failing.makeClient()
+        let result = await GLKVMVideoMode.explain(WebRTCError.signalingConnectionLost) { await client.readVideoMode() }
+        #expect(isSignalingLost(result.error))
+        #expect(result.mode == nil)
+        #expect(failing.requests(to: "/api/system/get_config").count == 1)
+
+        // No reader at all.
+        #expect(isSignalingLost(await GLKVMVideoMode.explain(WebRTCError.signalingConnectionLost, readMode: nil).error))
+    }
+
+    @Test func aDeviceKnownToBeInNativeModeIsRefusedBeforeJanus() async throws {
+        let stub = device(mode: "gl_webrtc")
+        let client = try stub.makeClient()
+        let log = SessionLog(destination: .inMemory())
+        let manager = WebRTCManager(
+            audioPreferences: AudioPreferences(defaults: scratch.defaults),
+            networkPreferences: NetworkPreferences(defaults: scratch.defaults),
+            log: log
+        )
+        // Getting as far as the media route would mean Janus was about to be tried.
+        manager.resolveHost = { host in
+            Issue.record("The connect went on to resolve \(host)")
+            return []
+        }
+        manager.localInterfaces = { [] }
+        manager.readVideoMode = { await client.readVideoMode() }
+        let kvm = Fixtures.device(host: "192.0.2.77")
+        manager.noteVideoMode("gl_webrtc", for: kvm.address)
+
+        await #expect(throws: NativeWebRTCVideoModeError.self) {
+            try await manager.connect(to: kvm)
+        }
+
+        #expect(manager.lastDisconnectReason == Self.expectedMessage)
+        #expect(manager.hasEverConnectedToStream, "the overlay shows the message")
+        #expect(!manager.isConnecting)
+        #expect(!manager.isConnected)
+        // The known mode is read again before refusing, so a mode changed since is picked up.
+        #expect(stub.requests(to: "/api/system/get_config").count == 1)
+        #expect(stub.requests(to: "/api/system/set_config").isEmpty)
+        // Logged once, and not again as a generic connect failure.
+        #expect(await messages(in: log, containing: "WebRTC (Native)").count == 1)
+        #expect(await messages(in: log, containing: "Connect failed").isEmpty)
+    }
+
+    @Test func theSessionReadsTheModeThroughItsOwnClient() async throws {
+        let stub = device(mode: "gl_webrtc")
+        let session = ConsoleSession(
+            catalog: Fixtures.catalog(scratch),
+            defaults: scratch.defaults,
+            link: RecordingSessionLink(),
+            connectionLog: .inMemory()
+        )
+        let reader = try #require(session.webRTCManager.readVideoMode)
+        #expect(await reader() == nil, "no client yet")
+
+        session.connection.glkvmClient = try stub.makeClient()
+        #expect(await reader() == "gl_webrtc")
+        #expect(stub.requests(to: "/api/system/get_config").count == 1)
+    }
+}

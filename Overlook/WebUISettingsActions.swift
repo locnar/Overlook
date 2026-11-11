@@ -73,6 +73,11 @@ extension WebUISettingsActions {
                 model.config = loadedConfig
                 inputManager.applyConfiguredMouseMode(isAbsolute: loadedConfig.isAbsoluteMouse)
                 webRTCManager.setPreferLowLatencyPlayout(loadedConfig.videoProcessing == "low_latency_first")
+                // A connect after this one is refused up front if the device is in WebRTC (Native)
+                // mode, which Overlook cannot stream from.
+                if let address = connection.connectedDevice?.address {
+                    webRTCManager.noteVideoMode(loadedConfig.videoMode, for: address)
+                }
                 model.keymaps = km
                 model.streamerState = st
                 model.currentEdid = edidValue

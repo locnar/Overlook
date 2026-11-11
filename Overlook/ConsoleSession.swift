@@ -109,6 +109,11 @@ final class ConsoleSession: ObservableObject {
         // Here rather than in the window's `onAppear`: the menu-bar agent can connect a session
         // before its window has appeared.
         inputManager.setup(with: webRTCManager)
+        // The stream reads the device's video mode through this session's client when Janus does
+        // not answer (`GLKVMVideoMode`).
+        webRTCManager.readVideoMode = { [weak connection] in
+            await connection?.glkvmClient?.readVideoMode()
+        }
 
         // Straight off the connection, not mirrored from `ContentView`: the menu-bar agent can
         // connect a session before its window has appeared, and a view-scoped mirror would leave
@@ -515,6 +520,9 @@ struct LiveSessionLink: ConsoleSessionLink {
             try await session.webRTCManager.connect(to: device)
         } catch WebRTCError.superseded {
             // The operator's own later action replaced this attempt; nothing to report.
+        } catch let error as NativeWebRTCVideoModeError {
+            // Logged once already, by the stream.
+            throw error
         } catch {
             session.log.error(.lifecycle, "WebRTC connect failed, API still connected: \(error.localizedDescription)")
             throw error

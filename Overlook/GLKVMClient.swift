@@ -114,6 +114,50 @@ extension GLKVMSystemConfig {
     }
 }
 
+// MARK: - Video mode
+
+/// The KVM's video mode: `video_mode` in its system config on firmware 1.10.0 and later, one of
+/// `webrtc`, `gl_webrtc`, `direct_h264` or `flex_fec` (the default). Overlook's stream goes through
+/// Janus, which the device stops in `gl_webrtc` ("WebRTC (Native)"); that one mode cannot work.
+/// Overlook only reads the mode; changing it is the operator's, in the KVM's web page.
+enum GLKVMVideoMode {
+    static let nativeWebRTC = "gl_webrtc"
+
+    /// Reads the device's `video_mode`; nil when it cannot be read.
+    typealias Reader = @MainActor () async -> String?
+
+    static func blocksStream(_ mode: String?) -> Bool {
+        mode == nativeWebRTC
+    }
+
+    /// The error to report for a stream connect that failed with `error` at the Janus stage: the
+    /// video-mode error when the device turns out to be in WebRTC (Native) mode, `error` itself
+    /// otherwise (any other mode, no mode, or a config that could not be read). `mode` is what
+    /// was read, for the caller to keep.
+    @MainActor
+    static func explain(_ error: Error, readMode: Reader?) async -> (error: Error, mode: String?) {
+        guard let readMode else { return (error, nil) }
+        let mode = await readMode()
+        return (blocksStream(mode) ? NativeWebRTCVideoModeError() : error, mode)
+    }
+}
+
+/// The stream cannot come up because the KVM is in the WebRTC (Native) video mode.
+struct NativeWebRTCVideoModeError: LocalizedError, CustomStringConvertible, Equatable {
+    static let message = "This KVM is set to the WebRTC (Native) video mode, which Overlook can't use. "
+        + "In the KVM's web page, change Video › Mode to another mode, then connect again."
+
+    var errorDescription: String? { Self.message }
+    var description: String { Self.message }
+}
+
+extension GLKVMClient {
+    /// The device's `video_mode`, read fresh; nil when it cannot be read.
+    func readVideoMode() async -> String? {
+        try? await getSystemConfig().videoMode
+    }
+}
+
 struct GLKVMTurnCredentials: Decodable {
     let password: String
     let ttl: Int

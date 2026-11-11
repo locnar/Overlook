@@ -314,6 +314,15 @@ class WebRTCManager: NSObject, ObservableObject {
     /// its media route. Tests replace both so nothing reaches DNS.
     var resolveHost: (String) async -> [String] = { await HostResolver.addresses(of: $0) }
     var localInterfaces: () -> [LocalInterfaceAddress] = { LocalInterfaceAddress.current() }
+    /// Reads the connected device's `video_mode` (`GLKVMVideoMode`). The session points it at its
+    /// HTTP client; nil reads nothing, and a failed connect is then reported as it always was.
+    var readVideoMode: GLKVMVideoMode.Reader?
+    /// The device's video mode as last read, by Settings or after a failed connect, and for which
+    /// address. A connect to that address in WebRTC (Native) mode is refused before Janus is tried.
+    private(set) var knownVideoMode: KnownVideoMode?
+    /// Whether this operator connect or reconnect has logged the WebRTC (Native) mode yet; the
+    /// retries that follow it do not log it again.
+    private var hasLoggedNativeVideoMode = false
     /// True after a connect asked for the microphone and macOS refused (System Settings ›
     /// Privacy & Security › Microphone). The session goes on without the mic.
     @Published private(set) var isMicrophoneAccessDenied = false
@@ -686,13 +695,17 @@ class WebRTCManager: NSObject, ObservableObject {
         // An operator connect supersedes, and releases, whatever is in flight: a retry loop, an
         // attempt still waiting on Janus, or the live session when switching devices.
         consecutiveStallReconnects = 0
+        hasLoggedNativeVideoMode = false
         telemetry.update { $0.clearSession() }
         self.log.notice(.lifecycle, "Connect requested: \(device.displayName) (\(device.connectionString))")
         beginSessionEnvironment()
         do {
             try await replaceConnection(with: device)
         } catch {
-            self.log.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
+            // The video-mode message has been logged already, once.
+            if !(error is NativeWebRTCVideoModeError) {
+                self.log.error(.lifecycle, "Connect failed: \(error.localizedDescription)")
+            }
             // The caller only surfaces the error (see ContentView); without this the activity
             // assertion, the sleep/wake observers and the path monitor would outlive the failed
             // attempt with nothing left to release them.
@@ -962,6 +975,15 @@ class WebRTCManager: NSObject, ObservableObject {
         connectionGeneration += 1
         let generation = connectionGeneration
         lastConnectedDevice = device
+        // A device already known to be in WebRTC (Native) mode is not tried: Janus is stopped.
+        if await isKnownToBlockStream(device) {
+            guard generation == connectionGeneration else { throw WebRTCError.superseded }
+            isConnecting = false
+            showConnectionLost(NativeWebRTCVideoModeError.message)
+            logNativeVideoModeOnce()
+            throw NativeWebRTCVideoModeError()
+        }
+        guard generation == connectionGeneration else { throw WebRTCError.superseded }
         let route = await prepareMediaRoute(for: device)
         // Resolving a host name suspends, and a newer connect or a teardown can land meanwhile.
         guard generation == connectionGeneration else { throw WebRTCError.superseded }
@@ -1039,7 +1061,24 @@ class WebRTCManager: NSObject, ObservableObject {
             setupDataChannel()
             
             // Connect to signaling server
-            try await connectToSignalingServer(device: device)
+            do {
+                try await connectToSignalingServer(device: device)
+            } catch WebRTCError.superseded {
+                throw WebRTCError.superseded
+            } catch {
+                // Janus did not answer. In WebRTC (Native) mode the device has stopped it; say so
+                // rather than pass on the transport error.
+                guard generation == connectionGeneration else { throw WebRTCError.superseded }
+                let explained = await GLKVMVideoMode.explain(error, readMode: readVideoMode)
+                if let mode = explained.mode {
+                    knownVideoMode = KnownVideoMode(address: device.address, mode: mode)
+                }
+                guard generation == connectionGeneration else { throw WebRTCError.superseded }
+                if explained.error is NativeWebRTCVideoModeError {
+                    logNativeVideoModeOnce()
+                }
+                throw explained.error
+            }
             guard generation == connectionGeneration else { throw WebRTCError.superseded }
 
             // Start connection quality monitoring
@@ -1048,24 +1087,73 @@ class WebRTCManager: NSObject, ObservableObject {
         } catch {
             // A newer connect or teardown has replaced this attempt's state; it is not ours to reset.
             guard generation == connectionGeneration else { throw WebRTCError.superseded }
-            let reason = "Connect failed: \(String(describing: error))"
+            let reason = Self.failureReason(error, prefix: "Connect failed")
             tearDown(cancelReconnect: false)
-            lastDisconnectReason = reason
+            if error is NativeWebRTCVideoModeError {
+                // The overlay comes up even for a first connect: retrying will not help, and the
+                // message is what the operator needs.
+                showConnectionLost(reason)
+            } else {
+                lastDisconnectReason = reason
+            }
             throw error
         }
+    }
+
+    // MARK: - Video mode
+
+    /// The video mode last read for one address.
+    struct KnownVideoMode: Equatable {
+        let address: DeviceAddress
+        let mode: String
+    }
+
+    /// Keeps the mode Settings read from the connected device.
+    func noteVideoMode(_ mode: String, for address: DeviceAddress) {
+        knownVideoMode = KnownVideoMode(address: address, mode: mode)
+    }
+
+    /// Whether `device` is known to be in WebRTC (Native) mode. Only a known native mode is read
+    /// again before it refuses a connect, so a mode changed in the web page since is picked up;
+    /// when that read fails the known mode stands.
+    private func isKnownToBlockStream(_ device: KVMDevice) async -> Bool {
+        guard let known = knownVideoMode, known.address == device.address,
+              GLKVMVideoMode.blocksStream(known.mode) else { return false }
+        if let readVideoMode, let mode = await readVideoMode() {
+            knownVideoMode = KnownVideoMode(address: device.address, mode: mode)
+            return GLKVMVideoMode.blocksStream(mode)
+        }
+        return true
+    }
+
+    /// The log has the message once per operator connect or reconnect.
+    private func logNativeVideoModeOnce() {
+        guard !hasLoggedNativeVideoMode else { return }
+        hasLoggedNativeVideoMode = true
+        log.error(.lifecycle, NativeWebRTCVideoModeError.message)
+    }
+
+    /// What the overlay says for a failed attempt: the video-mode message on its own, or the error
+    /// after `prefix`.
+    nonisolated static func failureReason(_ error: Error, prefix: String) -> String {
+        if error is NativeWebRTCVideoModeError {
+            return NativeWebRTCVideoModeError.message
+        }
+        return "\(prefix): \(String(describing: error))"
     }
 
     /// `reason` is what the session history shows for this reconnect.
     func reconnect(to device: KVMDevice, reason: String = "Reconnect requested") async {
         // An explicit reconnect supersedes any retry loop in progress.
         consecutiveStallReconnects = 0
+        hasLoggedNativeVideoMode = false
         noteReconnect(reason: reason)
         do {
             try await replaceConnection(with: device)
         } catch {
             if case WebRTCError.superseded = error { return }
             isConnecting = false
-            showConnectionLost("Reconnect failed: \(String(describing: error))")
+            showConnectionLost(Self.failureReason(error, prefix: "Reconnect failed"))
         }
     }
 
@@ -1123,6 +1211,12 @@ class WebRTCManager: NSObject, ObservableObject {
                 } catch {
                     guard !Task.isCancelled else { return }
                     if case WebRTCError.superseded = error { return }
+                    if error is NativeWebRTCVideoModeError {
+                        // Retrying cannot help until the mode is changed in the web page; the
+                        // overlay says so and keeps its Reconnect button.
+                        self.showConnectionLost(NativeWebRTCVideoModeError.message)
+                        return
+                    }
                     self.log.error(
                         .lifecycle,
                         "Reconnect retry \(index + 1)/\(delays.count) failed: \(error.localizedDescription)"
@@ -2841,6 +2935,11 @@ final class WebRTCManager: NSObject, ObservableObject {
     }
 
     var isPlaybackMuted: Bool { !audioRoute.playsAudio }
+
+    var readVideoMode: GLKVMVideoMode.Reader?
+
+    func noteVideoMode(_ mode: String, for address: DeviceAddress) {
+    }
     
     func connect(to device: KVMDevice) async throws {
         isConnected = false

@@ -649,8 +649,13 @@ struct ContentView: View {
             }
 
             switch outcome {
-            case .connected(let connected, _):
-                // A stream that failed to come up is in the log; the API connection stands.
+            case .connected(let connected, let streamError):
+                // A stream that failed to come up is in the log; the API connection stands. One
+                // that cannot come up in the device's video mode says so here as well.
+                if streamError is NativeWebRTCVideoModeError {
+                    connectionErrorMessage = NativeWebRTCVideoModeError.message
+                    return
+                }
                 linkPrompt = DeviceLinkPrompt.after(
                     connecting: connected,
                     savedBefore: savedBefore,

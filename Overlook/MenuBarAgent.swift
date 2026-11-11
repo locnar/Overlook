@@ -532,7 +532,9 @@ class MenuBarAgent: NSObject, ObservableObject {
 
         switch outcome {
         case .connected(let connected, let streamError):
-            if let streamError {
+            if streamError is NativeWebRTCVideoModeError {
+                showError(title: "Video mode not supported", message: NativeWebRTCVideoModeError.message)
+            } else if let streamError {
                 // still consider ourselves connected at the API layer
                 showError(title: "WebRTC connect failed", message: String(describing: streamError))
             }

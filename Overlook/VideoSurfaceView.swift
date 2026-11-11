@@ -220,7 +220,11 @@ struct VideoSurfaceView: View {
 
                 if webRTCManager.isConnecting || webRTCManager.isStreamStalled || (webRTCManager.hasEverConnectedToStream && !webRTCManager.isConnected) {
                     VStack(spacing: 10) {
-                        Text(webRTCManager.isConnecting ? "Connecting…" : "Connection Lost")
+                        Text(webRTCManager.isConnecting
+                             ? "Connecting…"
+                             : webRTCManager.lastDisconnectReason == NativeWebRTCVideoModeError.message
+                                ? "Video Mode Not Supported"
+                                : "Connection Lost")
                             .font(.headline)
 
                         if let reason = webRTCManager.lastDisconnectReason, !reason.isEmpty {
