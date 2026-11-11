@@ -219,9 +219,9 @@ struct ContentView: View {
 
                             CaptureRegionToggle(isConnected: isConnected)
 
-                            ScreenshotButton(isConnected: isConnected)
+                            ScreenshotButton()
 
-                            RecordingButton(isConnected: isConnected)
+                            RecordingButton()
 
                             RecordingModePicker()
 
@@ -595,9 +595,9 @@ struct ContentView: View {
                 ToolbarItemGroup(placement: .automatic) {
                     CaptureRegionToggle(isConnected: isConnected)
 
-                    ScreenshotButton(isConnected: isConnected)
+                    ScreenshotButton()
 
-                    RecordingButton(isConnected: isConnected)
+                    RecordingButton()
 
                     RecordingModePicker()
 

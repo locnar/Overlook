@@ -129,6 +129,15 @@ final class CaptureManager: ObservableObject {
     /// The region the running recording was started with (nil = whole screen). A region set or
     /// cleared mid-recording applies to the next one: the file's frame size is fixed at start.
     @Published private(set) var activeRecordingRegion: CGRect?
+    /// Whether the window is connected with its video showing: a device, a stream, and the
+    /// stream's size. Kept current by the session, which uses the same rule for Copy Text from
+    /// Area (`OCRSnippet.isAvailable`).
+    @Published var isVideoShowing = false
+
+    /// Save Screenshot (toolbar, Capture menu): greyed out unless video is showing.
+    var canSaveScreenshot: Bool { isVideoShowing }
+    /// Start Recording needs video; Stop Recording stays available for as long as one runs.
+    var canToggleRecording: Bool { isRecording || isVideoShowing }
 
     /// What a recording keeps, its codec, the save folders and the outline switch. Shared with
     /// every other window and with Settings › Capture, so a change made anywhere applies here.

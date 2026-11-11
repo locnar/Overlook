@@ -279,3 +279,88 @@ struct CaptureRegionGeometryTests {
             == "640 × 360")
     }
 }
+
+/// Save Screenshot, Start Recording and Copy Text from Area, in the Capture menu and the toolbar,
+/// are greyed out unless the window is connected with its video showing.
+@MainActor
+@Suite("Capture menu availability")
+struct CaptureAvailabilityTests {
+    let scratch = ScratchDefaults()
+    let session: ConsoleSession
+
+    init() {
+        session = ConsoleSession(
+            catalog: Fixtures.catalog(scratch),
+            defaults: scratch.defaults,
+            link: RecordingSessionLink(),
+            audioPreferences: AudioPreferences(defaults: scratch.defaults),
+            connectionLog: .inMemory()
+        )
+    }
+
+    /// The three items as the Capture menu decides them.
+    private var enabled: [Bool] {
+        [
+            CaptureCommands.canSaveScreenshot(session.captureManager),
+            CaptureCommands.canToggleRecording(session.captureManager),
+            CaptureCommands.canCopyTextFromArea(session.ocrSnippet),
+        ]
+    }
+
+    @Test func withNoConsoleWindowKeyAllThreeAreGreyedOut() {
+        #expect(!CaptureCommands.canSaveScreenshot(nil))
+        #expect(!CaptureCommands.canToggleRecording(nil))
+        #expect(!CaptureCommands.canCopyTextFromArea(nil))
+    }
+
+    @Test func allThreeFollowTheSameRule() {
+        // Disconnected.
+        #expect(enabled == [false, false, false])
+
+        // Signed in, no stream yet.
+        session.connection.connectedDevice = Fixtures.device()
+        #expect(enabled == [false, false, false])
+
+        // A stream, but no picture size yet.
+        session.webRTCManager.isConnected = true
+        #expect(enabled == [false, false, false])
+
+        // Video showing.
+        session.webRTCManager.videoSize = CGSize(width: 1920, height: 1080)
+        #expect(enabled == [true, true, true])
+        #expect(session.captureManager.isVideoShowing)
+
+        // The stream drops.
+        session.webRTCManager.isConnected = false
+        #expect(enabled == [false, false, false])
+
+        // Back, then disconnected.
+        session.webRTCManager.isConnected = true
+        #expect(enabled == [true, true, true])
+        session.connection.connectedDevice = nil
+        #expect(enabled == [false, false, false])
+    }
+
+    @Test func stopRecordingStaysAvailableWhenTheVideoGoes() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OverlookTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let capture = session.captureManager
+        capture.recordingsFolder = folder
+        capture.recordingMode = .videoOnly
+
+        session.connection.connectedDevice = Fixtures.device()
+        session.webRTCManager.isConnected = true
+        session.webRTCManager.videoSize = CGSize(width: 1920, height: 1080)
+        capture.startRecording()
+        #expect(capture.isRecording)
+
+        // The stream drops mid-recording: no new screenshot, but the recording can still be stopped.
+        session.webRTCManager.isConnected = false
+        #expect(enabled == [false, true, false])
+
+        capture.stopRecording()
+        #expect(enabled == [false, false, false])
+    }
+}

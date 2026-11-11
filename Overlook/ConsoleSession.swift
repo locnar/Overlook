@@ -135,9 +135,10 @@ final class ConsoleSession: ObservableObject {
             self?.perform(shortcut)
         }
 
-        // The snippet is there while a device is connected and its video is on screen; losing
-        // either ends a snippet in progress.
+        // The snippet, Save Screenshot and Start Recording are there while a device is connected
+        // and its video is on screen; losing either ends a snippet in progress.
         let snippet = ocrSnippet
+        let capture = captureManager
         Publishers.CombineLatest3(
             connection.$connectedDevice.map { $0 != nil },
             webRTCManager.$isConnected,
@@ -145,8 +146,9 @@ final class ConsoleSession: ObservableObject {
         )
         .map { $0 && $1 && $2 }
         .removeDuplicates()
-        .sink { [weak snippet] available in
+        .sink { [weak snippet, weak capture] available in
             snippet?.isAvailable = available
+            capture?.isVideoShowing = available
         }
         .store(in: &cancellables)
 

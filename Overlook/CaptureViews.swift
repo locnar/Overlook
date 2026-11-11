@@ -3,24 +3,24 @@ import AppKit
 
 // MARK: - Toolbar controls
 
-/// Camera button: saves the frame on screen as a PNG.
+/// Camera button: saves the frame on screen as a PNG. Greyed out unless video is showing, like
+/// Capture › Save Screenshot.
 struct ScreenshotButton: View {
     @EnvironmentObject var captureManager: CaptureManager
-    let isConnected: Bool
 
     var body: some View {
         Button(action: { captureManager.saveScreenshot() }) {
             Image(systemName: "camera")
         }
-        .disabled(!isConnected)
+        .disabled(!captureManager.canSaveScreenshot)
         .help("Save Screenshot (⇧⌘S)")
     }
 }
 
 /// Record button: click to start or stop. What gets recorded is chosen in `RecordingModePicker`.
+/// Starting needs video showing; stopping is always available.
 struct RecordingButton: View {
     @EnvironmentObject var captureManager: CaptureManager
-    let isConnected: Bool
 
     var body: some View {
         Button(action: { captureManager.toggleRecording() }) {
@@ -31,7 +31,7 @@ struct RecordingButton: View {
                 Image(systemName: "record.circle")
             }
         }
-        .disabled(!isConnected && !captureManager.isRecording)
+        .disabled(!captureManager.canToggleRecording)
         .help(captureManager.isRecording ? "Stop Recording (⇧⌘R)" : "Start Recording (⇧⌘R)")
     }
 }
@@ -433,7 +433,10 @@ struct CaptureNoticeView: View {
 /// the target; `InputManager` reproduces ⇧⌘S, ⇧⌘R and ⇧⌘T while they are.
 ///
 /// Every item acts on the key window's session, and the menu is greyed out while no console
-/// window is key.
+/// window is key. Save Screenshot, Start Recording and Copy Text from Area follow one rule: greyed
+/// out unless that window is connected with its video showing (Stop Recording stays available
+/// while a recording runs). Their "Not connected" and "No video" notices are left as a fallback
+/// for a path that does not go through these items.
 struct CaptureCommands: Commands {
     @FocusedObject private var captureManager: CaptureManager?
     @FocusedObject private var session: ConsoleSession?
@@ -447,13 +450,13 @@ struct CaptureCommands: Commands {
                 captureManager?.saveScreenshot()
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(!hasSession)
+            .disabled(!Self.canSaveScreenshot(captureManager))
 
             Button(captureManager?.isRecording == true ? "Stop Recording" : "Start Recording") {
                 captureManager?.toggleRecording()
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(!hasSession)
+            .disabled(!Self.canToggleRecording(captureManager))
 
             // While keys are being sent to the target, `InputManager` reproduces ⇧⌘T as it does
             // ⇧⌘S and ⇧⌘R. Choosing it again while the box is up cancels.
@@ -461,7 +464,7 @@ struct CaptureCommands: Commands {
                 session?.toggleOCRSnippet()
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
-            .disabled(ocrSnippet.map { !$0.isAvailable && !$0.isSelecting } ?? true)
+            .disabled(!Self.canCopyTextFromArea(ocrSnippet))
 
             Divider()
 
@@ -505,6 +508,20 @@ struct CaptureCommands: Commands {
             }
             .disabled(!hasSession)
         }
+    }
+
+    /// Whether each of the three items is enabled, for the key window's objects (nil with no
+    /// console window key).
+    static func canSaveScreenshot(_ captureManager: CaptureManager?) -> Bool {
+        captureManager?.canSaveScreenshot ?? false
+    }
+
+    static func canToggleRecording(_ captureManager: CaptureManager?) -> Bool {
+        captureManager?.canToggleRecording ?? false
+    }
+
+    static func canCopyTextFromArea(_ ocrSnippet: OCRSnippet?) -> Bool {
+        ocrSnippet.map { $0.isAvailable || $0.isSelecting } ?? false
     }
 
     /// A binding into the key window's capture manager. With none there is nothing to bind to, so
