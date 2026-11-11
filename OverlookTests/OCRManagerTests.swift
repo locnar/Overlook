@@ -289,3 +289,69 @@ struct OCRTextDetectionTests {
         #expect(await waitUntil { released == nil })
     }
 }
+
+/// Reading order for what Vision recognized, with fabricated observations: frame fractions, origin
+/// bottom-left, as Vision reports them.
+@Suite("OCR line order")
+struct OCRLineLayoutTests {
+    /// A piece of one 0.04-high line whose top is `top` (from the top of the frame, as on screen).
+    private func piece(_ text: String, x: CGFloat, width: CGFloat = 0.2, top: CGFloat, height: CGFloat = 0.04) -> OCRTextPiece {
+        OCRTextPiece(text: text, box: CGRect(x: x, y: 1 - top - height, width: width, height: height))
+    }
+
+    @Test func linesComeTopToBottomWhateverOrderVisionGaveThem() {
+        let pieces = [
+            piece("third", x: 0.05, top: 0.30),
+            piece("first", x: 0.05, top: 0.10),
+            piece("second", x: 0.05, top: 0.20),
+        ]
+        #expect(OCRLineLayout.lines(from: pieces) == ["first", "second", "third"])
+    }
+
+    @Test func aLineSplitAtAGapIsJoinedLeftToRight() {
+        let pieces = [
+            piece("4096", x: 0.70, width: 0.08, top: 0.101),
+            piece("drwxr-xr-x  2 root root", x: 0.05, width: 0.40, top: 0.10),
+            piece("next line", x: 0.05, top: 0.15),
+        ]
+        #expect(OCRLineLayout.lines(from: pieces) == ["drwxr-xr-x  2 root root 4096", "next line"])
+    }
+
+    @Test func twoColumnsComeOutRowByRow() {
+        // Vision handed the left column, then the right.
+        let pieces = [
+            piece("Name", x: 0.05, top: 0.10),
+            piece("eth0", x: 0.05, top: 0.15),
+            piece("lo", x: 0.05, top: 0.20),
+            piece("Address", x: 0.55, top: 0.10),
+            piece("192.168.0.131", x: 0.55, top: 0.15),
+            piece("127.0.0.1", x: 0.55, top: 0.20),
+        ]
+        #expect(OCRLineLayout.lines(from: pieces) == ["Name Address", "eth0 192.168.0.131", "lo 127.0.0.1"])
+    }
+
+    @Test func closeLinesStaySeparate() {
+        // Line spacing barely more than the text height, as in a dense terminal.
+        let pieces = [
+            piece("b", x: 0.05, top: 0.145),
+            piece("a", x: 0.05, top: 0.10),
+            piece("c", x: 0.05, top: 0.19),
+        ]
+        #expect(OCRLineLayout.lines(from: pieces) == ["a", "b", "c"])
+    }
+
+    @Test func piecesOfALineWithDifferentHeightsAreJoined() {
+        // A capitalised piece is a little taller than the lower-case one beside it.
+        let pieces = [
+            piece("world", x: 0.40, top: 0.102, height: 0.036),
+            piece("Hello", x: 0.05, top: 0.10, height: 0.04),
+        ]
+        #expect(OCRLineLayout.lines(from: pieces) == ["Hello world"])
+    }
+
+    @Test func blankPiecesAndNoPiecesGiveNothing() {
+        #expect(OCRLineLayout.lines(from: []).isEmpty)
+        #expect(OCRLineLayout.lines(from: [piece("  ", x: 0.1, top: 0.1), piece("", x: 0.5, top: 0.1)]).isEmpty)
+        #expect(OCRLineLayout.lines(from: [piece(" ", x: 0.05, top: 0.1), piece("text", x: 0.5, top: 0.1)]) == ["text"])
+    }
+}

@@ -102,7 +102,9 @@ class OCRManager: ObservableObject {
         return lines
     }
 
-    /// The lines of text in `pixelBuffer`, best candidate each, top to bottom.
+    /// The lines of text in `pixelBuffer`, best candidate each, top to bottom and left to right
+    /// (`OCRLineLayout`). Every recognition reads through here: the OCR snippet, and OCR mode's
+    /// click and drag.
     nonisolated private func readLines(in pixelBuffer: CVPixelBuffer) throws -> [String] {
         if let lineReaderOverride {
             return try lineReaderOverride(pixelBuffer)
@@ -112,9 +114,10 @@ class OCRManager: ObservableObject {
         }
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
         try handler.perform([request])
-        return (request.results ?? []).compactMap { observation in
-            observation.topCandidates(1).first?.string
+        let pieces = (request.results ?? []).compactMap { observation in
+            observation.topCandidates(1).first.map { OCRTextPiece(text: $0.string, box: observation.boundingBox) }
         }
+        return OCRLineLayout.lines(from: pieces)
     }
     
     /// Every line of text in the frame with where it is, read with Vision's fast request.
@@ -246,8 +249,8 @@ class OCRManager: ObservableObject {
         }
     }
     
-    /// The lines of text in `region` of the frame, best candidate each, in the order Vision reads
-    /// them (top to bottom). `region` is in frame fractions with the origin top-left, as the
+    /// The lines of text in `region` of the frame, best candidate each, top to bottom and left to
+    /// right (`OCRLineLayout`). `region` is in frame fractions with the origin top-left, as the
     /// capture region and the OCR snippet's box are; it is cut from the frame at the frame's own
     /// resolution. Lines may be empty or whitespace only; the caller decides what counts as text.
     func recognizeLines(inTopLeftRegion region: CGRect, of pixelBuffer: CVPixelBuffer?) async throws -> [String] {
@@ -299,6 +302,57 @@ class OCRManager: ObservableObject {
         )
         
         return try await recognizeTextInRegion(smallRegion, in: pixelBuffer)
+    }
+}
+
+// MARK: - Line order
+
+/// One piece of text Vision recognized and where it is: frame fractions with the origin
+/// bottom-left, as Vision gives them.
+struct OCRTextPiece: Equatable, Sendable {
+    let text: String
+    let box: CGRect
+}
+
+/// Puts what Vision recognized into reading order. Vision returns its observations in no promised
+/// order, and splits one line of the screen into pieces where there is a wide gap (a column of a
+/// listing, a right-aligned value).
+///
+/// Pieces are taken top to bottom by their vertical centres. A piece whose centre is within half
+/// a line height of the line being built (the smaller of its own height and the line's) belongs
+/// to that line; anything further down starts the next one. Each line's pieces are then put left
+/// to right and joined with a single space. Single spaces rather than spaces sized to the gap:
+/// sizing needs a character width, which a proportional font does not have and Vision does not
+/// report, so the count would often be wrong. Two columns side by side come out row by row, as
+/// they are on the screen. Pieces with no text are left out.
+enum OCRLineLayout {
+    static func lines(from pieces: [OCRTextPiece]) -> [String] {
+        let usable = pieces.filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.box.height > 0
+        }
+        // Top first: Vision's y grows upwards.
+        let ordered = usable.sorted { a, b in
+            a.box.midY != b.box.midY ? a.box.midY > b.box.midY : a.box.minX < b.box.minX
+        }
+
+        var rows: [[OCRTextPiece]] = []
+        for piece in ordered {
+            if let row = rows.last, isOnLine(piece, row) {
+                rows[rows.count - 1].append(piece)
+            } else {
+                rows.append([piece])
+            }
+        }
+        return rows.map { row in
+            row.sorted { $0.box.minX < $1.box.minX }.map(\.text).joined(separator: " ")
+        }
+    }
+
+    private static func isOnLine(_ piece: OCRTextPiece, _ row: [OCRTextPiece]) -> Bool {
+        let count = CGFloat(row.count)
+        let centre = row.map(\.box.midY).reduce(0, +) / count
+        let height = row.map(\.box.height).reduce(0, +) / count
+        return abs(piece.box.midY - centre) <= min(piece.box.height, height) / 2
     }
 }
 
