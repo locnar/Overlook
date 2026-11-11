@@ -116,6 +116,7 @@ The Settings UI is intentionally aligned with GLKVM’s WebUI behavior where it 
 - **⌘Q**: reached the target as Meta+Q while input was captured, leaving no keyboard way to quit.
 - **HID send deadlines**: a frame the HID socket never took stalled all input behind it, and quit waited on it. Each frame now has a deadline, and a socket whose pongs stop coming back is closed and reconnected.
 - **ISO, JIS and F18–F20 keys**: the extra ISO key, JIS Yen and Ro, and F18–F20 were dropped. On an ISO keyboard the key left of 1 and the key by left Shift are swapped back, so each reaches the target at its position.
+- **Shortcuts on other layouts**: Overlook's chords were matched by key position, so on Dvorak or AZERTY `⇧⌘C`, `⇧⌘V` and `⌘Q` were on the wrong keys. They now follow the letters the layout types, as menu shortcuts do.
 - **Exact-modifier shortcuts**: Overlook's chords fired whenever ⌘ was held, so `⌃⌘V`, `⌥⌘C` or `⇧⌘V` never reached the target.
 - **Held chords**: holding `⌘V` pasted the clipboard again on every key repeat, and holding `⌘C` toggled copy mode on and off. Each chord now acts once per press.
 - **Help key**: the Mac's Help key, where a PC keyboard has Insert, was sent as "Help", which the device drops. It is now sent as Insert.
@@ -380,6 +381,8 @@ Overlook includes a few “quality of life” shortcuts.
 - `⇧⌘R`: starts or stops a recording.
 - `⇧⌘T`: copies the text in an area of the screen (drag a box; see “Copy Text from Area” above).
 - `⌘Q`: quits Overlook (releases any held keys and hangs up first).
+
+The letters are the ones your keyboard layout types, as in any Mac menu: on Dvorak `⇧⌘C` is the key that types C (the key a U.S. keyboard labels I), and on AZERTY `⌘Q` is the key that types Q. On "Dvorak – QWERTY ⌘" they are on the QWERTY keys, since that layout is QWERTY while `⌘` is held. On a layout without Latin letters (Russian, Greek) they follow the Latin layout you used last, as Mac menus do. Every other key reaches the target by its position, and the target applies its own layout.
 
 Plain `⌘C` and `⌘V` are not on this list: they go to the target, so copy and paste work inside the remote machine.
 

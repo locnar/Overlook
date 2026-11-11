@@ -587,3 +587,72 @@ final class RecordingConnectionLog: ConnectionLogging, @unchecked Sendable {
     var messages: [String] { lines.map(\.message) }
     var errors: [String] { lines.filter { $0.level == .error }.map(\.message) }
 }
+
+// MARK: - Keyboard layouts
+
+/// A keyboard layout as a table: what each key (`NSEvent.keyCode`) types, and what it types with
+/// ⌘ held where that differs ("Dvorak – QWERTY ⌘").
+struct TableKeyLayout: ShortcutKeyLayout {
+    var isASCIICapable = true
+    var plain: [UInt16: Character]
+    var command: [UInt16: Character]? = nil
+
+    func character(keyCode: UInt16, commandHeld: Bool) -> Character? {
+        (commandHeld ? (command ?? plain) : plain)[keyCode]
+    }
+}
+
+/// The layout in use and the ASCII-capable one, as the tests choose them; nil for one that can't
+/// be read.
+struct FakeShortcutLayouts: ShortcutLayoutSource {
+    var current: ShortcutKeyLayout?
+    var asciiCapable: ShortcutKeyLayout?
+
+    func currentLayout() -> ShortcutKeyLayout? { current }
+    func asciiCapableLayout() -> ShortcutKeyLayout? { asciiCapable }
+
+    /// `layout` in use; when it has no Latin letters, U.S. is the ASCII-capable layout.
+    static func using(_ layout: TableKeyLayout) -> FakeShortcutLayouts {
+        FakeShortcutLayouts(current: layout, asciiCapable: layout.isASCIICapable ? layout : TestKeyboardLayouts.us)
+    }
+
+    static let us = using(TestKeyboardLayouts.us)
+}
+
+/// Layouts the tests type on, by key code (U.S. ANSI positions: 8 is the key labelled C).
+enum TestKeyboardLayouts {
+    /// Key codes in U.S. order: what the keys of each row type on a U.S. layout.
+    private static let rows: [([UInt16], String)] = [
+        ([50, 18, 19, 20, 21, 23, 22, 26, 28, 25, 29, 27, 24], "`1234567890-="),
+        ([12, 13, 14, 15, 17, 16, 32, 34, 31, 35, 33, 30, 42], "qwertyuiop[]\\"),
+        ([0, 1, 2, 3, 5, 4, 38, 40, 37, 41, 39], "asdfghjkl;'"),
+        ([6, 7, 8, 9, 11, 45, 46, 43, 47, 44], "zxcvbnm,./"),
+    ]
+
+    private static func table(_ rowsTyped: [String]) -> [UInt16: Character] {
+        var table: [UInt16: Character] = [:]
+        for ((codes, _), typed) in zip(rows, rowsTyped) {
+            for (code, character) in zip(codes, typed) {
+                table[code] = character
+            }
+        }
+        table[49] = " "
+        return table
+    }
+
+    static let usTable = table(rows.map(\.1))
+    static let dvorakTable = table(["`1234567890[]", "',.pyfgcrl/=\\", "aoeuidhtns-", ";qjkxbmwvz"])
+
+    static let us = TableKeyLayout(plain: usTable)
+    /// On Dvorak, C is on the key labelled I (34) and the key labelled C (8) types J.
+    static let dvorak = TableKeyLayout(plain: dvorakTable)
+    /// Dvorak, but U.S. while ⌘ is held.
+    static let dvorakQWERTYCommand = TableKeyLayout(plain: dvorakTable, command: usTable)
+    /// French AZERTY: A and Q swap, Z and W swap, M is right of L.
+    static let azerty = TableKeyLayout(plain: table(["@&é\"'(§è!çà)-", "azertyuiop^$`", "qsdfghjklmù", "wxcvbn,;:="]))
+    /// Russian ЙЦУКЕН: no Latin letters at all (С on the key labelled C is Cyrillic).
+    static let russian = TableKeyLayout(
+        isASCIICapable: false,
+        plain: table(["ё1234567890-=", "йцукенгшщзхъ\\", "фывапролджэ", "ячсмитьбю."])
+    )
+}

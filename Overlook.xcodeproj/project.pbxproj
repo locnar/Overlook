@@ -91,6 +91,7 @@
 		0100011B /* DeviceIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0200011B /* DeviceIdentityTests.swift */; };
 		01000121 /* TestHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000121 /* TestHostTests.swift */; };
 		01000124 /* InterceptedChordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000124 /* InterceptedChordTests.swift */; };
+		01000141 /* KeyboardLayoutChordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000141 /* KeyboardLayoutChordTests.swift */; };
 		01000123 /* KeyCodeTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000123 /* KeyCodeTableTests.swift */; };
 		01000122 /* AudioDeviceSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000122 /* AudioDeviceSetupTests.swift */; };
 		01000131 /* QualityPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000131 /* QualityPresetTests.swift */; };
@@ -98,6 +99,7 @@
 		01000042 /* JanusSignaling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000043 /* JanusSignaling.swift */; };
 		01000043 /* VideoFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000044 /* VideoFrames.swift */; };
 		01000044 /* ScrollAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000045 /* ScrollAccumulator.swift */; };
+		01000140 /* ShortcutKeyLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000140 /* ShortcutKeyLayout.swift */; };
 		01000045 /* MediaNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000046 /* MediaNetwork.swift */; };
 		01000048 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000048 /* SettingsWindow.swift */; };
 		01000049 /* OCRSnippet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02000049 /* OCRSnippet.swift */; };
@@ -217,6 +219,7 @@
 		0200011B /* DeviceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentityTests.swift; sourceTree = "<group>"; };
 		02000121 /* TestHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHostTests.swift; sourceTree = "<group>"; };
 		02000124 /* InterceptedChordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterceptedChordTests.swift; sourceTree = "<group>"; };
+		02000141 /* KeyboardLayoutChordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLayoutChordTests.swift; sourceTree = "<group>"; };
 		02000123 /* KeyCodeTableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCodeTableTests.swift; sourceTree = "<group>"; };
 		02000122 /* AudioDeviceSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceSetupTests.swift; sourceTree = "<group>"; };
 		02000131 /* QualityPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QualityPresetTests.swift; sourceTree = "<group>"; };
@@ -224,6 +227,7 @@
 		02000043 /* JanusSignaling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JanusSignaling.swift; sourceTree = "<group>"; };
 		02000044 /* VideoFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrames.swift; sourceTree = "<group>"; };
 		02000045 /* ScrollAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollAccumulator.swift; sourceTree = "<group>"; };
+		02000140 /* ShortcutKeyLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutKeyLayout.swift; sourceTree = "<group>"; };
 		02000046 /* MediaNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNetwork.swift; sourceTree = "<group>"; };
 		02000048 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		02000049 /* OCRSnippet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRSnippet.swift; sourceTree = "<group>"; };
@@ -323,6 +327,7 @@
 				02000043 /* JanusSignaling.swift */,
 				02000044 /* VideoFrames.swift */,
 				02000045 /* ScrollAccumulator.swift */,
+				02000140 /* ShortcutKeyLayout.swift */,
 				02000046 /* MediaNetwork.swift */,
 				02000048 /* SettingsWindow.swift */,
 				02000047 /* MacPreferences.swift */,
@@ -373,6 +378,7 @@
 				0200011B /* DeviceIdentityTests.swift */,
 				02000121 /* TestHostTests.swift */,
 				02000124 /* InterceptedChordTests.swift */,
+				02000141 /* KeyboardLayoutChordTests.swift */,
 				02000125 /* DiscoveryTests.swift */,
 				02000126 /* JanusSignalingTests.swift */,
 				02000127 /* JanusSenderTests.swift */,
@@ -564,6 +570,7 @@
 				01000042 /* JanusSignaling.swift in Sources */,
 				01000043 /* VideoFrames.swift in Sources */,
 				01000044 /* ScrollAccumulator.swift in Sources */,
+				01000140 /* ShortcutKeyLayout.swift in Sources */,
 				01000045 /* MediaNetwork.swift in Sources */,
 				01000048 /* SettingsWindow.swift in Sources */,
 				01000047 /* MacPreferences.swift in Sources */,
@@ -612,6 +619,7 @@
 				0100011B /* DeviceIdentityTests.swift in Sources */,
 				01000121 /* TestHostTests.swift in Sources */,
 				01000124 /* InterceptedChordTests.swift in Sources */,
+				01000141 /* KeyboardLayoutChordTests.swift in Sources */,
 				01000125 /* DiscoveryTests.swift in Sources */,
 				01000126 /* JanusSignalingTests.swift in Sources */,
 				01000127 /* JanusSenderTests.swift in Sources */,

@@ -128,6 +128,7 @@ struct InputFocusTests {
 
         init(capturing: Bool = true) {
             input = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
+            input.shortcutLayouts = FakeShortcutLayouts.us
             input.sentInputObserver = { [unowned self] in self.sent.append($0) }
             if capturing {
                 input.startKeyboardCapture()

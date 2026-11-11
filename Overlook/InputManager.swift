@@ -21,7 +21,8 @@ class InputManager: ObservableObject {
     /// another window's.
     var onLocalShortcut: ((LocalShortcut) -> Void)?
 
-    /// The chords keyboard capture keeps for Overlook instead of sending them to the target:
+    /// The chords keyboard capture keeps for Overlook instead of sending them to the target, by
+    /// letter (see `interceptedChord`):
     /// - ⇧⌘C toggles OCR copy mode;
     /// - ⇧⌘V types the Mac's clipboard on the target;
     /// - ⇧⌘S saves a screenshot and ⇧⌘R starts or stops a recording.
@@ -39,7 +40,21 @@ class InputManager: ObservableObject {
         case copyTextFromArea
         case quit
 
-        /// The Mac key code the chord is on (by position, as `NSEvent.keyCode` reports it).
+        /// The letter the chord is on, matched against what the key types on the current layout
+        /// with ⌘ held, as macOS matches menu key equivalents.
+        var letter: Character {
+            switch self {
+            case .copyMode: return "c"
+            case .paste: return "v"
+            case .saveScreenshot: return "s"
+            case .toggleRecording: return "r"
+            case .copyTextFromArea: return "t"
+            case .quit: return "q"
+            }
+        }
+
+        /// Where that letter is on a U.S. keyboard (`NSEvent.keyCode`), used only when no keyboard
+        /// layout can be read.
         var keyCode: UInt16 {
             switch self {
             case .copyMode: return 8
@@ -67,10 +82,31 @@ class InputManager: ObservableObject {
 
     /// Which of Overlook's chords a key-down is, or nil when it goes to the target. A chord needs
     /// exactly its own modifiers among ⌘ ⇧ ⌥ ⌃: ⌘C, ⌘V, ⌃⇧⌘V or ⌥⇧⌘C, for example, are the target's.
-    nonisolated static func interceptedChord(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> InterceptedChord? {
+    /// Its key is the one that types the chord's letter (`ShortcutKey.resolve`): on Dvorak, ⇧⌘C is
+    /// the key labelled I, and the key labelled C (which types J) goes to the target.
+    nonisolated static func interceptedChord(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, key: ShortcutKey) -> InterceptedChord? {
         let held = modifiers.intersection(chordModifiers)
-        return InterceptedChord.allCases.first { $0.keyCode == keyCode && $0.modifiers == held }
+        return InterceptedChord.allCases.first { chord in
+            guard chord.modifiers == held else { return false }
+            switch key {
+            case .typed(let character): return character == chord.letter
+            case .position: return chord.keyCode == keyCode
+            }
+        }
     }
+
+    /// The same, reading what the key types from `layouts`.
+    static func interceptedChord(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, layouts: ShortcutLayoutSource) -> InterceptedChord? {
+        // Without exactly one chord's modifiers held nothing is a chord, so the layout is not read.
+        let held = modifiers.intersection(chordModifiers)
+        guard InterceptedChord.allCases.contains(where: { $0.modifiers == held }) else { return nil }
+        let key = ShortcutKey.resolve(keyCode: keyCode, layouts: layouts)
+        return interceptedChord(keyCode: keyCode, modifiers: modifiers, key: key)
+    }
+
+    /// Where the chords' letters are read: the Mac's keyboard layouts. Only the tests replace it,
+    /// with layouts of their own, so nothing depends on the layout the Mac is using.
+    var shortcutLayouts: ShortcutLayoutSource = SystemShortcutLayouts()
 
     /// What one input event became on its way to the target, before the transport.
     enum SentInput: Equatable {
@@ -779,7 +815,9 @@ class InputManager: ObservableObject {
 
             if isKeyDown, modifiers.contains(.command) {
                 // Overlook's own chords, kept rather than sent; see `InterceptedChord`.
-                if let chord = Self.interceptedChord(keyCode: keyCode, modifiers: modifiers) {
+                // Matched by letter on the current layout; the key itself still goes to the
+                // target by position (key code), where the target's own layout applies.
+                if let chord = Self.interceptedChord(keyCode: keyCode, modifiers: modifiers, layouts: shortcutLayouts) {
                     // Once per physical press: the auto-repeats of a held chord are swallowed
                     // here, so a held ⇧⌘V pastes once, ⇧⌘C toggles copy mode once and ⇧⌘R cannot
                     // toggle twice. They still never reach the target.

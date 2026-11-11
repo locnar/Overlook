@@ -14,6 +14,10 @@ struct InterceptedChordTests {
     /// Every chord, with its key: ⇧⌘C, ⇧⌘V, ⇧⌘S, ⇧⌘R, ⇧⌘T, ⌘Q.
     static let chords: [Chord] = Chord.allCases
 
+    /// The suite types on a U.S. layout, whatever the Mac is using; `KeyboardLayoutChordTests`
+    /// covers the others.
+    static let us = FakeShortcutLayouts.us
+
     /// Modifier combinations to add to a chord's own, and whether the chord should still fire.
     static let extras: [(NSEvent.ModifierFlags, String, Bool)] = [
         ([], "nothing", true),
@@ -36,7 +40,7 @@ struct InterceptedChordTests {
     func eachChordFiresOnlyWithExactlyItsModifiers(chord: Chord) {
         for (extra, label, fires) in Self.extras {
             let modifiers = chord.modifiers.union(extra)
-            let result = InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: modifiers)
+            let result = InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: modifiers, layouts: Self.us)
             #expect(result == (fires ? chord : nil), "\(chord) with \(label)")
         }
     }
@@ -46,22 +50,22 @@ struct InterceptedChordTests {
     @Test(arguments: Chord.allCases)
     func shiftMustMatch(chord: Chord) {
         let toggled = chord.modifiers.symmetricDifference(.shift)
-        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: toggled) == nil)
-        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: toggled.union(.capsLock)) == nil)
+        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: toggled, layouts: Self.us) == nil)
+        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: toggled.union(.capsLock), layouts: Self.us) == nil)
     }
 
     @Test(arguments: Chord.allCases)
     func withoutCommandNothingIsIntercepted(chord: Chord) {
         let noCommand = chord.modifiers.subtracting(.command)
-        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: noCommand) == nil)
-        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: noCommand.union(.option)) == nil)
+        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: noCommand, layouts: Self.us) == nil)
+        #expect(InputManager.interceptedChord(keyCode: chord.keyCode, modifiers: noCommand.union(.option), layouts: Self.us) == nil)
     }
 
     @Test func otherKeysWithCommandAreNotIntercepted() {
         let chordKeys = Set(Self.chords.map(\.keyCode))
         for code in UInt16(0)...UInt16(127) where !chordKeys.contains(code) {
-            #expect(InputManager.interceptedChord(keyCode: code, modifiers: .command) == nil, "⌘ key \(code)")
-            #expect(InputManager.interceptedChord(keyCode: code, modifiers: [.command, .shift]) == nil, "⇧⌘ key \(code)")
+            #expect(InputManager.interceptedChord(keyCode: code, modifiers: .command, layouts: Self.us) == nil, "⌘ key \(code)")
+            #expect(InputManager.interceptedChord(keyCode: code, modifiers: [.command, .shift], layouts: Self.us) == nil, "⇧⌘ key \(code)")
         }
     }
 
@@ -69,18 +73,18 @@ struct InterceptedChordTests {
     @Test func sideBitsAreIgnored() {
         let leftCommand = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.command.rawValue | 0x0008)
         let leftShift = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.shift.rawValue | 0x0002)
-        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: leftCommand.union(leftShift)) == .paste)
-        #expect(InputManager.interceptedChord(keyCode: 1, modifiers: leftCommand.union(leftShift)) == .saveScreenshot)
-        #expect(InputManager.interceptedChord(keyCode: 12, modifiers: leftCommand) == .quit)
-        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: leftCommand) == nil)
+        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: leftCommand.union(leftShift), layouts: Self.us) == .paste)
+        #expect(InputManager.interceptedChord(keyCode: 1, modifiers: leftCommand.union(leftShift), layouts: Self.us) == .saveScreenshot)
+        #expect(InputManager.interceptedChord(keyCode: 12, modifiers: leftCommand, layouts: Self.us) == .quit)
+        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: leftCommand, layouts: Self.us) == nil)
     }
 
     /// Plain ⌘C and ⌘V are the target's: copy and paste inside the target's own apps.
     @Test func plainCommandCAndCommandVAreNotIntercepted() {
-        #expect(InputManager.interceptedChord(keyCode: 8, modifiers: .command) == nil)
-        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: .command) == nil)
-        #expect(InputManager.interceptedChord(keyCode: 8, modifiers: [.command, .shift]) == .copyMode)
-        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: [.command, .shift]) == .paste)
+        #expect(InputManager.interceptedChord(keyCode: 8, modifiers: .command, layouts: Self.us) == nil)
+        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: .command, layouts: Self.us) == nil)
+        #expect(InputManager.interceptedChord(keyCode: 8, modifiers: [.command, .shift], layouts: Self.us) == .copyMode)
+        #expect(InputManager.interceptedChord(keyCode: 9, modifiers: [.command, .shift], layouts: Self.us) == .paste)
     }
 
     // MARK: - Through the input manager
@@ -97,6 +101,7 @@ struct InterceptedChordTests {
 
         init() {
             input = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
+            input.shortcutLayouts = InterceptedChordTests.us
             input.sentInputObserver = { [unowned self] in self.sent.append($0) }
             input.onLocalShortcut = { [unowned self] in self.shortcuts.append($0) }
             input.startKeyboardCapture()
@@ -252,6 +257,7 @@ struct InterceptedChordTests {
     @Test func withCaptureOffTheChordsGoToTheMenus() {
         let scratch = ScratchDefaults()
         let input = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
+        input.shortcutLayouts = Self.us
         var sent: [InputManager.SentInput] = []
         var shortcuts: [InputManager.LocalShortcut] = []
         var reads = 0
@@ -428,6 +434,7 @@ struct ClipboardChordSocketTests {
             return .ok()
         }
         input = InputManager(defaults: scratch.defaults, log: SessionLog(destination: .inMemory()))
+        input.shortcutLayouts = FakeShortcutLayouts.us
         input.readClipboardText = { "echo hello" }
         input.startKeyboardCapture()
         input.windowDidBecomeKey(windowNumber: Self.window)
