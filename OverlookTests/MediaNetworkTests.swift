@@ -394,6 +394,8 @@ struct RemoteOfferFilterTests {
         #expect(result.keptWholeOffer)
         #expect(result.sdp == publicOnly)
         #expect(result.dropped.isEmpty)
+        #expect(result.usedWhole.count == 4)
+        #expect(Array(result.usedWholeLabels.prefix(3)) == ["203.0.113.7", "2001:db8::5", "fd12:3456::1"])
     }
 
     @Test func oneSectionWithNoPrivateCandidateLeavesTheWholeOfferAlone() {
@@ -605,6 +607,19 @@ struct ManagerMediaRouteTests {
         #expect(await messages(containing: "Video and audio limited to the LAN (chosen network only): the KVM's video offer "
             + "has no candidate on that network; keeping all of its candidates for this offer").count == 1)
         #expect(await messages(containing: "dropped").isEmpty)
+    }
+
+    @Test func theFallbackWarningNamesTheAddressesInUse() async {
+        await manager.prepareMediaRoute(for: device("192.168.0.131"))
+        // Two sections carrying the same public address: each is named once.
+        let offer = KVMOffer.sdp(KVMOffer.header
+            + KVMOffer.section("video", mid: 0, candidates: [KVMOffer.publicV4, KVMOffer.globalV6])
+            + KVMOffer.section("audio", mid: 1, candidates: [KVMOffer.publicV4, KVMOffer.ulaV6]))
+        var applied: [String] = []
+        await manager.applyRemoteOffer(offer, leg: .video) { applied.append($0.sdp) }
+        #expect(applied == [offer])
+        #expect(await messages(containing: "keeping all of its candidates for this offer "
+            + "(203.0.113.7, 2001:db8::5, fd12:3456::1)").count == 1)
     }
 
     @Test func allAddressesPassesTheOfferThroughUntouched() async {

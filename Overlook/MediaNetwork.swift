@@ -273,6 +273,15 @@ struct RemoteOfferFilterResult: Equatable {
     let dropped: [ICECandidateLine]
     /// True when filtering would have left nothing to connect to, so the offer was left whole.
     let keptWholeOffer: Bool
+    /// When the offer was left whole: every candidate in it, in the order they appeared, which is
+    /// what the connection may now use. Empty otherwise.
+    var usedWhole: [ICECandidateLine] = []
+
+    /// The addresses of `usedWhole` as the log writes them, each once.
+    var usedWholeLabels: [String] {
+        var seen: Set<String> = []
+        return usedWhole.map(\.label).filter { seen.insert($0).inserted }
+    }
 }
 
 // MARK: - The route for one connect
@@ -466,6 +475,7 @@ struct MediaRoute: Equatable {
         let lines = sdp.components(separatedBy: "\n")
         var kept: [String] = []
         var dropped: [ICECandidateLine] = []
+        var all: [ICECandidateLine] = []
         var sectionHad = 0
         var sectionKept = 0
         var emptiedASection = false
@@ -481,6 +491,7 @@ struct MediaRoute: Equatable {
                 closeSection()
             }
             if line.hasPrefix("a=candidate:"), let candidate = ICECandidateLine(line) {
+                all.append(candidate)
                 sectionHad += 1
                 if keepsRemote(candidate) {
                     sectionKept += 1
@@ -494,7 +505,7 @@ struct MediaRoute: Equatable {
         closeSection()
 
         if emptiedASection {
-            return RemoteOfferFilterResult(sdp: sdp, dropped: [], keptWholeOffer: true)
+            return RemoteOfferFilterResult(sdp: sdp, dropped: [], keptWholeOffer: true, usedWhole: all)
         }
         return RemoteOfferFilterResult(sdp: kept.joined(separator: "\n"), dropped: dropped, keptWholeOffer: false)
     }

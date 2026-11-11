@@ -161,6 +161,37 @@ struct PeerConnectionRoles<Peer: AnyObject> {
         }
     }
 
+    /// Where a callback that is only logged came from (signaling state, streams added and
+    /// removed, renegotiation, candidates removed, a data channel opening).
+    enum LogSource: Equatable {
+        /// The current connection's peer.
+        case current(Role)
+        /// A peer a teardown has let go of, whose close has not been handled yet. The current
+        /// connection's own teardown lines land here: they are handled after the teardown.
+        case tornDown(Role)
+        /// A peer whose close has been handled, or one this never saw.
+        case unknown
+    }
+
+    /// Where a log-only callback from `peer` came from. Asking changes nothing.
+    func logSource(of peer: Peer) -> LogSource {
+        guard let entry = entries[ObjectIdentifier(peer)] else { return .unknown }
+        return entry.retiredAt == nil ? .current(entry.role) : .tornDown(entry.role)
+    }
+
+    /// What goes in front of a log-only line, so a torn-down peer's late line reads as that peer's
+    /// rather than as part of whatever connection is current when it is handled. No line is
+    /// dropped: a connection's own teardown lines come in after the teardown, and still appear.
+    static func logPrefix(_ source: LogSource) -> String {
+        switch source {
+        case .current(.video): return "Video peer: "
+        case .current(.audio): return "Audio peer: "
+        case .tornDown(.video): return "Torn-down video peer: "
+        case .tornDown(.audio): return "Torn-down audio peer: "
+        case .unknown: return "Torn-down peer: "
+        }
+    }
+
     /// `isClosed` is whether the new state is `closed`, which only a teardown's `close()` causes.
     mutating func disposition(for peer: Peer, isClosed: Bool) -> Disposition {
         let key = ObjectIdentifier(peer)
@@ -894,10 +925,12 @@ class WebRTCManager: NSObject, ObservableObject {
     ) async {
         let result = mediaRoute.filterRemoteOffer(sdp)
         if result.keptWholeOffer {
+            let used = result.usedWholeLabels
             log.warning(
                 .ice,
                 "\(mediaRoute.limitDescription): the KVM's \(leg) offer has no candidate on that network; "
                     + "keeping all of its candidates for this offer"
+                    + (used.isEmpty ? "" : " (\(used.joined(separator: ", ")))")
             )
         } else if !result.dropped.isEmpty {
             let labels = result.dropped.map(\.label)
@@ -2698,27 +2731,32 @@ class WebRTCManager: NSObject, ObservableObject {
 
 // MARK: - RTCPeerConnectionDelegate
 extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
+    /// The peer a log-only callback came from, in front of its line (`PeerConnectionRoles.logPrefix`).
+    private func peerLogPrefix(_ peerConnection: RTCPeerConnection) -> String {
+        PeerConnectionRoles<RTCPeerConnection>.logPrefix(peerRoles.logSource(of: peerConnection))
+    }
+
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
         Task { @MainActor in
-            self.log.debug(.signaling, "Signaling state: \(stateChanged.rawValue)")
+            self.log.debug(.signaling, "\(self.peerLogPrefix(peerConnection))Signaling state: \(stateChanged.rawValue)")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         Task { @MainActor in
-            self.log.info(.stream, "Media stream added")
+            self.log.info(.stream, "\(self.peerLogPrefix(peerConnection))Media stream added")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {
         Task { @MainActor in
-            self.log.notice(.stream, "Media stream removed")
+            self.log.notice(.stream, "\(self.peerLogPrefix(peerConnection))Media stream removed")
         }
     }
     
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {
         Task { @MainActor in
-            self.log.debug(.signaling, "Renegotiation needed")
+            self.log.debug(.signaling, "\(self.peerLogPrefix(peerConnection))Renegotiation needed")
         }
     }
     
@@ -2811,13 +2849,13 @@ extension WebRTCManager: @preconcurrency RTCPeerConnectionDelegate {
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {
         Task { @MainActor in
-            self.log.debug(.ice, "ICE candidates removed")
+            self.log.debug(.ice, "\(self.peerLogPrefix(peerConnection))ICE candidates removed")
         }
     }
     
     func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
         Task { @MainActor in
-            self.log.debug(.signaling, "Data channel opened")
+            self.log.debug(.signaling, "\(self.peerLogPrefix(peerConnection))Data channel opened")
         }
     }
 
