@@ -228,13 +228,7 @@ struct ContentView: View {
                             Divider()
                                 .frame(height: 18)
 
-                            Button(action: { toggleOCR() }) {
-                                Image(systemName: session.isOCRModeEnabled
-                                      ? "text.viewfinder"
-                                      : "rectangle.and.text.magnifyingglass")
-                            }
-                            .disabled(!isConnected)
-                            .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+                            OCRSelectionToggle(isConnected: isConnected)
 
                             OCRSnippetButton()
 
@@ -620,13 +614,7 @@ struct ContentView: View {
                 // to neither neighbour: it records nothing, and it acts on the video rather than on
                 // the app.
                 ToolbarItemGroup(placement: .automatic) {
-                    Button(action: { toggleOCR() }) {
-                        Image(systemName: session.isOCRModeEnabled
-                              ? "text.viewfinder"
-                              : "rectangle.and.text.magnifyingglass")
-                    }
-                    .disabled(!isConnected)
-                    .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+                    OCRSelectionToggle(isConnected: isConnected)
 
                     OCRSnippetButton()
                 }
@@ -727,11 +715,6 @@ struct ContentView: View {
         }
     }
     
-    @MainActor
-    private func toggleOCR() {
-        session.isOCRModeEnabled.toggle()
-    }
-
     /// Only one panel can be open at a time — `PanelPresentation` holds a single optional, so
     /// that is a property of the state rather than something each button has to arrange.
     @MainActor

@@ -70,6 +70,32 @@ struct RecordingElapsedLabel: View {
     }
 }
 
+/// The two OCR buttons' symbols. Each button keeps its own symbol whatever its state, so the two
+/// never look alike: the selection toggle shows "on" the way the other titlebar toggles do, lit.
+enum OCRToolbarSymbols {
+    /// Enable OCR Selection, off and on alike.
+    static let selection = "rectangle.and.text.magnifyingglass"
+    /// Copy Text from Area.
+    static let copyTextFromArea = "text.viewfinder"
+}
+
+/// OCR selection toggle (⇧⌘C): lit while OCR mode is on, like the capture-region and Copy Text
+/// from Area toggles beside it. Greyed out unless connected.
+struct OCRSelectionToggle: View {
+    @EnvironmentObject var session: ConsoleSession
+    let isConnected: Bool
+
+    var body: some View {
+        Toggle(isOn: $session.isOCRModeEnabled) {
+            Image(systemName: OCRToolbarSymbols.selection)
+        }
+        .toggleStyle(.button)
+        .disabled(!isConnected)
+        .help(session.isOCRModeEnabled ? "Disable OCR Selection (⇧⌘C)" : "Enable OCR Selection (⇧⌘C)")
+        .accessibilityLabel("OCR Selection")
+    }
+}
+
 /// OCR snippet button: click, drag a box over text on the video, and the text goes on this Mac's
 /// clipboard. Lit while the box is being drawn; clicking it then cancels. Greyed out unless video
 /// is showing.
@@ -82,7 +108,7 @@ struct OCRSnippetButton: View {
             get: { ocrSnippet.isSelecting },
             set: { _ in session.toggleOCRSnippet() }
         )) {
-            Image(systemName: "text.viewfinder")
+            Image(systemName: OCRToolbarSymbols.copyTextFromArea)
         }
         .toggleStyle(.button)
         .disabled(!ocrSnippet.isAvailable && !ocrSnippet.isSelecting)

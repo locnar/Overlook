@@ -460,6 +460,23 @@ struct OCRSnippetTests {
     }
 }
 
+// MARK: - The titlebar's OCR buttons
+
+@Suite("OCR toolbar symbols")
+struct OCRToolbarSymbolTests {
+    @Test func theSelectionToggleNeverLooksLikeCopyTextFromArea() {
+        // The toggle used to switch to Copy Text from Area's symbol while OCR mode was on.
+        #expect(OCRToolbarSymbols.selection != OCRToolbarSymbols.copyTextFromArea)
+        #expect(OCRToolbarSymbols.selection != "text.viewfinder")
+        #expect(OCRToolbarSymbols.copyTextFromArea == "text.viewfinder")
+    }
+
+    @Test func bothSymbolsExist() {
+        #expect(NSImage(systemSymbolName: OCRToolbarSymbols.selection, accessibilityDescription: nil) != nil)
+        #expect(NSImage(systemSymbolName: OCRToolbarSymbols.copyTextFromArea, accessibilityDescription: nil) != nil)
+    }
+}
+
 // MARK: - The notice's words
 
 @MainActor
