@@ -61,6 +61,83 @@ struct DeviceMenuTitle: Equatable {
             .max() ?? 0
         return ceil(nameWidth + gap + addressWidth)
     }
+
+    /// Where the closed pop-up draws the selected row inside `frame`, its title area: the address
+    /// against the right edge, as the open menu has it, and the name from the left edge up to
+    /// `gap` short of the address (truncated there if it is longer).
+    static func closedLayout(in frame: NSRect, addressWidth: CGFloat, gap: CGFloat = 12) -> (name: NSRect, address: NSRect) {
+        let width = min(ceil(addressWidth), frame.width)
+        let address = NSRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height)
+        let name = NSRect(x: frame.minX, y: frame.minY, width: max(0, address.minX - gap - frame.minX), height: frame.height)
+        return (name, address)
+    }
+}
+
+/// The device pop-up's cell. The open menu lays a row out with a right-aligned tab stop, but the
+/// closed pop-up ignored it and drew the address straight after the name; this draws the selected
+/// row itself, the address right-aligned in the menu's monospaced secondary style and on the
+/// name's baseline. The placeholder, and a device shown by its address alone, are drawn as before.
+final class DevicePopUpCell: NSPopUpButtonCell {
+    /// The rows after the placeholder, as the button holds them.
+    var titles: [DeviceMenuTitle] = []
+
+    /// Room at the right of the closed pop-up for its arrows; the address ends just left of them.
+    static let arrowsWidth: CGFloat = 26
+
+    /// The selected row when it has an address to put on the right.
+    private var selectedRow: DeviceMenuTitle? {
+        let index = indexOfSelectedItem - 1
+        guard titles.indices.contains(index), titles[index].address != nil else { return nil }
+        return titles[index]
+    }
+
+    override func drawTitle(_ title: NSAttributedString, withFrame frame: NSRect, in controlView: NSView) -> NSRect {
+        guard let row = selectedRow else {
+            return super.drawTitle(title, withFrame: frame, in: controlView)
+        }
+        // `frame` is only as wide as the title the cell measured (name and address with the tab
+        // read as a space); the row is laid out from its left edge to the arrows instead.
+        let area = Self.titleArea(from: frame, bounds: controlView.bounds)
+        draw(row, in: area, flipped: controlView.isFlipped)
+        return area
+    }
+
+    /// From the left of the title the cell measured to just short of the arrows.
+    static func titleArea(from frame: NSRect, bounds: NSRect) -> NSRect {
+        let right = max(frame.maxX, bounds.maxX - arrowsWidth)
+        return NSRect(x: frame.minX, y: frame.minY, width: right - frame.minX, height: frame.height)
+    }
+
+    private func draw(_ row: DeviceMenuTitle, in frame: NSRect, flipped: Bool) {
+        let nameFont = font ?? DeviceMenuTitle.nameFont
+        let addressFont = DeviceMenuTitle.addressFont
+        let truncating = NSMutableParagraphStyle()
+        truncating.lineBreakMode = .byTruncatingTail
+        let name = NSAttributedString(string: row.name, attributes: [
+            .font: nameFont,
+            .foregroundColor: isEnabled ? NSColor.labelColor : NSColor.disabledControlTextColor,
+            .paragraphStyle: truncating,
+        ])
+        let address = NSAttributedString(string: row.address ?? "", attributes: [
+            .font: addressFont,
+            .foregroundColor: isEnabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor,
+        ])
+        let layout = DeviceMenuTitle.closedLayout(in: frame, addressWidth: address.size().width)
+
+        // The name's line centred in the frame, the address's on the same baseline. Offsets are
+        // from the frame's top as it looks on screen.
+        let nameHeight = ceil(nameFont.ascender - nameFont.descender + nameFont.leading)
+        let addressHeight = ceil(addressFont.ascender - addressFont.descender + addressFont.leading)
+        let nameTop = (frame.height - nameHeight) / 2
+        let addressTop = nameTop + nameFont.ascender - addressFont.ascender
+        func line(_ rect: NSRect, top: CGFloat, height: CGFloat) -> NSRect {
+            let y = flipped ? rect.minY + top : rect.maxY - top - height
+            return NSRect(x: rect.minX, y: y, width: rect.width, height: height)
+        }
+        let options: NSString.DrawingOptions = [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
+        name.draw(with: line(layout.name, top: nameTop, height: nameHeight), options: options)
+        address.draw(with: line(layout.address, top: addressTop, height: addressHeight), options: options)
+    }
 }
 
 /// The Connections panel's device menu: an AppKit pop-up button, because a SwiftUI `Picker` draws
@@ -116,8 +193,16 @@ struct DevicePopUpButton: NSViewRepresentable {
     /// Lays the rows out again whenever its width changes, so the addresses sit against the
     /// right edge of the button and of its menu (which is as wide as the button).
     final class DevicePopUpNSButton: NSPopUpButton {
+        override class var cellClass: AnyClass? {
+            get { DevicePopUpCell.self }
+            set {}
+        }
+
         var titles: [DeviceMenuTitle] = [] {
-            didSet { applyTitles(force: true) }
+            didSet {
+                (cell as? DevicePopUpCell)?.titles = titles
+                applyTitles(force: true)
+            }
         }
         private var appliedColumn: CGFloat = -1
 

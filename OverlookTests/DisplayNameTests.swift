@@ -132,6 +132,45 @@ struct DisplayNameTests {
         #expect(wider.tabStops.first?.location == 400 - DevicePopUpButton.DevicePopUpNSButton.trailingInset)
     }
 
+    @Test func theClosedPopUpPutsTheAddressAgainstTheRightEdge() {
+        let frame = NSRect(x: 8, y: 2, width: 300, height: 16)
+        let layout = DeviceMenuTitle.closedLayout(in: frame, addressWidth: 80.4)
+        #expect(layout.address.maxX == frame.maxX)
+        #expect(layout.address.width == 81)
+        #expect(layout.name.minX == frame.minX)
+        #expect(layout.name.maxX == layout.address.minX - 12)
+        #expect(layout.name.minY == frame.minY && layout.address.height == frame.height)
+
+        // A frame too narrow for both: the address keeps the right edge, the name gets nothing.
+        let narrow = DeviceMenuTitle.closedLayout(in: NSRect(x: 0, y: 0, width: 60, height: 16), addressWidth: 80)
+        #expect(narrow.address.maxX == 60)
+        #expect(narrow.name.width == 0)
+    }
+
+    @Test func theClosedTitleRunsFromTheMeasuredTitleToTheArrows() {
+        // What the cell hands over: a rect only as wide as the title it measured.
+        let measured = NSRect(x: 12, y: 3, width: 172.5, height: 16)
+        let bounds = NSRect(x: 0, y: 0, width: 340, height: 22)
+        let area = DevicePopUpCell.titleArea(from: measured, bounds: bounds)
+        #expect(area.minX == 12)
+        #expect(area.maxX == 340 - DevicePopUpCell.arrowsWidth)
+        #expect(area.minY == 3 && area.height == 16)
+        // Never narrower than what was measured.
+        #expect(DevicePopUpCell.titleArea(from: measured, bounds: NSRect(x: 0, y: 0, width: 150, height: 22)).maxX == measured.maxX)
+    }
+
+    @Test func theDevicePopUpDrawsWithItsOwnCell() throws {
+        let button = DevicePopUpButton.DevicePopUpNSButton(frame: NSRect(x: 0, y: 0, width: 340, height: 22), pullsDown: false)
+        button.addItems(withTitles: [DevicePopUpButton.placeholder, "Desk"])
+        let titles = [DeviceMenuTitle(name: "Desk", address: "192.168.0.131")]
+        button.titles = titles
+        let cell = try #require(button.cell as? DevicePopUpCell)
+        #expect(cell.titles == titles)
+        // The cell's menu is the button's: rows added to it are the ones the cell selects.
+        button.selectItem(at: 1)
+        #expect(cell.indexOfSelectedItem == 1)
+    }
+
     // MARK: - Window title and the recording question
 
     @Test func theWindowTitleUsesTheNicknameOrTheAddress() {
