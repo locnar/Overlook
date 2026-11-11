@@ -26,7 +26,7 @@ struct InputMappingTests {
             58: "AltLeft", 61: "AltRight", 59: "ControlLeft", 62: "ControlRight", 57: "CapsLock",
             123: "ArrowLeft", 126: "ArrowUp", 115: "Home", 121: "PageDown",
             122: "F1", 111: "F12", 64: "F17",
-            82: "Numpad0", 76: "NumpadEnter", 81: "NumpadEqual",
+            82: "Numpad0", 76: "NumpadEnter", 81: "Equal",
         ]
         for (code, name) in expected {
             #expect(input.glkvmKeyForMacKeyCode(code) == name, "key code \(code)")
@@ -41,14 +41,17 @@ struct InputMappingTests {
         #expect(input.glkvmKeyForMacKeyCode(999) == nil)
     }
 
-    @Test func noTwoKeyCodesShareAName() {
+    /// Keypad = (81) is the one key code that shares a name: kvmd has no keypad =, so it goes as
+    /// Equal, like = (24).
+    @Test func noTwoKeyCodesShareANameButKeypadEquals() {
         var seen: [String: UInt16] = [:]
-        for code in UInt16(0)...UInt16(255) {
+        for code in UInt16(0)...UInt16(255) where code != 81 {
             guard let name = input.glkvmKeyForMacKeyCode(code) else { continue }
             #expect(seen[name] == nil, "\(name) from both \(seen[name] ?? 0) and \(code)")
             seen[name] = code
         }
-        #expect(seen.count == 111)
+        #expect(seen.count == 110)
+        #expect(input.glkvmKeyForMacKeyCode(81) == input.glkvmKeyForMacKeyCode(24))
     }
 
     @Test func typedLettersBecomeTheirKeys() {

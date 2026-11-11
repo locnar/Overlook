@@ -1933,7 +1933,8 @@ class InputManager: ObservableObject {
         case 78: return "NumpadSubtract"
         case 75: return "NumpadDivide"
         case 76: return "NumpadEnter"
-        case 81: return "NumpadEqual"
+        // kvmd has no NumpadEqual and drops it; Equal types the same "=".
+        case 81: return "Equal"
 
         // kVK_Help sits where a PC keyboard has Insert, and browsers report it as Insert;
         // kvmd has no "Help".

@@ -28,7 +28,7 @@ struct KeyCodeTableTests {
         82: "Numpad0", 83: "Numpad1", 84: "Numpad2", 85: "Numpad3", 86: "Numpad4",
         87: "Numpad5", 88: "Numpad6", 89: "Numpad7", 91: "Numpad8", 92: "Numpad9",
         65: "NumpadDecimal", 67: "NumpadMultiply", 69: "NumpadAdd", 78: "NumpadSubtract",
-        75: "NumpadDivide", 76: "NumpadEnter", 81: "NumpadEqual",
+        75: "NumpadDivide", 76: "NumpadEnter", 81: "Equal",
         // Navigation
         114: "Insert", 115: "Home", 119: "End", 116: "PageUp", 121: "PageDown", 117: "Delete",
         123: "ArrowLeft", 124: "ArrowRight", 125: "ArrowDown", 126: "ArrowUp",
@@ -61,9 +61,9 @@ struct KeyCodeTableTests {
         "F23", "F24", "F13", "F14", "F15", "F16", "F17", "F18", "F19",
     ]
 
-    /// Names Overlook sends that kvmd has no entry for. It predates this table and is kept as it
-    /// was; the device ignores it.
-    static let namesKvmdDoesNotKnow: Set<String> = ["NumpadEqual"]
+    /// Names Overlook sends that kvmd has no entry for: none. Keypad = used to go as NumpadEqual,
+    /// which the device dropped.
+    static let namesKvmdDoesNotKnow: Set<String> = []
 
     @Test func everyKeyCodeMapsAsTheTableSays() {
         for code in UInt16(0)...UInt16(255) {
@@ -113,6 +113,15 @@ struct KeyCodeTableTests {
         }
         #expect(Self.kvmdNames.contains("Insert"))
         #expect(!Self.table.values.contains("Help"))
+    }
+
+    /// Keypad = goes as Equal, the key kvmd knows, so the target types "=".
+    @Test func keypadEqualsIsEqual() {
+        for iso in [false, true] {
+            #expect(InputManager.glkvmKey(forMacKeyCode: 81, isISOKeyboard: iso) == "Equal")
+        }
+        #expect(!Self.kvmdNames.contains("NumpadEqual"))
+        #expect(!Self.table.values.contains("NumpadEqual"))
     }
 
     @Test func everyNameSentIsOneKvmdKnows() {
