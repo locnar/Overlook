@@ -205,8 +205,7 @@ struct MenuBarAgentTests {
             mirror = current.superclassMirror
         }
         #expect(labels.contains("menu"), "the mirror should see the agent's stored properties")
-        // Matches the old `globalKeyMonitor` or any other key or event monitor, but not
-        // `monitoringWindow`, an unrelated window property.
+        // Matches the old `globalKeyMonitor` or any other key or event monitor.
         let monitors = labels.filter { label in
             ["keymonitor", "eventmonitor", "globalmonitor"].contains { label.lowercased().contains($0) }
         }

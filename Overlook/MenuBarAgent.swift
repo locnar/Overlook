@@ -8,7 +8,6 @@ class MenuBarAgent: NSObject, ObservableObject {
     /// The status menu, built by `createMenu`.
     private(set) var menu: NSMenu?
     private var popover: NSPopover?
-    private var monitoringWindow: NSWindow?
 
     private let kvmDeviceManager: KVMDeviceManager
     private let registry: SessionRegistry
@@ -212,9 +211,11 @@ class MenuBarAgent: NSObject, ObservableObject {
         menu.addItem(header)
         menu.addItem(NSMenuItem.separator())
 
-        // Actions on the active session. The key equivalents shown here are the Capture menu's;
-        // in this status menu they are labels only (a status item menu has no key window to
-        // receive them).
+        // Actions on the active session. The key equivalents shown are the Capture menu's. This
+        // menu is attached to the status item only while it is open (`statusItemClicked`) and is
+        // never in the main menu, so ⇧⌘S and ⇧⌘R reach these items only while it is open (AppKit
+        // matches an open menu's key equivalents); the rest of the time the chord is the Capture
+        // menu's, for the key console window.
         let screenshotItem = NSMenuItem(title: StatusMenuModel.screenshotTitle, action: #selector(saveScreenshot), keyEquivalent: "s")
         screenshotItem.keyEquivalentModifierMask = [.command, .shift]
         screenshotItem.target = self
@@ -747,7 +748,6 @@ class MenuBarAgent: NSObject, ObservableObject {
         statusItem = nil
         menu = nil
         popover = nil
-        monitoringWindow = nil
         cancellables.removeAll()
         sessionCancellables.removeAll()
     }

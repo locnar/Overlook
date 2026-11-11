@@ -1140,7 +1140,7 @@ final class FakeScanDiscovery: ScanDiscovery, @unchecked Sendable {
         interfaceList = interfaces
     }
 
-    /// What the source named `name` ("_comet._tcp", "_kvm._tcp", "sweep", "tailnet") returns;
+    /// What the source named `name` ("_comet._tcp", "_kvm._tcp", "sweep") returns;
     /// nothing until set.
     func answer(_ name: String, with source: @escaping Source) {
         lock.withLock { sources[name] = source }
@@ -1177,7 +1177,6 @@ final class FakeScanDiscovery: ScanDiscovery, @unchecked Sendable {
         lock.withLock { _sweptHosts.append(hosts) }
         return await run("sweep")
     }
-    func tailnet() async -> [KVMDevice] { await run("tailnet") }
 }
 
 /// The Connections panel's Scan / Cancel scan button and its caption.
@@ -1278,7 +1277,6 @@ struct ScanCancelTests {
         discovery.answer("_comet._tcp") { [Self.linux] }
         discovery.hang("_kvm._tcp", thenReturn: [Self.late])
         discovery.hang("sweep", thenReturn: [Self.late])
-        discovery.hang("tailnet", thenReturn: [Self.late])
 
         catalog.toggleScan()
         #expect(await waitUntil { listedHosts.contains("192.168.0.131") })
@@ -1290,8 +1288,8 @@ struct ScanCancelTests {
         #expect(ScanRowState(isScanning: catalog.isScanning, ranges: catalog.scanRanges) == ScanRowState(isScanning: false, ranges: []))
         #expect(listedHosts == ["192.168.0.131"])
         #expect(log.messages.filter { $0 == "Scan cancelled" }.count == 1)
-        // The Bonjour browse still running, the sweep and the tailnet all see the cancellation.
-        #expect(await waitUntil { Set(discovery.cancelled) == ["_kvm._tcp", "sweep", "tailnet"] })
+        // The Bonjour browse still running and the sweep both see the cancellation.
+        #expect(await waitUntil { Set(discovery.cancelled) == ["_kvm._tcp", "sweep"] })
         // What they return after it never reaches the list, and the scan never logs an end.
         try? await Task.sleep(for: .milliseconds(100))
         #expect(listedHosts == ["192.168.0.131"])
@@ -1302,15 +1300,13 @@ struct ScanCancelTests {
         discovery.hang("_comet._tcp", thenReturn: [Self.late])
         discovery.hang("_kvm._tcp", thenReturn: [Self.late])
         discovery.hang("sweep", thenReturn: [Self.late])
-        discovery.hang("tailnet", thenReturn: [Self.late])
         catalog.scanForDevices()
-        #expect(await waitUntil { discovery.entered.count == 4 })
+        #expect(await waitUntil { discovery.entered.count == 3 })
         catalog.cancelScan()
 
         discovery.answer("_comet._tcp") { [Self.linux] }
         discovery.answer("_kvm._tcp") { [] }
         discovery.answer("sweep") { [Self.linux, Self.surface] }
-        discovery.answer("tailnet") { [] }
         catalog.toggleScan()
 
         #expect(catalog.isScanning)
@@ -1323,7 +1319,7 @@ struct ScanCancelTests {
         #expect(log.messages.filter { $0 == "Scan cancelled" }.count == 1)
         #expect(log.messages.contains { $0.hasPrefix("Scan finished") && $0.contains("192.168.0.131") && $0.contains("192.168.0.114") })
         // The first scan's sources return their late results once cancelled; none lands.
-        #expect(await waitUntil { discovery.cancelled.count == 4 })
+        #expect(await waitUntil { discovery.cancelled.count == 3 })
         try? await Task.sleep(for: .milliseconds(100))
         #expect(!listedHosts.contains("192.168.0.99"))
     }

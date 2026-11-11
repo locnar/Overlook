@@ -202,7 +202,7 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         let discovery = discovery
         let scanLog = scanLog
 
-        // Bonjour, the sweep and the tailnet side by side. Cancelling this task cancels each of
+        // Bonjour and the sweep side by side. Cancelling this task cancels each of
         // them: the Bonjour browsers stop, the sweep starts no new connect or probe, and probes in
         // flight are cancelled with their requests.
         scanTask = Task { [weak self] in
@@ -211,7 +211,6 @@ final class KVMDeviceManager: NSObject, ObservableObject {
                     group.addTask { await discovery.bonjour(type: type) }
                 }
                 group.addTask { await discovery.sweep(hosts: sweepHosts) }
-                group.addTask { await discovery.tailnet() }
 
                 var allDevices: [KVMDevice] = []
                 for await devices in group {
@@ -650,11 +649,6 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         return String(cString: buffer)
     }
 
-    /// Whether `host:port` accepts a TCP connection within `timeout`.
-    nonisolated private static func probeTCPPortOpen(host: String, port: Int, timeout: TimeInterval) async -> Bool {
-        await checkPort(host: host, port: port, timeout: timeout) == .open
-    }
-
     /// What one TCP connect to `host:port` learns within `timeout`. A refusal, or a host the
     /// system already knows is down, closes the port at once (`DiscoverySweep.isAnswer`); while
     /// Network waits for any other reason the attempt carries on (Network retries by itself), and
@@ -709,49 +703,6 @@ final class KVMDeviceManager: NSObject, ObservableObject {
         }
     }
 
-    nonisolated private static func checkKVMService(host: String, port: Int, session: URLSession) async -> KVMDevice? {
-        // A closed or absent port is rejected by one TCP probe in about a second; the HTTP probes
-        // below would each wait out their own timeouts on it, several times over per target.
-        guard await Self.probeTCPPortOpen(host: host, port: port, timeout: 1.0) else { return nil }
-        return await DiscoveryHTTPProbe(session: session).identify(host: host, port: port)
-    }
-
-    nonisolated static func discoverTailscaleDevices(session: URLSession) async -> [KVMDevice] {
-        var devices: [KVMDevice] = []
-        
-        // Check if Tailscale is available and discover devices on Tailscale network
-        let tailscaleHosts = await getTailscaleHosts()
-        
-        for host in tailscaleHosts {
-            if let device = await checkTailscaleKVM(host: host, session: session) {
-                devices.append(device)
-            }
-        }
-        
-        return devices
-    }
-    
-    nonisolated private static func getTailscaleHosts() async -> [String] {
-        // Get Tailscale network hosts
-        // This would typically involve calling tailscale API or parsing status output
-        return []
-    }
-    
-    nonisolated private static func checkTailscaleKVM(host: String, session: URLSession) async -> KVMDevice? {
-        // Check common KVM ports on Tailscale hosts
-        let ports = [8443, 8080, 443]
-        
-        for port in ports {
-            if let device = await checkKVMService(host: host, port: port, session: session) {
-                var tailscaleDevice = device
-                tailscaleDevice.type = .tailscale
-                return tailscaleDevice
-            }
-        }
-        
-        return nil
-    }
-    
     /// The device list a scan shows: every saved or added device, whatever the scan found or
     /// failed to reach, plus one entry per other host found.
     nonisolated static func scanListing(pinned: [KVMDevice], found: [KVMDevice]) -> [KVMDevice] {
@@ -1272,11 +1223,9 @@ protocol ScanDiscovery: Sendable {
     func bonjour(type: String) async -> [KVMDevice]
     /// The GLKVMs among `hosts`, swept on `sweptPorts`.
     func sweep(hosts: [String]) async -> [KVMDevice]
-    /// The GLKVMs on the tailnet.
-    func tailnet() async -> [KVMDevice]
 }
 
-/// The network: Bonjour, the /24 sweep and the tailnet, each probed with `DiscoveryHTTPProbe`.
+/// The network: Bonjour and the /24 sweep, each probed with `DiscoveryHTTPProbe`.
 struct LiveScanDiscovery: ScanDiscovery {
     /// Discovery probes accept any certificate: they hit arbitrary LAN hosts, send no credentials,
     /// and must not pin whatever those hosts present. Real connections go through DeviceTrustStore.
@@ -1324,10 +1273,6 @@ struct LiveScanDiscovery: ScanDiscovery {
 
     func sweep(hosts: [String]) async -> [KVMDevice] {
         await KVMDeviceManager.scanKnownPorts(hosts: hosts, session: Self.probeSession)
-    }
-
-    func tailnet() async -> [KVMDevice] {
-        await KVMDeviceManager.discoverTailscaleDevices(session: Self.probeSession)
     }
 }
 
