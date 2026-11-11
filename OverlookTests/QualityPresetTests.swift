@@ -84,12 +84,10 @@ struct QualityPresetTests {
     }
 
     /// A missing value, or one that is not a whole number, reads as none rather than as Medium.
-    @Test(arguments: [nil, JSONValue.string("medium"), .string("1"), .double(2.5), .bool(true), .null])
-    func aMissingOrUnreadableValueDecodesAsNone(_ stored: JSONValue?) throws {
+    @Test(arguments: UnreadableQuality.allCases)
+    func aMissingOrUnreadableValueDecodesAsNone(_ stored: UnreadableQuality) throws {
         var file: GLKVMJSONObject = ["theme_mode": .string("0")]
-        if let stored {
-            file["stream_quality"] = stored
-        }
+        file["stream_quality"] = stored.json
         let config = try JSONDecoder().decode(GLKVMSystemConfig.self, from: JSONEncoder().encode(file))
         #expect(config.streamQuality == nil)
         // And is not written back as anything.
@@ -100,6 +98,24 @@ struct QualityPresetTests {
         let file: GLKVMJSONObject = ["stream_quality": .int(3)]
         let config = try JSONDecoder().decode(GLKVMSystemConfig.self, from: JSONEncoder().encode(file))
         #expect(config.streamQuality == 3)
+    }
+}
+
+/// A `stream_quality` the model cannot read as a whole number, as test arguments (which must be
+/// `Sendable`; `JSONValue` is not).
+enum UnreadableQuality: String, CaseIterable, Sendable {
+    case missing, word, digitsAsText, fraction, flag, null
+
+    /// The value stored on the device; nil leaves the key out.
+    var json: JSONValue? {
+        switch self {
+        case .missing: return nil
+        case .word: return .string("medium")
+        case .digitsAsText: return .string("1")
+        case .fraction: return .double(2.5)
+        case .flag: return .bool(true)
+        case .null: return .null
+        }
     }
 }
 
@@ -269,9 +285,9 @@ struct QualityPresetApplyTests {
         #expect(fixture.model.selectedVideoQualityPreset == WebUISettingsPanelModel.videoQualityCustomTag)
     }
 
-    @Test(arguments: [nil, JSONValue.string("medium"), .double(2.5)])
-    func loadingAMissingOrUnreadableValueSelectsCustom(_ stored: JSONValue?) async throws {
-        config.stored["stream_quality"] = stored
+    @Test(arguments: [UnreadableQuality.missing, .word, .fraction])
+    func loadingAMissingOrUnreadableValueSelectsCustom(_ stored: UnreadableQuality) async throws {
+        config.stored["stream_quality"] = stored.json
         let fixture = try makeFixture()
         fixture.model.selectedVideoQualityPreset = QualityPreset.medium.rawValue
 
@@ -283,22 +299,22 @@ struct QualityPresetApplyTests {
         #expect(fixture.device.requests(to: "/api/system/set_config").isEmpty)
     }
 
-    @Test(arguments: [nil, JSONValue.string("medium"), .double(2.5)])
-    func anotherSettingsWriteKeepsTheDevicesValue(_ stored: JSONValue?) async throws {
-        config.stored["stream_quality"] = stored
+    @Test(arguments: [UnreadableQuality.missing, .word, .fraction])
+    func anotherSettingsWriteKeepsTheDevicesValue(_ stored: UnreadableQuality) async throws {
+        config.stored["stream_quality"] = stored.json
         let fixture = try makeFixture()
         await fixture.actions.load()
 
         fixture.actions.updateConfig { $0.themeMode = "1" }
 
         #expect(await waitUntil { config.stored["theme_mode"] == .string("1") && !fixture.model.isApplying })
-        #expect(config.stored["stream_quality"] == stored)
+        #expect(config.stored["stream_quality"] == stored.json)
         #expect(config.stored["language"] == .string("de"))
     }
 
-    @Test(arguments: [nil, JSONValue.string("medium")])
-    func pickingAPresetReplacesAMissingOrUnreadableValue(_ stored: JSONValue?) async throws {
-        config.stored["stream_quality"] = stored
+    @Test(arguments: [UnreadableQuality.missing, .word])
+    func pickingAPresetReplacesAMissingOrUnreadableValue(_ stored: UnreadableQuality) async throws {
+        config.stored["stream_quality"] = stored.json
         let fixture = try makeFixture()
         await fixture.actions.load()
 
