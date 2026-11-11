@@ -506,15 +506,16 @@ struct DeviceLinkPrompt: Identifiable {
         return DeviceLinkPrompt(connected: connected, candidate: candidate, wasSavedSeparately: savedBefore != nil)
     }
 
-    /// Carries out the answer. Add address makes the address one of the candidate's, and a
-    /// session connected through it becomes the candidate's; Keep separate changes nothing.
+    /// Carries out the answer. Add address makes the address one of the candidate's, and its
+    /// last-used one unless `makeLastUsed` is false; a session connected through it becomes the
+    /// candidate's. Keep separate changes nothing.
     @MainActor
     @discardableResult
-    func answer(_ answer: Answer, catalog: KVMDeviceManager) -> KVMDevice? {
+    func answer(_ answer: Answer, catalog: KVMDeviceManager, makeLastUsed: Bool = true) -> KVMDevice? {
         switch answer {
         case .addAddress:
             let current = catalog.availableDevices.first { $0.id == connected.id } ?? connected
-            return catalog.link(connected.address, of: current, to: candidate)
+            return catalog.link(connected.address, of: current, to: candidate, makeLastUsed: makeLastUsed)
         case .keepSeparate:
             catalog.declineLink(connected.address, to: candidate)
             return nil

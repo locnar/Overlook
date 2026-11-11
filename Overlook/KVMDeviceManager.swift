@@ -1009,17 +1009,20 @@ final class KVMDeviceManager: NSObject, ObservableObject {
     }
 
     /// Add address: `address`, which `source` was saved with on its own, becomes another address
-    /// of `target`, and its last-used one. `source`'s record loses the address and goes when it
-    /// has none left. Tokens and pins stay where they are; `target`'s token is copied to the
-    /// address if it has none.
+    /// of `target`, and its last-used one unless `makeLastUsed` is false (the device is open in
+    /// another window through an address of its own, and the next plain Connect should use that
+    /// one). `source`'s record loses the address and goes when it has none left. Tokens and pins
+    /// stay where they are; `target`'s token is copied to the address if it has none.
     @discardableResult
-    func link(_ address: DeviceAddress, of source: KVMDevice, to target: KVMDevice) -> KVMDevice? {
+    func link(_ address: DeviceAddress, of source: KVMDevice, to target: KVMDevice, makeLastUsed: Bool = true) -> KVMDevice? {
         var current = readStoredDevices()
         guard let targetIndex = current.firstIndex(where: { $0.id == target.id }) else { return nil }
         if !current[targetIndex].addresses.contains(address) {
             current[targetIndex].addresses.append(address)
         }
-        current[targetIndex].lastUsed = address
+        if makeLastUsed {
+            current[targetIndex].lastUsed = address
+        }
         let record = current[targetIndex]
         var removedIDs: [String] = []
         if source.id != target.id {

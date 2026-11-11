@@ -249,6 +249,58 @@ struct DeviceLinkTests {
         #expect(registry.session(showing: Self.tailnet) === first)
     }
 
+    /// The window left open is connected through the LAN address, so the next plain Connect
+    /// should use that one, not the address just added.
+    @Test func addAddressWhileOpenElsewhereKeepsTheLastUsedAddress() async throws {
+        let (catalog, desk, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa"])
+        let (registry, _, second, _, prompt) = try await twoWindows(catalog, desk: desk)
+        let lan = StoredDeviceRecordV2.Address(host: Self.lan.host, port: Self.lan.port)
+        let tailnet = StoredDeviceRecordV2.Address(host: Self.tailnet.host, port: Self.tailnet.port)
+        #expect(try Fixtures.readRecords(from: scratch.defaults).first { $0.id == desk.id }?.lastUsed == lan)
+
+        let outcome = second.answerLink(prompt, .addAddress)
+
+        guard case .openElsewhere(let linked, _) = outcome else {
+            Issue.record("Expected open elsewhere, got \(outcome)")
+            return
+        }
+        #expect(linked.addresses == [Self.lan, Self.tailnet])
+        #expect(linked.lastUsedAddress == Self.lan)
+        #expect(linked.address == Self.lan)
+        let listed = try #require(catalog.availableDevices.first { $0.id == desk.id })
+        #expect(listed.addresses == [Self.lan, Self.tailnet])
+        #expect(listed.lastUsedAddress == Self.lan)
+        #expect(listed.preferredAddress == Self.lan)
+        let records = try Fixtures.readRecords(from: scratch.defaults)
+        #expect(records.map(\.id) == [desk.id])
+        #expect(records.first?.addresses == [lan, tailnet])
+        #expect(records.first?.lastUsed == lan)
+        // Still so after a relaunch, which reads only the saved record.
+        let relaunched = Fixtures.catalog(scratch, credentials: credentials, trust: Fixtures.trustStore(scratch))
+        #expect(relaunched.availableDevices.first { $0.id == desk.id }?.preferredAddress == Self.lan)
+        #expect(registry.sessions.count == 2)
+    }
+
+    @Test func addAddressWithTheDeviceOpenNowhereElseMakesItTheLastUsedAddress() async throws {
+        let (catalog, desk, _) = setUp(pins: [Self.lan: "aa", Self.tailnet: "aa"])
+        let (registry, first, second, _, prompt) = try await twoWindows(catalog, desk: desk)
+        first.disconnect()
+
+        let outcome = second.answerLink(prompt, .addAddress)
+
+        guard case .linked(let linked) = outcome else {
+            Issue.record("Expected linked, got \(outcome)")
+            return
+        }
+        #expect(linked.lastUsedAddress == Self.tailnet)
+        #expect(catalog.availableDevices.first { $0.id == desk.id }?.lastUsedAddress == Self.tailnet)
+        #expect(catalog.availableDevices.first { $0.id == desk.id }?.preferredAddress == Self.tailnet)
+        let records = try Fixtures.readRecords(from: scratch.defaults)
+        #expect(records.map(\.id) == [desk.id])
+        #expect(records.first?.lastUsed == StoredDeviceRecordV2.Address(host: Self.tailnet.host, port: Self.tailnet.port))
+        #expect(registry.sessions.count == 2)
+    }
+
     @Test func theNoticeNamesTheDeviceAndGoesWithTheNextConnect() async throws {
         #expect(ConsoleSession.alreadyOpenNotice(deviceName: "Linux KVM").title == "Linux KVM is already open in another window.")
 
@@ -326,6 +378,8 @@ struct DeviceLinkTests {
             return
         }
         #expect(try Fixtures.readRecords(from: scratch.defaults) == before)
+        #expect(catalog.availableDevices.first { $0.id == desk.id }?.addresses == [Self.lan])
+        #expect(catalog.availableDevices.first { $0.id == desk.id }?.lastUsedAddress == Self.lan)
         #expect(second.connection.connectedDevice?.id == connected.id)
         #expect(first.connection.connectedDevice?.id == desk.id)
         #expect(links[1].steps.count == stepsBefore)

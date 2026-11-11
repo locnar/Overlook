@@ -425,12 +425,14 @@ final class ConsoleSession: ObservableObject {
     /// adds the address to the device (`DeviceLinkPrompt.answer`). If the device is open in another
     /// window, one window per device holds: that window comes forward, and this one disconnects as
     /// the operator's Disconnect does (a recording is stopped and saved) and stays open,
-    /// disconnected, with "<device> is already open in another window."
+    /// disconnected, with "<device> is already open in another window." The device's last-used
+    /// address then stays as it was, since the window left open is connected through its own;
+    /// otherwise the address just added becomes the last-used one.
     @discardableResult
     func answerLink(_ prompt: DeviceLinkPrompt, _ answer: DeviceLinkPrompt.Answer) -> LinkOutcome {
         // Asked before linking: once linked, this session is the device's too.
         let other = answer == .addAddress ? registry?.session(showing: prompt.candidate, excluding: self) : nil
-        guard let linked = prompt.answer(answer, catalog: catalog) else { return .unchanged }
+        guard let linked = prompt.answer(answer, catalog: catalog, makeLastUsed: other == nil) else { return .unchanged }
         guard let other else { return .linked(linked) }
 
         log.notice(.lifecycle, "\(linked.displayName) is already open in another window; disconnecting this one")
